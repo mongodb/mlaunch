@@ -12,7 +12,7 @@ jobs:
         mongodb-version: ["7.0", "8.0"]
         exclude:
           - python-version: "3.8"
-            pymongo-version: "4.16"  # PyMongo 4.16 requires Python 3.9+
+            pymongo-version: "4.16.0"  # PyMongo 4.16 requires Python 3.9+
       fail-fast: false
 
     steps:
