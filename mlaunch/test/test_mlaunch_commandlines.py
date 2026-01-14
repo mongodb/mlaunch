@@ -106,7 +106,7 @@ class TestMLaunch(object):
             ]
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_single_storage(self):
@@ -118,7 +118,7 @@ class TestMLaunch(object):
             ]
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_replicaset_3(self):
@@ -130,7 +130,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_replicaset_7(self):
@@ -142,7 +142,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_replicaset_6_1(self):
@@ -154,7 +154,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_sharded_replicaset_csrs_1(self):
@@ -172,7 +172,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_sharded_replicaset_csrs_2(self):
@@ -190,7 +190,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_sharded_replicaset_csrs_3(self):
@@ -208,7 +208,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_sharded_replicaset_csrs_4(self):
@@ -226,7 +226,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_sharded_oplogsize_csrs(self):
@@ -242,7 +242,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_sharded_three_mongos_csrs(self):
@@ -258,7 +258,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_default_replicaset_csrs(self):
@@ -275,7 +275,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_default_7_replicaset_csrs(self):
@@ -292,7 +292,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_default_7_replicaset_5_config_csrs(self):
@@ -310,7 +310,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_default_2_replicaset_arb_4_config_2_mongos_csrs(self):
@@ -331,7 +331,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     def test_storageengine_csrs(self):
@@ -348,7 +348,7 @@ class TestMLaunch(object):
             )
         if sys.platform == 'linux':
             for c in cmdlist:
-                c.add('--fork ')
+                c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
     @pytest.mark.xfail(raises=SystemExit)
