@@ -7,7 +7,7 @@ mlaunch
 ``mlaunch``, is a utility to quickly set up complex MongoDB test environments 
 on a local machine, including replica sets and sharded clusters. It was 
 originally part of the now deprecated `mtools 
-<https://github.com/rueckstiess/mtools>` collection; however, is now available
+<https://github.com/rueckstiess/mtools>`__ collection; however, is now available
 as a standalone tool.
 
 .. figure:: https://raw.githubusercontent.com/mongodb/mlaunch/develop/mlaunch.png
@@ -27,7 +27,7 @@ mlaunch requires `pymongo`, `psutil` and `packaging` dependencies. See the
 for more information.
 
 mlaunch is only tested with
-`actively supported <https://www.mongodb.com/support-policy/lifecycles>`
+`actively supported <https://www.mongodb.com/support-policy/lifecycles>`__
 (non End-of-Life) versions of the MongoDB server. As of November 2025,
 that includes MongoDB 7.0 or newer.
 
