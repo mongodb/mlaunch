@@ -34,11 +34,11 @@ If `pip3` is not available and you want to install mtools from source, you can
 get the source code by cloning the
 [mlaunch github repository](https://github.com/mongodb/mlaunch):
 
-    git clone git://github.com/rueckstiess/mtools.git
+    git clone git://github.com/mongodb/mlaunch.git
 
 Or download the tarball from <https://pypi.python.org/pypi/mlaunch> and extract it with:
 
-    tar xzvf mtools-<version>.tar.gz
+    tar xzvf mlaunch-<version>.tar.gz
 
 Then `cd` into the mlaunch directory and run:
 
@@ -67,14 +67,6 @@ you should install mtools from a source checkout in "Development Mode" using eit
 More information about switching to Development Mode can be found on the page [mtools Development Mode](https://mongodb.github.com/mlaunch/Development-Mode-for-mtools).
 
 ### Additional dependencies
-
-To install all additional dependencies for full feature support, run:
-
-    pip3 install 'mtools[all]'
-
-To install dependencies for a subset of mtools utilities, specify one or more script names as a comma-separated list:
-
-    pip3 install 'mtools[mlaunch,mloginfo]'
 
 #### psutil
 
