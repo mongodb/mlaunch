@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlaunch"
+dynamic = ["version", "readme", "dependencies"]
+description = "A utility to quickly set up complex MongoDB test environments on a local machine "
+authors = [
+    {name = "Samantha Rapp", email = "samantha.rapp@mongodb.com"},
+  ]
+license = "Apache-2.0"
+classifiers= [
+    'Development Status :: 5 - Production/Stable',
+    'Intended Audience :: Developers',
+    'Topic :: Database',
+    'Programming Language :: Python :: 3.8',
+    'Programming Language :: Python :: 3.9',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11'
+  ]
+keywords = ['MongoDB', 'testing']
+requies-python = ">=3.8"
+
+[project.scripts]
+mlaunch = "mlaunch:main"
+
+[project.urls]
+Documentation = "https://mongodb.github.io/mlaunch/"
+Repository = "https://github.com/mongodb/mlaunch"
+Changelog = "https://github.com/mongodb/mlaunch/blob/main/CHANGES.rst"
+
+[tools.setuptools.dynamic]
+version = {attr = "mlaunch.util.version.__version__"}
+readme = {file = "README.rst"}
+dependencies = {file = "requirements.txt"}
+
+[tool.setuptools.packages.find]
+where = ["mlaunch"]
+exclude = ["mlaunch.tests"]
