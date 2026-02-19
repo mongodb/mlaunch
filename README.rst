@@ -1,6 +1,6 @@
-======
+=======
 mlaunch
-======
+=======
 
 |PyPI version| |PyPI pyversions| |PyPI license|
 
@@ -35,6 +35,7 @@ Using mlaunch
 -------------
 After installing mlaunch, you can run it from the command line by typing
 ``mlaunch``. For a list of available commands, run:
+
 .. code-block:: bash
 
    mlaunch --help
@@ -49,7 +50,7 @@ See `the changelog <https://mongodb.github.io/mlaunch/changelog.html>`__
 for a list of changes from previous versions of mlaunch/mlaunch.
 
 Contribute to mlaunch
---------------------
+---------------------
 
 If you'd like to contribute to mlaunch, please read the `contributor page
 <https://mongodb.github.io/mlaunch/contributing.html>`__ for instructions.
