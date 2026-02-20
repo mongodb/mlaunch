@@ -64,9 +64,9 @@ mlaunch is at your own risk. Bug reports, feature requests and questions can be
 posted in the `Issues
 <https://github.com/mongodb/mlaunch/issues?state=open>`__ section on GitHub.
 
-.. |PyPI version| image:: https://img.shields.io/pypi/v/mtools.svg
-   :target: https://pypi.python.org/pypi/mtools/
-.. |PyPI pyversions| image:: https://img.shields.io/pypi/pyversions/mtools.svg
-   :target: https://pypi.python.org/pypi/mtools/
-.. |PyPI license| image:: https://img.shields.io/pypi/l/mtools.svg
-   :target: https://pypi.python.org/pypi/mtools/
+.. |PyPI version| image:: https://img.shields.io/pypi/v/mlaunch.svg
+   :target: https://pypi.python.org/pypi/mlaunch/
+.. |PyPI pyversions| image:: https://img.shields.io/pypi/pyversions/mlaunch.svg
+   :target: https://pypi.python.org/pypi/mlaunch/
+.. |PyPI license| image:: https://img.shields.io/pypi/l/mlaunch.svg
+   :target: https://pypi.python.org/pypi/mlaunch/
