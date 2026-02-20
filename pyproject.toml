@@ -23,7 +23,7 @@ keywords = ['MongoDB', 'testing']
 requires-python = ">=3.8"
 
 [project.scripts]
-mlaunch = "mlaunch:main"
+mlaunch = "mlaunch.mlaunch:main"
 
 [project.urls]
 Documentation = "https://mongodb.github.io/mlaunch/"
@@ -31,7 +31,7 @@ Repository = "https://github.com/mongodb/mlaunch"
 Changelog = "https://github.com/mongodb/mlaunch/blob/main/CHANGES.rst"
 
 [tool.setuptools.dynamic]
-version = {attr = "mlaunch.util.version.__version__"}
+version = {attr = "util.version.__version__"}
 readme = {file = "README.rst"}
 dependencies = {file = "requirements.txt"}
 
