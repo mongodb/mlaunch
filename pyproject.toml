@@ -30,11 +30,13 @@ Documentation = "https://mongodb.github.io/mlaunch/"
 Repository = "https://github.com/mongodb/mlaunch"
 Changelog = "https://github.com/mongodb/mlaunch/blob/main/CHANGES.rst"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.dynamic]
-version = {attr = "util.version.__version__"}
+version = {attr = "mlaunch.util.version.__version__"}
 readme = {file = "README.rst"}
 dependencies = {file = "requirements.txt"}
 
 [tool.setuptools.packages.find]
-where = ["mlaunch"]
-exclude = ["mlaunch.tests"]
+exclude = ["mlaunch.test", "mlaunch.test.*"]

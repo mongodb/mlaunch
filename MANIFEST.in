@@ -1,3 +1,2 @@
 include *.md
-recursive-include mlaunch *.py
-recursive-include mlaunch/util *.py
+prune doc
