@@ -216,7 +216,7 @@ class MLaunchTool(BaseCmdLineTool):
         # to run can call different sub-commands
         self.argparser = argparse.ArgumentParser()
         self.argparser.add_argument('--version', action='version',
-                                    version=f'''mtools version {__version__} || Python {sys.version}''')
+                                    version=f'''mlaunch version {__version__} || Python {sys.version}''')
         self.argparser.add_argument('--no-progressbar', action='store_true',
                                     default=False,
                                     help='disables progress bar')
@@ -1497,7 +1497,7 @@ class MLaunchTool(BaseCmdLineTool):
 
         out_dict = {
             'protocol_version': 2,
-            'mtools_version': __version__,
+            'mlaunch_version': __version__,
             'parsed_args': self.args,
             'unknown_args': self.unknown_args,
             'startup_info': self.startup_info
