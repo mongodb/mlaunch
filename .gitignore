@@ -39,5 +39,6 @@ _build
 ._*
 
 # local testing
+.venv
 logs/
 logv2/
