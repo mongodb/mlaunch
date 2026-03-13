@@ -12,13 +12,13 @@ import pytest
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
-from mlaunch.mlaunch import MLaunchTool
+from mkit.mkit import MKitTool
 
-pytestmark = pytest.mark.skip("skip all mlaunch tests for now")
+pytestmark = pytest.mark.skip("skip all mkit tests for now")
 
-class TestMLaunch(object):
+class TestMKit(object):
     """
-    This class tests functionality around the mlaunch tool. It has some
+    This class tests functionality around the mkit tool. It has some
     additional methods that are helpful for the tests, as well as a setup
     and teardown method for all tests.
 
@@ -27,7 +27,7 @@ class TestMLaunch(object):
     """
 
     port = 33333
-    base_dir = 'data_test_mlaunch'
+    base_dir = 'data_test_mkit'
 
     def __init__(self):
         """Constructor."""
@@ -35,8 +35,8 @@ class TestMLaunch(object):
         self.data_dir = ''
 
     def setup_method(self):
-        """Start up method to create mlaunch tool and find free port."""
-        self.tool = MLaunchTool(test=True)
+        """Start up method to create mkit tool and find free port."""
+        self.tool = MKitTool(test=True)
 
         # if the test data path exists, remove it
         if os.path.exists(self.base_dir):
@@ -86,7 +86,7 @@ class TestMLaunch(object):
 
     @pytest.mark.xfail(raises=ConnectionFailure)
     def test_test(self):
-        """TestMLaunch setup and teardown test."""
+        """TestMKit setup and teardown test."""
 
         # test that data dir does not exist
         assert not os.path.exists(self.data_dir)
@@ -108,22 +108,22 @@ class TestMLaunch(object):
 
     def test_argv_run(self):
         """
-        mlaunch: test true command line arguments, instead of passing
+        mkit: test true command line arguments, instead of passing
         into tool.run().
         """
 
         # make command line arguments through sys.argv
-        sys.argv = ['mlaunch', 'init', '--single', '--dir', self.base_dir,
+        sys.argv = ['mkit', 'init', '--single', '--dir', self.base_dir,
                     '--port', str(self.port), '--nojournal']
 
         self.tool.run()
         assert self.tool.is_running(self.port)
 
     def test_init_default(self):
-        """mlaunch: test that 'init' command can be omitted, is default. """
+        """mkit: test that 'init' command can be omitted, is default. """
 
         # make command line arguments through sys.argv
-        sys.argv = ['mlaunch', '--single', '--dir', self.base_dir,
+        sys.argv = ['mkit', '--single', '--dir', self.base_dir,
                     '--port', str(self.port), '--nojournal']
 
         self.tool.run()
@@ -131,7 +131,7 @@ class TestMLaunch(object):
 
     def test_init_default_arguments(self):
         """
-        mlaunch: test that 'init' command is default, even when specifying
+        mkit: test that 'init' command is default, even when specifying
         arguments to run().
         """
 
@@ -139,7 +139,7 @@ class TestMLaunch(object):
         assert self.tool.is_running(self.port)
 
     def test_single(self):
-        """mlaunch: start stand-alone server and tear down again."""
+        """mkit: start stand-alone server and tear down again."""
 
         # start mongo process on free test port
         self.run_tool("init --single")
@@ -263,7 +263,7 @@ class TestMLaunch(object):
                                                  'start'], output)
         assert self.helper_output_has_line_with(['adding shards. can take up '
                                                  'to 30 seconds'], output)
-        assert self.helper_output_has_line_with(['writing .mlaunch_startup '
+        assert self.helper_output_has_line_with(['writing .mkit_startup '
                                                  'file'], output)
         assert self.helper_output_has_line_with(['done'], output)
 
@@ -276,7 +276,7 @@ class TestMLaunch(object):
                                                     output)
 
     def test_shard_names(self):
-        """mlaunch: test if sharded cluster with explicit shard names works."""
+        """mkit: test if sharded cluster with explicit shard names works."""
 
         # start mongo process on free test port
         self.run_tool("init --sharded tic tac toe --replicaset")
@@ -289,14 +289,14 @@ class TestMLaunch(object):
         assert shard_names == set(['tic', 'tac', 'toe'])
 
     def test_startup_file(self):
-        """mlaunch: create .mlaunch_startup file in data path."""
+        """mkit: create .mkit_startup file in data path."""
 
         # Also tests utf-8 to byte conversion and json import
 
         self.run_tool("init --single -v")
 
         # check if the startup file exists
-        startup_file = os.path.join(self.data_dir, '.mlaunch_startup')
+        startup_file = os.path.join(self.data_dir, '.mkit_startup')
         assert os.path.isfile(startup_file)
 
         # compare content of startup file with tool.args
@@ -306,7 +306,7 @@ class TestMLaunch(object):
 
     def test_single_mongos_explicit(self):
         """
-        mlaunch: test if single mongos is running on start port and creates
+        mkit: test if single mongos is running on start port and creates
         <datadir>/mongos.log.
         """
 
@@ -321,7 +321,7 @@ class TestMLaunch(object):
 
     def test_single_mongos(self):
         """
-        mlaunch: test if multiple mongos use separate log files in 'mongos'
+        mkit: test if multiple mongos use separate log files in 'mongos'
         subdir.
         """
 
@@ -333,7 +333,7 @@ class TestMLaunch(object):
 
     def test_multiple_mongos(self):
         """
-        mlaunch: test if multiple mongos use separate log files in 'mongos'
+        mkit: test if multiple mongos use separate log files in 'mongos'
         subdir.
         """
 
@@ -351,7 +351,7 @@ class TestMLaunch(object):
         assert len(self.tool.get_tagged(['mongos', 'running'])) == 2
 
     def test_filter_valid_arguments(self):
-        """Check arguments unknown to mlaunch against mongos and mongod."""
+        """Check arguments unknown to mkit against mongos and mongod."""
 
         # filter against mongod
         result = self.tool._filter_valid_arguments("--slowms 500 -vvv "
@@ -368,7 +368,7 @@ class TestMLaunch(object):
         assert result == "-vvv --configdb localhost:27017"
 
     def test_large_replicaset_arbiter(self):
-        """mlaunch: start large replica set of 7 nodes with arbiter."""
+        """mkit: start large replica set of 7 nodes with arbiter."""
 
         # start mongo process on free test port
         # (don't need journal for this test)
@@ -397,7 +397,7 @@ class TestMLaunch(object):
         assert len(self.tool.get_tagged('all')) == 7
 
     def test_large_replicaset_noarbiter(self):
-        """mlaunch: start large replica set of 7 nodes without arbiter."""
+        """mkit: start large replica set of 7 nodes without arbiter."""
 
         # start mongo process on free test port
         # (don't need journal for this test)
@@ -423,7 +423,7 @@ class TestMLaunch(object):
                    if 'arbiterOnly' in memb and memb['arbiterOnly']) == 0
 
     def test_stop(self):
-        """mlaunch: test stopping all nodes """
+        """mkit: test stopping all nodes """
 
         self.run_tool("init --replicaset")
         self.run_tool("stop")
@@ -433,7 +433,7 @@ class TestMLaunch(object):
         assert all(not self.tool.is_running(node) for node in nodes)
 
     def test_kill_default(self):
-        """mlaunch: test killing all nodes with default signal."""
+        """mkit: test killing all nodes with default signal."""
 
         # start sharded cluster and kill with default signal (15)
         self.run_tool("init --sharded 2 --single")
@@ -444,7 +444,7 @@ class TestMLaunch(object):
         assert all(not self.tool.is_running(node) for node in nodes)
 
     def test_kill_sigterm(self):
-        """mlaunch: test killing all nodes with SIGTERM."""
+        """mkit: test killing all nodes with SIGTERM."""
 
         # start nodes again, this time, kill with string "SIGTERM"
         self.run_tool("init --sharded 2 --single")
@@ -455,7 +455,7 @@ class TestMLaunch(object):
         assert all(not self.tool.is_running(node) for node in nodes)
 
     def test_kill_sigkill(self):
-        """mlaunch: test killing all nodes with SIGKILL."""
+        """mkit: test killing all nodes with SIGKILL."""
 
         # start nodes again, this time, kill with signal 9 (SIGKILL)
         self.run_tool("init --sharded 2 --single")
@@ -466,7 +466,7 @@ class TestMLaunch(object):
         assert all(not self.tool.is_running(node) for node in nodes)
 
     def test_stop_start(self):
-        """mlaunch: test stop and then re-starting nodes."""
+        """mkit: test stop and then re-starting nodes."""
 
         # start mongo process on free test port
         self.run_tool("init --replicaset")
@@ -523,7 +523,7 @@ class TestMLaunch(object):
         assert len(self.tool.get_tagged('down')) == 2
 
     def test_restart_with_unkown_args(self):
-        """mlaunch: test start command with extra unknown arguments."""
+        """mkit: test start command with extra unknown arguments."""
 
         # init environment (sharded, single shards ok)
         self.run_tool("init --single")
@@ -583,7 +583,7 @@ class TestMLaunch(object):
 
     @pytest.mark.xfail(raises=SystemExit)
     def test_init_init_replicaset(self):
-        """mlaunch: test calling init a second time on the replica set."""
+        """mkit: test calling init a second time on the replica set."""
 
         # init a replica set
         self.run_tool("init --replicaset")
@@ -636,7 +636,7 @@ class TestMLaunch(object):
 
     @pytest.mark.auth
     def test_replicaset_with_name(self):
-        """mlaunch: test calling init on the replica set with given name."""
+        """mkit: test calling init on the replica set with given name."""
 
         self.run_tool("init --replicaset --name testrs")
 
@@ -686,7 +686,7 @@ class TestMLaunch(object):
 
     @pytest.mark.auth
     def test_adding_default_user_no_mongos(self):
-        """mlaunch: test that even with --mongos 0 there is a user created."""
+        """mkit: test that even with --mongos 0 there is a user created."""
 
         self.run_tool("init --sharded 2 --single --mongos 0 --auth")
 
@@ -703,7 +703,7 @@ class TestMLaunch(object):
 
     @pytest.mark.auth
     def test_adding_custom_user(self):
-        """mlaunch: test custom username and password and custom roles."""
+        """mkit: test custom username and password and custom roles."""
 
         self.run_tool("init --single --auth --username corben "
                       "--password fitzroy --auth-roles dbAdminAnyDatabase "
@@ -724,7 +724,7 @@ class TestMLaunch(object):
         assert user['user'] == 'corben'
 
     def test_existing_environment(self):
-        """mlaunch: test warning for overwriting an existing environment."""
+        """mkit: test warning for overwriting an existing environment."""
 
         self.run_tool("init --single")
         self.run_tool("stop")
@@ -733,9 +733,9 @@ class TestMLaunch(object):
         except SystemExit as e:
             assert 'different environment already exists' in e.message
 
-    @unittest.skip('mlaunch protocol upgrade is not needed at this point')
+    @unittest.skip('mkit protocol upgrade is not needed at this point')
     def test_upgrade_v1_to_v2(self):
-        """mlaunch: test upgrade from protocol version 1 to 2."""
+        """mkit: test upgrade from protocol version 1 to 2."""
 
         startup_options = {"name": "replset", "replicaset": True,
                            "dir": "./data", "authentication": False,
@@ -750,24 +750,24 @@ class TestMLaunch(object):
 
         # replace startup options
         with open(os.path.join(self.base_dir, 'test_upgrade_v1_to_v2',
-                               '.mlaunch_startup'), 'w') as f:
+                               '.mkit_startup'), 'w') as f:
             json.dump(startup_options, f, -1)
 
         # now start with old config and check if upgrade worked
         self.run_tool("start")
         with open(os.path.join(self.base_dir, 'test_upgrade_v1_to_v2',
-                               '.mlaunch_startup'), 'rb') as f:
+                               '.mkit_startup'), 'rb') as f:
             startup_options = json.load(f)
             assert startup_options['protocol_version'] == 2
 
     def test_sharded_named_1(self):
-        """mlaunch: test --sharded <name> for a single shard."""
+        """mkit: test --sharded <name> for a single shard."""
 
         self.run_tool("init --sharded foo --single")
         assert len(self.tool.get_tagged('foo')) == 1
 
-    def test_mlaunch_list(self):
-        """mlaunch: test list command """
+    def test_mkit_list(self):
+        """mkit: test list command """
 
         self.run_tool("init --sharded 2 --replicaset --mongos 2")
         self.run_tool("list")
@@ -797,7 +797,7 @@ class TestMLaunch(object):
             if os.path.exists(p) and os.access(p, os.X_OK):
                 return p
 
-    def test_mlaunch_binary_path_start(self):
+    def test_mkit_binary_path_start(self):
         """Test if --binarypath is persistent between init and start."""
 
         # get true binary path (to test difference to not specifying one)
@@ -823,12 +823,12 @@ class TestMLaunch(object):
 
     @pytest.mark.xfail(raises=SystemExit)
     def test_single_and_arbiter(self):
-        """mlaunch: test --single with --arbiter error."""
+        """mkit: test --single with --arbiter error."""
 
         self.run_tool("init --single --arbiter")
 
     def test_oplogsize_config(self):
-        """mlaunch: test config server never receives --oplogSize parameter."""
+        """mkit: test config server never receives --oplogSize parameter."""
 
         self.run_tool("init --sharded 1 --single --oplogSize 19 --verbose")
         output = sys.stdout.getvalue().splitlines()
@@ -840,7 +840,7 @@ class TestMLaunch(object):
 if __name__ == '__main__':
 
     # run individual tests with normal print output
-    tml = TestMLaunch()
+    tml = TestMKit()
     tml.setup()
     tml.test_kill_partial()
     tml.teardown()

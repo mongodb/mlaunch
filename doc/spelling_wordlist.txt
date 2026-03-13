@@ -44,6 +44,7 @@ matcher
 metadata
 mgenerate
 mixedCase
+mkit
 mlaunch
 mlogdistinct
 mlogfilter
@@ -51,6 +52,7 @@ mloginfo
 mlogmerge
 mlogversion
 mongod
+mongokit
 mongos
 mplotqueries
 mtools

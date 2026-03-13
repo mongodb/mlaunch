@@ -1,11 +1,11 @@
-==================
-Changes to mlaunch
-==================
+===================
+Changes to mongokit
+===================
 
-version 1.8.0 - first release of mlaunch standalone
+version 1.8.0 - first release of mongokit standalone
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * Remove all tools except mlaunch from the mtools package
- * Rebrand to mlaunch
+ * Rebrand to mongokit/mkit
  * Add support for MongoDB 8.2 on MacOS
 
 version 1.7.2 - final release of mtools

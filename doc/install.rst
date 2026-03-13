@@ -2,10 +2,10 @@
 Installation
 ============
 
-mlaunch is written in Python and it is currently tested with Python 3.8, 3.9,
+mongokit is written in Python and it is currently tested with Python 3.8, 3.9,
 3.10, and 3.11.
 
-mlaunch is only tested with
+mongokit is only tested with
 `actively supported <https://www.mongodb.com/support-policy/lifecycles>`__
 (non End-of-Life) versions of the MongoDB server. As of November 2025,
 that includes MongoDB 7.0 or newer.
@@ -22,11 +22,11 @@ Python
 Installation with pip3
 ~~~~~~~~~~~~~~~~~~~~~~
 
-The easiest way to install mlaunch is via ``pip3``. From the command line, run:
+The easiest way to install mongokit is via ``pip3``. From the command line, run:
 
 .. code-block:: bash
 
-   pip3 install mlaunch
+   pip3 install mongokit
 
 You need to have Python 3.7 or newer installed. ``pip3`` should be included as
 part of the default install for supported versions of Python 3.
@@ -41,22 +41,22 @@ home directory.
 Installation from source
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-If ``pip3`` is not available and you want to install mlaunch from source, you can
-get the source code by cloning the `mlaunch github repository
-<https://github.com/mongodb/mlaunch>`__:
+If ``pip3`` is not available and you want to install mongokit from source, you can
+get the source code by cloning the `mongokit github repository
+<https://github.com/mongodb/mongokit>`__:
 
 .. code-block:: bash
 
-   git clone git://github.com/mongodb/mlaunch.git
+   git clone git://github.com/mongodb/mongokit.git
 
-Or download the tarball from `PyPI <https://pypi.python.org/pypi/mlaunch>`__ and
+Or download the tarball from `PyPI <https://pypi.python.org/pypi/mongokit>`__ and
 extract it with:
 
 .. code-block:: bash
 
-   tar xzvf mlaunch-<version>.tar.gz
+   tar xzvf mkit-<version>.tar.gz
 
-Then ``cd`` into the mlaunch directory and run:
+Then ``cd`` into the mongokit directory and run:
 
 .. code-block:: bash
 
@@ -73,17 +73,17 @@ Dependencies
 
 The full list of requirements (some of which are already included in the Python
 standard library) can be found in the `requirements.txt
-<https://github.com/mongodb/mlaunch/blob/develop/requirements.txt>`__ file.
+<https://github.com/mongodb/mongokit/blob/develop/requirements.txt>`__ file.
 
 psutil
 ------
 
-mlaunch uses ``psutil`` to manage starting, stopping, and finding MongoDB
+mongokit uses ``psutil`` to manage starting, stopping, and finding MongoDB
 processes.
 
 pymongo
 -------
 
 `pymongo <https://www.mongodb.com/docs/drivers/pymongo/#installation>`__
-is MongoDB's official Python driver. ``mlaunch`` uses this to configure
+is MongoDB's official Python driver. ``mongokit`` uses this to configure
 and query local MongoDB deployments.

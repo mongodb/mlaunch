@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import mlaunch.mlaunch
+import mkit.mkit
 
 if __name__ == "__main__":
-    mlaunch.mlaunch.main()
+    mkit.mkit.main()

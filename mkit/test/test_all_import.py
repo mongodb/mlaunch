@@ -2,10 +2,10 @@ from functools import wraps
 
 tools = []
 
-# mlaunch depends on pymongo
+# mkit depends on pymongo
 try:
-    from mlaunch.mlaunch import MLaunchTool
-    tools.append(MLaunchTool)
+    from mkit.mkit import MKitTool
+    tools.append(MKitTool)
 except ImportError:
     pass
 

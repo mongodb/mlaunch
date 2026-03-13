@@ -1,4 +1,4 @@
 #!/usr/bin/env python3
-"""mlaunch version."""
+"""mkit version."""
 
 __version__ = '1.8.0'
