@@ -32,7 +32,7 @@ mongorun is only tested with
 that includes MongoDB 7.0 or newer.
 
 Using mongorun
--------------
+--------------
 After installing mongorun, you can run it from the command line by typing
 ``mrun``. For a list of available commands, run:
 
