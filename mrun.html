@@ -1,0 +1,767 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mongorun &mdash; mongorun  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/_static/theme_overrides.css" />
+
+  
+    <link rel="shortcut icon" href="_static/mongorun.ico"/>
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Contribute to mongorun" href="contributing.html" />
+    <link rel="prev" title="Installation" href="install.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            mongorun
+              <img src="_static/mongorun.png" class="logo" alt="Logo"/>
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="install.html">Installation</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">mongorun</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#usage">Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#general-parameters">General Parameters</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#help">Help</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#version">Version</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#verbosity">Verbosity</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#data-directory">Data directory</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#commands">Commands</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#init">init</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#kill">kill</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#start">start</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#stop">stop</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#restart">restart</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#list">list</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#disclaimer">Disclaimer</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contribute to mongorun</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog.html">Changes to mlaunch</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">mongorun</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">mongorun</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="mongorun">
+<span id="mrun"></span><h1>mongorun<a class="headerlink" href="#mongorun" title="Link to this heading"></a></h1>
+<p>This tool lets you quickly spin up and monitor MongoDB environments on your
+local machine. It supports various configurations of stand-alone servers,
+replica sets and sharded clusters. Individual nodes or groups of nodes can
+easily be stopped and started again.</p>
+<p>In addition to all the listed parameters of <strong>mrun</strong> below, you can pass in
+any arbitrary options that a <code class="docutils literal notranslate"><span class="pre">mongos</span></code> or <code class="docutils literal notranslate"><span class="pre">mongod</span></code> binary would understand,
+and <strong>mrun</strong> will pass them on to the correct binary. This includes the
+<code class="docutils literal notranslate"><span class="pre">-f</span></code> option to read further options from a MongoDB configuration file.</p>
+<section id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="o">[</span>-h<span class="o">]</span><span class="w"> </span><span class="o">[</span>--version<span class="o">]</span><span class="w"> </span><span class="o">[</span>--no-progressbar<span class="o">]</span>
+<span class="w">        </span><span class="o">{</span>init,start,stop,restart,list,kill<span class="o">}</span><span class="w"> </span>...
+</pre></div>
+</div>
+</section>
+<section id="general-parameters">
+<h2>General Parameters<a class="headerlink" href="#general-parameters" title="Link to this heading"></a></h2>
+<p>The following parameters work with all commands.</p>
+<section id="help">
+<h3>Help<a class="headerlink" href="#help" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">-h,</span> <span class="pre">--help</span></code></dt><dd><p>shows the help text and exits.</p>
+</dd>
+</dl>
+</section>
+<section id="version">
+<h3>Version<a class="headerlink" href="#version" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">--version</span></code></dt><dd><p>shows the version number and exits.</p>
+</dd>
+</dl>
+</section>
+<section id="verbosity">
+<h3>Verbosity<a class="headerlink" href="#verbosity" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">--verbose</span></code></dt><dd><p>This will print additional information, depending on each of the commands.</p>
+</dd>
+</dl>
+</section>
+<section id="data-directory">
+<h3>Data directory<a class="headerlink" href="#data-directory" title="Link to this heading"></a></h3>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">--dir</span> <span class="pre">DIR</span></code></dt><dd><p>This parameter changes the directory where <strong>mrun</strong> stores its data and
+log files. By default, the directory is the local directory <code class="docutils literal notranslate"><span class="pre">./data</span></code>,
+below the current working directory.</p>
+</dd>
+</dl>
+</section>
+</section>
+<section id="commands">
+<h2>Commands<a class="headerlink" href="#commands" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">mrun</span></code> uses different commands to initialize, stop, start and list test
+environments. The general syntax is:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>&lt;command&gt;<span class="w"> </span><span class="o">[</span>--parameters<span class="w"> </span>...<span class="o">]</span>
+</pre></div>
+</div>
+<p>where <code class="docutils literal notranslate"><span class="pre">&lt;command&gt;</span></code> is one of the following choices:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">init</span></code>: creates an initial environment and starts all nodes</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stop</span></code>: stops some or all nodes in the current environment</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">start</span></code>: starts some or all nodes in the current environment</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">list</span></code>: shows a list of the current environment</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">kill</span></code>: sends a kill (or other) signal to the nodes in the current
+environment</p></li>
+</ul>
+<p>For a given environment (specified by its data directory with the <code class="docutils literal notranslate"><span class="pre">--dir</span></code>
+argument, the default is <code class="docutils literal notranslate"><span class="pre">./data</span></code>), the <code class="docutils literal notranslate"><span class="pre">init</span></code> command only needs to be
+called once. <code class="docutils literal notranslate"><span class="pre">mrun</span></code> stores the configuration in a config file within the
+data directory, called <code class="docutils literal notranslate"><span class="pre">.mrun_startup</span></code>. With this file, mongorun remembers
+the configuration and can <code class="docutils literal notranslate"><span class="pre">start</span></code> and <code class="docutils literal notranslate"><span class="pre">stop</span></code> nodes when required.</p>
+<hr class="docutils" />
+<section id="init">
+<h3>init<a class="headerlink" href="#init" title="Link to this heading"></a></h3>
+<p>This command initializes and starts MongoDB stand-alone instances, replica
+sets, or sharded clusters. It only needs to be called once for each environment
+(specified by its data directory with the <code class="docutils literal notranslate"><span class="pre">--dir</span></code> argument, the default is
+<code class="docutils literal notranslate"><span class="pre">./data</span></code>).</p>
+<section id="id1">
+<h4>Usage<a class="headerlink" href="#id1" title="Link to this heading"></a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>init<span class="w"> </span><span class="o">[</span>-h<span class="o">]</span><span class="w"> </span><span class="o">(</span>--single<span class="w"> </span><span class="p">|</span><span class="w"> </span>--replicaset<span class="o">)</span><span class="w"> </span><span class="o">[</span>--nodes<span class="w"> </span>NUM<span class="o">]</span><span class="w"> </span><span class="o">[</span>--arbiter<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--name<span class="w"> </span>NAME<span class="o">]</span><span class="w"> </span><span class="o">[</span>--priority<span class="o">]</span><span class="w"> </span><span class="o">[</span>--sharded<span class="w"> </span>N<span class="w"> </span><span class="o">[</span>N<span class="w"> </span>...<span class="o">]]</span>
+<span class="w">             </span><span class="o">[</span>--config<span class="w"> </span>NUM<span class="o">]</span><span class="w"> </span><span class="o">[</span>--csrs<span class="o">]</span><span class="w"> </span><span class="o">[</span>--mongos<span class="w"> </span>NUM<span class="o">]</span><span class="w"> </span><span class="o">[</span>--verbose<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--port<span class="w"> </span>PORT<span class="o">]</span><span class="w"> </span><span class="o">[</span>--binarypath<span class="w"> </span>PATH<span class="o">]</span><span class="w"> </span><span class="o">[</span>--dir<span class="w"> </span>DIR<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--hostname<span class="w"> </span>HOSTNAME<span class="o">]</span><span class="w"> </span><span class="o">[</span>--auth<span class="o">]</span><span class="w"> </span><span class="o">[</span>--username<span class="w"> </span>USERNAME<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--password<span class="w"> </span>PASSWORD<span class="o">]</span><span class="w"> </span><span class="o">[</span>--auth-db<span class="w"> </span>DB<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--auth-roles<span class="w"> </span><span class="o">[</span>ROLE<span class="w"> </span><span class="o">[</span>ROLE<span class="w"> </span>...<span class="o">]]]</span><span class="w"> </span><span class="o">[</span>--auth-role-docs<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--no-initial-user<span class="o">]</span><span class="w"> </span><span class="o">[</span>--sslCAFile<span class="w"> </span>SSLCAFILE<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslCRLFile<span class="w"> </span>SSLCRLFILE<span class="o">]</span><span class="w"> </span><span class="o">[</span>--sslAllowInvalidHostnames<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslAllowInvalidCertificates<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslMode<span class="w"> </span><span class="o">{</span>disabled,allowSSL,preferSSL,requireSSL<span class="o">}]</span>
+<span class="w">             </span><span class="o">[</span>--sslPEMKeyFile<span class="w"> </span>SSLPEMKEYFILE<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslPEMKeyPassword<span class="w"> </span>SSLPEMKEYPASSWORD<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslClusterFile<span class="w"> </span>SSLCLUSTERFILE<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslClusterPassword<span class="w"> </span>SSLCLUSTERPASSWORD<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslDisabledProtocols<span class="w"> </span>SSLDISABLEDPROTOCOLS<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslAllowConnectionsWithoutCertificates<span class="o">]</span><span class="w"> </span><span class="o">[</span>--sslFIPSMode<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslClientCertificate<span class="w"> </span>SSLCLIENTCERTIFICATE<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslClientPEMKeyFile<span class="w"> </span>SSLCLIENTPEMKEYFILE<span class="o">]</span>
+<span class="w">             </span><span class="o">[</span>--sslClientPEMKeyPassword<span class="w"> </span>SSLCLIENTPEMKEYPASSWORD<span class="o">]</span>
+</pre></div>
+</div>
+<p>For convenience and backwards compatibility, the <code class="docutils literal notranslate"><span class="pre">init</span></code> command is the
+default command and can be omitted.</p>
+</section>
+<section id="required-parameters">
+<h4>Required Parameters<a class="headerlink" href="#required-parameters" title="Link to this heading"></a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">init</span></code> command requires <strong>exactly one</strong> of the following two parameters
+to run: <code class="docutils literal notranslate"><span class="pre">--single</span></code> or <code class="docutils literal notranslate"><span class="pre">--replicaset</span></code>. They are mutually exclusive and one
+must be specified for each <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">init</span></code> execution.</p>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">--single</span></code></dt><dd><p>This parameter will create a single stand-alone node. If <code class="docutils literal notranslate"><span class="pre">--sharded</span></code> is
+also specified, this parameter will create each shard as a single
+stand-alone node.</p>
+<p>For example, to start a single <code class="docutils literal notranslate"><span class="pre">mongod</span></code> instance on port 27017:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--single
+</pre></div>
+</div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--replicaset</span></code></dt><dd><p>This parameter will create a replica set rather than a single node. Other
+<a class="reference internal" href="#mrun-repl-params"><span class="std std-ref">Replica Set Parameters</span></a> apply and can modify the properties of the
+replica set to launch. If <code class="docutils literal notranslate"><span class="pre">--sharded</span></code> is also specified, this parameter
+will create one such replica sets for each shard.</p>
+<p>For example, to start a replica set with (by default) 3 nodes on ports
+27017, 27018, 27019:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset
+</pre></div>
+</div>
+</dd>
+</dl>
+</section>
+<section id="replica-set-parameters">
+<span id="mrun-repl-params"></span><h4>Replica Set Parameters<a class="headerlink" href="#replica-set-parameters" title="Link to this heading"></a></h4>
+<p>The following parameters change how a replica set is set up. These parameters
+require that you picked the <code class="docutils literal notranslate"><span class="pre">--replicaset</span></code> option from the required
+parameters.</p>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">--nodes</span> <span class="pre">N</span></code></dt><dd><p>Specifies the number of data-bearing nodes (arbiters not included) for this
+replica set. The default value is 3.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset<span class="w"> </span>--nodes<span class="w"> </span><span class="m">5</span>
+</pre></div>
+</div>
+<p>This command starts 5 mongod instances and configures them to one replica
+set.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--arbiter</span></code></dt><dd><p>If this parameter is present, an additional arbiter is added to the replica
+set. Currently, <strong>mrun</strong> only supports adding one arbiter. Additional
+arbiters can be started and added to the replica set manually.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset<span class="w"> </span>--nodes<span class="w"> </span><span class="m">2</span><span class="w"> </span>--arbiter
+</pre></div>
+</div>
+<p>This command starts 2 data-bearing mongod instances and adds one arbiter to
+the replica set, for a total of 3 voting nodes.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--name</span> <span class="pre">NAME</span></code></dt><dd><p>This option lets you modify the name of the replica set. This will change
+both the name and the sub-directory of the <code class="docutils literal notranslate"><span class="pre">dbpath</span></code>. This option is only
+allowed for a single replica sets and will not work in sharded setups, where
+replica set names are equivalent to the shard names. The default name is
+<code class="docutils literal notranslate"><span class="pre">replset</span></code>.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset<span class="w"> </span>--name<span class="w"> </span><span class="s2">&quot;my_rs_1&quot;</span>
+</pre></div>
+</div>
+<p>This command will create a replica set with the name <code class="docutils literal notranslate"><span class="pre">my_rs_1</span></code> and will
+also store the dbpath and log files under <code class="docutils literal notranslate"><span class="pre">./data/my_rs_1</span></code>.</p>
+</dd>
+</dl>
+</section>
+<section id="sharding-parameters">
+<h4>Sharding Parameters<a class="headerlink" href="#sharding-parameters" title="Link to this heading"></a></h4>
+<p>The following parameters influence the setup of a sharded environment. Each
+shard will be a copy of the previously specified setup, be it a single instance
+or a replica set.</p>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">--sharded</span> <span class="pre">S</span> <span class="pre">[S</span> <span class="pre">...]</span></code></dt><dd><p>If this parameter is provided, sharding is enabled and <strong>mrun</strong> will
+create the specified number of shards and add the shards together to a
+sharded cluster. The parameter can work in two ways: Either by specifying a
+single number, which is the number of shards, or by specifying a list of
+shard names.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--single<span class="w"> </span>--sharded<span class="w"> </span><span class="m">3</span>
+</pre></div>
+</div>
+<p>This command will create an environment of 3 shards, each consisting of a
+single stand-alone node. The shard names are <code class="docutils literal notranslate"><span class="pre">shard0001</span></code>, <code class="docutils literal notranslate"><span class="pre">shard0002</span></code>,
+<code class="docutils literal notranslate"><span class="pre">shard0003</span></code>. It will also create 1 config server and 1 mongos per default.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset<span class="w"> </span>--sharded<span class="w"> </span>tic<span class="w"> </span>tac<span class="w"> </span>toe
+</pre></div>
+</div>
+<p>This command will create 3 shards, named <code class="docutils literal notranslate"><span class="pre">tic</span></code>, <code class="docutils literal notranslate"><span class="pre">tac</span></code> and <code class="docutils literal notranslate"><span class="pre">toe</span></code>. Each
+shard will consist of a replica set of (per default) 3 nodes. It will also
+create 1 config server and 1 mongos per default.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">N</span></code></dt><dd><p>This parameter determines, how many config servers are launched in a sharded
+environment. The default number is 1. The only valid options for <code class="docutils literal notranslate"><span class="pre">N</span></code> are 1
+or 3.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--csrs</span></code></dt><dd><p>This parameter has <code class="docutils literal notranslate"><span class="pre">mrun</span></code> use <a class="reference external" href="https://docs.mongodb.com/manual/core/sharded-cluster-config-servers/#replica-set-config-servers">Config Servers as a Replica Set (CSRS)</a>
+rather than the older Sync Cluster Connection Config (SCCC).</p>
+<p>The CSRS deployment option is supported by MongoDB 3.2+, and as of MongoDB
+3.4 is the default (and only) supported option.</p>
+<p>If you are using MongoDB 3.4 and greater, <code class="docutils literal notranslate"><span class="pre">mrun</span></code> will use CSRS by
+default.</p>
+<p><em>Changed in version 1.2.3</em></p>
+<p>CSRS config servers will no longer include incompatible settings, such as:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--storageEngine</span></code> – CSRS config servers will always use WiredTiger.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--arbiter</span></code> – CSRS config servers cannot have any arbiter.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--mongos</span> <span class="pre">N</span></code></dt><dd><p>This parameter determines, how many <code class="docutils literal notranslate"><span class="pre">mongos</span></code> instances are launched in a
+sharded environment. The default number is 1. With this setting, the default
+can be changed to <code class="docutils literal notranslate"><span class="pre">N</span></code> mongos instances.</p>
+</dd>
+</dl>
+</section>
+<section id="authentication-parameters">
+<h4>Authentication Parameters<a class="headerlink" href="#authentication-parameters" title="Link to this heading"></a></h4>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">--auth</span></code></dt><dd><p>This parameter enables authentication on your setup. It will transparently
+work with single instances (that require <code class="docutils literal notranslate"><span class="pre">--auth</span></code>) as well as replica sets
+and sharded environments (that require <code class="docutils literal notranslate"><span class="pre">--keyFile</span></code>). There is no need to
+additionally specify a keyfile, a random keyfile will be generated for you.</p>
+<p>A username and password will also be set up, either on the mongos for
+sharded environments, or on the primary node for replica sets or on a single
+node.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--username</span></code></dt><dd><p>This parameter changes the default username <code class="docutils literal notranslate"><span class="pre">user</span></code> to the specified user.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--password</span></code></dt><dd><p>This parameter changes the default password <code class="docutils literal notranslate"><span class="pre">password</span></code> to the specified
+password.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The default password is chosen deliberately to be easy to remember or
+guess. <code class="docutils literal notranslate"><span class="pre">mrun</span></code> is meant for testing and issue reproduction, not for
+production use. Even a strong password will not guarantee security with
+mongorun-generated environments, because the username and password are
+included in the <code class="docutils literal notranslate"><span class="pre">data/.mrun_startup</span></code> file in clear text.</p>
+</div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--auth-db</span></code></dt><dd><p>This parameter changes the default database, from <code class="docutils literal notranslate"><span class="pre">admin</span></code>, in which the
+user will be created.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>If you change the database, it may not be possible for <code class="docutils literal notranslate"><span class="pre">mrun</span></code> to
+execute certain commands due to missing privileges. This may lead to
+unexpected behavior for some <code class="docutils literal notranslate"><span class="pre">mrun</span></code> operations, like for example
+<code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">stop</span></code>, which uses the internal <code class="docutils literal notranslate"><span class="pre">shutdown</span></code> command. If this
+is the case, use <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">kill</span></code> instead.</p>
+</div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--auth-roles</span></code></dt><dd><p>This parameter changes the initial default roles that the user will receive.
+The default roles are <code class="docutils literal notranslate"><span class="pre">dbAdminAnyDatabase</span></code>, <code class="docutils literal notranslate"><span class="pre">readWriteAnyDatabase</span></code>,
+<code class="docutils literal notranslate"><span class="pre">userAdminAnyDatabase</span></code> and <code class="docutils literal notranslate"><span class="pre">clusterAdmin</span></code>. You can provide different
+roles with this parameter, separated by spaces.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>If you change the default roles, it may not be possible for <code class="docutils literal notranslate"><span class="pre">mrun</span></code>
+to execute certain commands due to missing privileges. This may lead to
+unexpected behavior for some <code class="docutils literal notranslate"><span class="pre">mrun</span></code> operations, like for example
+<code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">stop</span></code>, which uses the internal <code class="docutils literal notranslate"><span class="pre">shutdown</span></code> command. If this
+is the case, use <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">kill</span></code> instead.</p>
+</div>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--sharded<span class="w"> </span><span class="m">2</span><span class="w"> </span>--single<span class="w"> </span>--auth<span class="w"> </span>--username<span class="w"> </span>thomas<span class="w"> </span>--password<span class="w"> </span>my_s3cr3t_p4ssw0rd
+</pre></div>
+</div>
+<p>This command would start a sharded cluster with 2 single shards, 1 config
+server, 1 mongos, and create the user <code class="docutils literal notranslate"><span class="pre">thomas</span></code> with password
+<code class="docutils literal notranslate"><span class="pre">my_s3cr3t_p4ssw0rd</span></code>. It will use the default roles and place the user in
+the <code class="docutils literal notranslate"><span class="pre">admin</span></code> database. <code class="docutils literal notranslate"><span class="pre">mrun</span></code> will</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--auth-role-docs</span></code></dt><dd><p>Use with <code class="docutils literal notranslate"><span class="pre">--auth-roles</span></code> to interpret roles specified as JSON documents.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--no-initial-user</span></code></dt><dd><p>Do not create an initial user if auth is enabled.</p>
+</dd>
+</dl>
+</section>
+<section id="optional-parameters">
+<h4>Optional Parameters<a class="headerlink" href="#optional-parameters" title="Link to this heading"></a></h4>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">--port</span> <span class="pre">PORT</span></code></dt><dd><p>Uses <code class="docutils literal notranslate"><span class="pre">PORT</span></code> as the start port number for the first instance, and increases
+the number by one for each additional instance (mongod/mongos). By default,
+the start port value is MongoDB’s standard port 27017. Use this parameter to
+start several setups in parallel on different port ranges.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset<span class="w"> </span>--nodes<span class="w"> </span><span class="m">3</span><span class="w"> </span>--port<span class="w"> </span><span class="m">30000</span>
+</pre></div>
+</div>
+<p>This command would start a replica set of 3 nodes using ports 30000, 30001
+and 30002.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--binarypath</span> <span class="pre">PATH</span></code></dt><dd><p>Will set the path where <strong>mrun</strong> looks for the binaries of <code class="docutils literal notranslate"><span class="pre">mongod</span></code> and
+<code class="docutils literal notranslate"><span class="pre">mongos</span></code> to the provided <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. By default, the $PATH environment
+variable is used to determine which binary is started. You can use this
+option to overwrite the default setting. This is useful for example if you
+compile your own source code and want mongorun to use the compiled version.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--single<span class="w"> </span>--binarypath<span class="w"> </span>./build/bin
+</pre></div>
+</div>
+<p>This command will look for the <code class="docutils literal notranslate"><span class="pre">mongod</span></code> binary in <code class="docutils literal notranslate"><span class="pre">./build/bin/mongod</span></code>
+instead of the default location.</p>
+</dd>
+</dl>
+</section>
+<section id="tls-ssl-options">
+<h4>TLS/SSL options<a class="headerlink" href="#tls-ssl-options" title="Link to this heading"></a></h4>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">--sslCAFile</span> <span class="pre">SSLCAFILE</span></code></dt><dd><p>Certificate Authority file for TLS/SSL.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslCRLFile</span> <span class="pre">SSLCRLFILE</span></code></dt><dd><p>Certificate Revocation List file for TLS/SSL.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslAllowInvalidHostnames</span></code></dt><dd><p>Allow client and server certificates to provide non-matching hostnames.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslAllowInvalidCertificates</span></code></dt><dd><p>Allow client or server connections with invalid
+certificates.</p>
+</dd>
+</dl>
+</section>
+<section id="server-tls-ssl-options">
+<h4>Server TLS/SSL options<a class="headerlink" href="#server-tls-ssl-options" title="Link to this heading"></a></h4>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">--sslMode</span> <span class="pre">{disabled,allowSSL,preferSSL,requireSSL}</span></code></dt><dd><p>Set the TLS/SSL operation mode.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslPEMKeyFile</span> <span class="pre">SSLPEMKEYFILE</span></code></dt><dd><p>PEM file for TLS/SSL.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslPEMKeyPassword</span> <span class="pre">SSLPEMKEYPASSWORD</span></code></dt><dd><p>PEM file password.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslClusterFile</span> <span class="pre">SSLCLUSTERFILE</span></code></dt><dd><p>Key file for internal TLS/SSL authentication.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslClusterPassword</span> <span class="pre">SSLCLUSTERPASSWORD</span></code></dt><dd><p>Internal authentication key file password.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslDisabledProtocols</span> <span class="pre">SSLDISABLEDPROTOCOLS</span></code></dt><dd><p>Comma separated list of TLS protocols to disable [TLS1_0,TLS1_1,TLS1_2].</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslAllowConnectionsWithoutCertificates</span></code></dt><dd><p>Allow client to connect without presenting a certificate.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslFIPSMode</span></code></dt><dd><p>Activate FIPS 140-2 mode.</p>
+</dd>
+</dl>
+</section>
+<section id="client-tls-ssl-options">
+<h4>Client TLS/SSL options<a class="headerlink" href="#client-tls-ssl-options" title="Link to this heading"></a></h4>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">--sslClientCertificate</span> <span class="pre">SSLCLIENTCERTIFICATE</span></code></dt><dd><p>Client certificate file for TLS/SSL.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslClientPEMKeyFile</span> <span class="pre">SSLCLIENTPEMKEYFILE</span></code></dt><dd><p>Client PEM file for TLS/SSL.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--sslClientPEMKeyPassword</span> <span class="pre">SSLCLIENTPEMKEYPASSWORD</span></code></dt><dd><p>Client PEM file password.</p>
+</dd>
+</dl>
+<hr class="docutils" />
+</section>
+</section>
+<section id="kill">
+<span id="mrun-kill"></span><h3>kill<a class="headerlink" href="#kill" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">kill</span></code> command stops some or all running nodes in the current
+environment, depending on the specified tags, by sending the processes the
+<code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> (15) signal.</p>
+<p>If no tags are specified, <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">kill</span></code> will kill all nodes. If one or more
+tags are specified, <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">kill</span></code> will only kill the nodes that have all of
+the given tags (set intersection). This works even if there is no <code class="docutils literal notranslate"><span class="pre">admin</span></code>
+user with the <code class="docutils literal notranslate"><span class="pre">clusterAdmin</span></code> role.</p>
+<p>Instead of the <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> signal, other signals can be specified with the
+<code class="docutils literal notranslate"><span class="pre">--signal</span></code> parameter. (not available on Windows)</p>
+<section id="id2">
+<h4>Usage<a class="headerlink" href="#id2" title="Link to this heading"></a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span>...<span class="o">]]</span><span class="w"> </span><span class="o">[</span>--signal<span class="w"> </span>S<span class="o">]</span><span class="w"> </span><span class="o">[</span>--dir<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--verbose<span class="o">]</span>
+</pre></div>
+</div>
+</section>
+<section id="tag-parameters">
+<h4>Tag Parameters<a class="headerlink" href="#tag-parameters" title="Link to this heading"></a></h4>
+<p>The following tags are used with mrun, although not all tags are present in
+every environment:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">all</span></code>: all nodes in the environment.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">running</span></code>: all currently running nodes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">down</span></code>: all currently down nodes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mongos</span></code>: all mongos processes carry this tag.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mongod</span></code>: all mongod processes (including arbiters and config servers).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">config</span></code>: all config servers</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">shard</span></code>: this tag is only used to identify a specific shard number (see
+below).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;shard</span> <span class="pre">name&gt;</span></code>: for sharded environments, each member of a shard carries
+the shard name as a tag, e.g. “shard-a”.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">primary</span></code>: all running primary nodes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">secondary</span></code>: all running secondary nodes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">arbiter</span></code>: all arbiters.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;port</span> <span class="pre">number&gt;</span></code>: each node carries its port number as a tag.</p></li>
+</ul>
+<p>If a single tag is specified for the <code class="docutils literal notranslate"><span class="pre">kill</span></code> command, the nodes matching this
+tag will be killed. If multiple tags are specified, only the nodes matching
+<strong>all tags</strong> are killed. Each tag will narrow down the set of matches further.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span>
+</pre></div>
+</div>
+<p>This command kills all running nodes in the current environment.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>mongos
+</pre></div>
+</div>
+<p>This command kills all running mongos processes in the current environment.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>shard-a<span class="w"> </span>secondary
+</pre></div>
+</div>
+<p>This command kills all running secondary nodes of the shard called ‘shard-a’ in
+the current environment.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>config<span class="w"> </span>primary
+</pre></div>
+</div>
+<p>This command would not kill any nodes, because there is no node with both tags
+<code class="docutils literal notranslate"><span class="pre">config</span></code> and <code class="docutils literal notranslate"><span class="pre">primary</span></code>.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span><span class="m">27017</span>
+</pre></div>
+</div>
+<p>This command would kill the node running on port 27017.</p>
+<p>In addition, some tags can be combined with a succeeding number. These tags
+are: <code class="docutils literal notranslate"><span class="pre">mongos</span></code>, <code class="docutils literal notranslate"><span class="pre">shard</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code>, <code class="docutils literal notranslate"><span class="pre">secondary</span></code>.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>shard<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+<p>This command kills all members of shard 1 in the current _sharded_ environment.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>shard<span class="w"> </span><span class="m">2</span><span class="w"> </span>primary
+</pre></div>
+</div>
+<p>This command kills the primary of the second shard in the current _sharded_
+environment.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>secondary<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+<p>This command kills the first secondary node of all shards if the environment is
+_sharded_. If the environment is a _replicaset_, it only applies to the first
+secondary.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span>
+</pre></div>
+</div>
+<p>This command sends signal <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> (15) to all running processes in the
+current environment.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>--signal<span class="w"> </span>SIGUSR1
+</pre></div>
+</div>
+<p>This command sends signal <code class="docutils literal notranslate"><span class="pre">SIGUSR1</span></code> (30) to all running processes in the
+current environment, which in MongoDB causes a log rotation.</p>
+<hr class="docutils" />
+</section>
+</section>
+<section id="start">
+<span id="mrun-start"></span><h3>start<a class="headerlink" href="#start" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">start</span></code> command starts some or all nodes that are currently down in the
+current environment, depending on the specified tags. If no tags are specified,
+<code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">start</span></code> will start all nodes. If one or more tags are specified,
+<code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">start</span></code> will only start the nodes that have all of the given tags
+(set intersection).</p>
+<section id="id3">
+<h4>Usage<a class="headerlink" href="#id3" title="Link to this heading"></a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>start<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span>...<span class="o">]]</span><span class="w"> </span><span class="o">[</span>--dir<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--verbose<span class="o">]</span>
+</pre></div>
+</div>
+</section>
+<section id="id4">
+<h4>Tag Parameters<a class="headerlink" href="#id4" title="Link to this heading"></a></h4>
+<p>The following tags are used with mrun, although not all tags are present in
+every environment:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">all</span></code>: all nodes in the environment.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">running</span></code>: all currently running nodes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">down</span></code>: all currently down nodes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mongos</span></code>: all mongos processes carry this tag.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mongod</span></code>: all mongod processes (including arbiters and config servers).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">config</span></code>: all config servers</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">shard</span></code>: this tag is only used to identify a specific shard number (see
+below).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;shard</span> <span class="pre">name&gt;</span></code>: for sharded environments, each member of a shard carries
+the shard name as a tag, e.g. “shard-a”.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">arbiter</span></code>: all arbiters.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;port</span> <span class="pre">number&gt;</span></code>: each node carries its port number as a tag.</p></li>
+</ul>
+<p>Different to the <code class="docutils literal notranslate"><span class="pre">stop</span></code> command, there tags for <code class="docutils literal notranslate"><span class="pre">primary</span></code> and <code class="docutils literal notranslate"><span class="pre">secondary</span></code>
+are not available for the <code class="docutils literal notranslate"><span class="pre">start</span></code> command. This is because the replica set
+state of a running node is undetermined.</p>
+<p>For examples, see <a class="reference internal" href="#mrun-stop"><span class="std std-ref">stop</span></a>.</p>
+<hr class="docutils" />
+</section>
+</section>
+<section id="stop">
+<span id="mrun-stop"></span><h3>stop<a class="headerlink" href="#stop" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">stop</span></code> command stops some or all running nodes in the current
+environment, depending on the specified tags, by sending the <code class="docutils literal notranslate"><span class="pre">shutdown</span></code>
+command to the mongod or mongos instance.</p>
+<p>If no tags are specified, <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">stop</span></code> will stop all nodes. If one or more
+tags are specified, <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">stop</span></code> will only stop the nodes that have all of
+the given tags (set intersection).</p>
+<p>In authenticated environments, the <code class="docutils literal notranslate"><span class="pre">stop</span></code> command requires a user in the
+<code class="docutils literal notranslate"><span class="pre">admin</span></code> database with the <code class="docutils literal notranslate"><span class="pre">clusterAdmin</span></code> role. Otherwise the <code class="docutils literal notranslate"><span class="pre">stop</span></code>
+command will not succeed. In that case, you can use the <code class="docutils literal notranslate"><span class="pre">kill</span></code> command
+instead.</p>
+<p><em>Changed in version 1.2.3</em></p>
+<p>As of version 1.2.3, the <code class="docutils literal notranslate"><span class="pre">stop</span></code> command is an alias for the <code class="docutils literal notranslate"><span class="pre">kill</span></code> command.</p>
+<p>For examples, see <a class="reference internal" href="#mrun-kill"><span class="std std-ref">kill</span></a>.</p>
+<section id="id5">
+<h4>Usage<a class="headerlink" href="#id5" title="Link to this heading"></a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>stop<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span>...<span class="o">]]</span><span class="w"> </span><span class="o">[</span>--dir<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--verbose<span class="o">]</span>
+</pre></div>
+</div>
+</section>
+<section id="id6">
+<h4>Tag Parameters<a class="headerlink" href="#id6" title="Link to this heading"></a></h4>
+<p>The tags for the <code class="docutils literal notranslate"><span class="pre">stop</span></code> command are the same as for <a class="reference internal" href="#mrun-kill"><span class="std std-ref">kill</span></a>.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="restart">
+<h3>restart<a class="headerlink" href="#restart" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">restart</span></code> command stops, then restarts some or all nodes in the current
+environment, depending on the specified tags. It is added for convenience and
+behaves like a <code class="docutils literal notranslate"><span class="pre">stop</span></code> and <code class="docutils literal notranslate"><span class="pre">start</span></code> command in succession. If no tags are
+specified, <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">restart</span></code> will restart all nodes. If one or more tags are
+specified, <code class="docutils literal notranslate"><span class="pre">mrun</span> <span class="pre">restart</span></code> will only restart the nodes that have all of the
+given tags (set intersection).</p>
+<section id="id7">
+<h4>Usage<a class="headerlink" href="#id7" title="Link to this heading"></a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>restart<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span><span class="o">[</span>TAG<span class="w"> </span>...<span class="o">]]</span><span class="w"> </span><span class="o">[</span>--dir<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--verbose<span class="o">]</span>
+</pre></div>
+</div>
+</section>
+<section id="id8">
+<h4>Tag Parameters<a class="headerlink" href="#id8" title="Link to this heading"></a></h4>
+<p>See <a class="reference internal" href="#mrun-start"><span class="std std-ref">start</span></a> and <a class="reference internal" href="#mrun-stop"><span class="std std-ref">stop</span></a>.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="list">
+<h3>list<a class="headerlink" href="#list" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">list</span></code> command shows an overview of all nodes in the current environment,
+as well as their status (running/down) and port. With the optional
+<code class="docutils literal notranslate"><span class="pre">--verbose</span></code> flag, the list command also shows all tags for each node.</p>
+<section id="id9">
+<h4>Usage<a class="headerlink" href="#id9" title="Link to this heading"></a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>list<span class="w"> </span><span class="o">[</span>-h<span class="o">]</span><span class="w"> </span><span class="o">[</span>--dir<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--json<span class="o">]</span><span class="w"> </span><span class="o">[</span>--tags<span class="o">]</span><span class="w"> </span><span class="o">[</span>--startup<span class="o">]</span><span class="w"> </span><span class="o">[</span>--verbose<span class="o">]</span>
+</pre></div>
+</div>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>list
+
+PROCESS<span class="w">          </span>STATUS<span class="w">     </span>PORT
+
+mongos<span class="w">           </span>running<span class="w">    </span><span class="m">27017</span>
+mongos<span class="w">           </span>running<span class="w">    </span><span class="m">27018</span>
+
+config<span class="w"> </span>server<span class="w">    </span>running<span class="w">    </span><span class="m">27025</span>
+config<span class="w"> </span>server<span class="w">    </span>running<span class="w">    </span><span class="m">27026</span>
+config<span class="w"> </span>server<span class="w">    </span>down<span class="w">       </span><span class="m">27027</span>
+
+shard01
+<span class="w">    </span>primary<span class="w">      </span>running<span class="w">    </span><span class="m">27019</span>
+<span class="w">    </span>secondary<span class="w">    </span>running<span class="w">    </span><span class="m">27020</span>
+<span class="w">    </span>arbiter<span class="w">      </span>running<span class="w">    </span><span class="m">27021</span>
+
+shard02
+<span class="w">    </span>mongod<span class="w">       </span>down<span class="w">       </span><span class="m">27022</span>
+<span class="w">    </span>mongod<span class="w">       </span>down<span class="w">       </span><span class="m">27023</span>
+<span class="w">    </span>mongod<span class="w">       </span>down<span class="w">       </span><span class="m">27024</span>
+</pre></div>
+</div>
+<p>This command displays a list of all nodes, their status and port number. In
+this case, the environment was started with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--sharded<span class="w"> </span><span class="m">2</span><span class="w"> </span>--replicaset<span class="w"> </span>--nodes<span class="w"> </span><span class="m">2</span><span class="w"> </span>--arbiter<span class="w"> </span>--config<span class="w"> </span><span class="m">3</span><span class="w"> </span>--mongos<span class="w"> </span><span class="m">2</span>
+</pre></div>
+</div>
+</section>
+<section id="id10">
+<h4>Optional Parameters<a class="headerlink" href="#id10" title="Link to this heading"></a></h4>
+<dl>
+<dt><code class="docutils literal notranslate"><span class="pre">--json</span></code></dt><dd><p>This option outputs the results in JSON format, which may be useful for
+integration with other tools or scripts.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--tags</span></code></dt><dd><p>This option additionally shows a column with all the tags that the instance
+can be addressed with. Tags can be used to target certain instances for
+<code class="docutils literal notranslate"><span class="pre">start</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>, <code class="docutils literal notranslate"><span class="pre">kill</span></code>, etc. commands.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>list<span class="w"> </span>--tags
+
+PROCESS<span class="w">      </span>STATUS<span class="w">     </span>PORT<span class="w">     </span>TAGS
+
+primary<span class="w">      </span>running<span class="w">    </span><span class="m">27017</span><span class="w">    </span><span class="m">27017</span>,<span class="w"> </span>all,<span class="w"> </span>mongod,<span class="w"> </span>primary,<span class="w"> </span>running
+secondary<span class="w">    </span>running<span class="w">    </span><span class="m">27018</span><span class="w">    </span><span class="m">27018</span>,<span class="w"> </span>all,<span class="w"> </span>mongod,<span class="w"> </span>running,<span class="w"> </span>secondary
+mongod<span class="w">       </span>down<span class="w">       </span><span class="m">27019</span><span class="w">    </span><span class="m">27019</span>,<span class="w"> </span>all,<span class="w"> </span>down,<span class="w"> </span>mongod
+</pre></div>
+</div>
+<p>This command displays a list of all nodes, their status and port number, and
+in addition, their tags. In this case, the environment was started with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>--replicaset
+</pre></div>
+</div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--startup</span></code></dt><dd><p>This option additionally shows a column with the startup strings that was
+used to run the given instance. This is useful to if an instance needs to be
+started manually.</p>
+<p>For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mrun<span class="w"> </span>list<span class="w"> </span>--startup
+
+PROCESS<span class="w">      </span>PORT<span class="w">     </span>STATUS<span class="w">     </span>PID<span class="w">     </span>STARTUP<span class="w"> </span>COMMAND
+
+secondary<span class="w">    </span><span class="m">27017</span><span class="w">    </span>running<span class="w">    </span><span class="m">4264</span><span class="w">    </span>mongod<span class="w"> </span>--replSet<span class="w"> </span>replset<span class="w"> </span>--dbpath<span class="w"> </span>/tmp/data/replset/rs1/db<span class="w"> </span>--logpath<span class="w"> </span>/tmp/data/replset/rs1/mongod.log<span class="w"> </span>--port<span class="w"> </span><span class="m">27017</span><span class="w"> </span>--logappend<span class="w"> </span>--fork<span class="w"> </span>-vv
+mongod<span class="w">       </span><span class="m">27018</span><span class="w">    </span>running<span class="w">    </span><span class="m">4267</span><span class="w">    </span>mongod<span class="w"> </span>--replSet<span class="w"> </span>replset<span class="w"> </span>--dbpath<span class="w"> </span>/tmp/data/replset/rs2/db<span class="w"> </span>--logpath<span class="w"> </span>/tmp/data/replset/rs2/mongod.log<span class="w"> </span>--port<span class="w"> </span><span class="m">27018</span><span class="w"> </span>--logappend<span class="w"> </span>--fork<span class="w"> </span>-vv
+mongod<span class="w">       </span><span class="m">27019</span><span class="w">    </span>running<span class="w">    </span><span class="m">4270</span><span class="w">    </span>mongod<span class="w"> </span>--replSet<span class="w"> </span>replset<span class="w"> </span>--dbpath<span class="w"> </span>/tmp/data/replset/rs3/db<span class="w"> </span>--logpath<span class="w"> </span>/tmp/data/replset/rs3/mongod.log<span class="w"> </span>--port<span class="w"> </span><span class="m">27019</span><span class="w"> </span>--logappend<span class="w"> </span>--fork<span class="w"> </span>-vv
+</pre></div>
+</div>
+<p>This command displays a list of all nodes, their status and port number, and
+in addition, their startup commands.</p>
+</dd>
+</dl>
+</section>
+</section>
+</section>
+<section id="disclaimer">
+<h2>Disclaimer<a class="headerlink" href="#disclaimer" title="Link to this heading"></a></h2>
+<p>This software is not supported by <a class="reference external" href="https://www.mongodb.com">MongoDB, Inc.</a>
+under any of their commercial support subscriptions or otherwise. Any usage of
+mongorun is at your own risk. Bug reports, feature requests and questions can be
+posted in the <a class="reference external" href="https://github.com/mongodb/mongorun/issues?state=open">Issues</a> section on GitHub.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="install.html" class="btn btn-neutral float-left" title="Installation" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="contributing.html" class="btn btn-neutral float-right" title="Contribute to mongorun" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p></p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

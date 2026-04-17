@@ -1,0 +1,188 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Installation &mdash; mongorun  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/_static/theme_overrides.css" />
+
+  
+    <link rel="shortcut icon" href="_static/mongorun.ico"/>
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="mongorun" href="mrun.html" />
+    <link rel="prev" title="mongorun" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            mongorun
+              <img src="_static/mongorun.png" class="logo" alt="Logo"/>
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Installation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#installation-with-pip3">Installation with pip3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#installation-from-source">Installation from source</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#dependencies">Dependencies</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#psutil">psutil</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#pymongo">pymongo</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="mrun.html">mongorun</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contribute to mongorun</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog.html">Changes to mlaunch</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">mongorun</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Installation</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="installation">
+<h1>Installation<a class="headerlink" href="#installation" title="Link to this heading"></a></h1>
+<p>mongrun is written in Python and it is currently tested with Python 3.8, 3.9,
+3.10, and 3.11.</p>
+<p>mongorun is only tested with
+<a class="reference external" href="https://www.mongodb.com/support-policy/lifecycles">actively supported</a>
+(non End-of-Life) versions of the MongoDB server. As of November 2025,
+that includes MongoDB 7.0 or newer.</p>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
+<dl>
+<dt>Python</dt><dd><p>You need to have Python 3.8, 3.9, 3.10, or 3.11 installed in order to
+use mtools. Other versions of Python are not currently supported or tested.</p>
+<p>To check your Python version, run <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">--version</span></code> on the command line.</p>
+</dd>
+</dl>
+</section>
+<section id="installation-with-pip3">
+<h2>Installation with pip3<a class="headerlink" href="#installation-with-pip3" title="Link to this heading"></a></h2>
+<p>The easiest way to install mongorun is via <code class="docutils literal notranslate"><span class="pre">pip3</span></code>. From the command line, run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip3<span class="w"> </span>install<span class="w"> </span>mongorun
+</pre></div>
+</div>
+<p>You need to have Python 3.7 or newer installed. <code class="docutils literal notranslate"><span class="pre">pip3</span></code> should be included as
+part of the default install for supported versions of Python 3.</p>
+<p>Depending on your user rights, <code class="docutils literal notranslate"><span class="pre">pip3</span></code> may complain about not having
+permissions to install into the system directory.</p>
+<p>In that case, you either need to add <code class="docutils literal notranslate"><span class="pre">sudo</span></code> in front of the <code class="docutils literal notranslate"><span class="pre">pip3</span></code> command
+to install into a system directory, or append <code class="docutils literal notranslate"><span class="pre">--user</span></code> to install into your
+home directory.</p>
+</section>
+<section id="installation-from-source">
+<h2>Installation from source<a class="headerlink" href="#installation-from-source" title="Link to this heading"></a></h2>
+<p>If <code class="docutils literal notranslate"><span class="pre">pip3</span></code> is not available and you want to install mongorun from source, you can
+get the source code by cloning the <a class="reference external" href="https://github.com/mongodb/mongorun">mongorun github repository</a>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git://github.com/mongodb/mongorun.git
+</pre></div>
+</div>
+<p>Or download the tarball from <a class="reference external" href="https://pypi.python.org/pypi/mongorun">PyPI</a> and
+extract it with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tar<span class="w"> </span>xzvf<span class="w"> </span>mongorun-&lt;version&gt;.tar.gz
+</pre></div>
+</div>
+<p>Then <code class="docutils literal notranslate"><span class="pre">cd</span></code> into the mongorun directory and run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>python<span class="w"> </span>setup.py<span class="w"> </span>install
+</pre></div>
+</div>
+<p>This will install mongorun into your Python’s site-packages folder, create links
+to the scripts and set everything up. You should now be able to use all the
+scripts directly from the command line.</p>
+</section>
+<section id="dependencies">
+<span id="id1"></span><h2>Dependencies<a class="headerlink" href="#dependencies" title="Link to this heading"></a></h2>
+<p>The full list of requirements (some of which are already included in the Python
+standard library) can be found in the <a class="reference external" href="https://github.com/mongodb/mongorun/blob/develop/requirements.txt">requirements.txt</a> file.</p>
+<section id="psutil">
+<h3>psutil<a class="headerlink" href="#psutil" title="Link to this heading"></a></h3>
+<p>mongorun uses <code class="docutils literal notranslate"><span class="pre">psutil</span></code> to manage starting, stopping, and finding MongoDB
+processes.</p>
+</section>
+<section id="pymongo">
+<h3>pymongo<a class="headerlink" href="#pymongo" title="Link to this heading"></a></h3>
+<p><a class="reference external" href="https://www.mongodb.com/docs/drivers/pymongo/#installation">pymongo</a>
+is MongoDB’s official Python driver. <code class="docutils literal notranslate"><span class="pre">mrun</span></code> uses this to configure
+and query local MongoDB deployments.</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="mongorun" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="mrun.html" class="btn btn-neutral float-right" title="mongorun" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p></p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
