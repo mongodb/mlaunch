@@ -4,7 +4,7 @@
 Testing
 =======
 
-mlaunch uses the following testing tools:
+mongorun uses the following testing tools:
 
 -  `tox <https://tox.readthedocs.io/en/latest/>`__ for creating a standardized
    test environment
@@ -20,7 +20,7 @@ mlaunch uses the following testing tools:
 -  `pyenchant <http://pythonhosted.org/pyenchant/>`__ for documentation spell
    checking
 
-If you implement a new feature anywhere in mlaunch, please write a test
+If you implement a new feature anywhere in mongorun, please write a test
 function or test class for the feature and document it. If you fix a bug,
 please re-run the test suite after the code change and make sure the tests
 still pass. Please think carefully before changing code and its related test
@@ -31,7 +31,7 @@ as fixed behavior.
 Prerequisites
 ~~~~~~~~~~~~~
 
-tox is required for testing mlaunch and building the documentation:
+tox is required for testing mongorun and building the documentation:
 
 .. code::
 
@@ -58,7 +58,7 @@ Configuration
 -------------
 
 tox configuration is controlled by the `tox.ini
-<https://github.com/mongodb/mlaunch/blob/develop/tox.ini>`__. It consists of
+<https://github.com/mongodb/mongorun/blob/develop/tox.ini>`__. It consists of
 general tox settings, a series of testenvs that can be
 invoked individually (e.g. ``tox -e doc``), and configuration for
 certain tests.
@@ -204,7 +204,7 @@ when the package is fixed.
 Documentation builds
 ~~~~~~~~~~~~~~~~~~~~
 
-mlaunch documentation is written in `reStructuredText
+mongorun documentation is written in `reStructuredText
 <http://www.sphinx-doc.org/en/stable/rest.html>`__ and built using `Sphinx
 <http://www.sphinx-doc.org/en/stable/index.html>`__.
 

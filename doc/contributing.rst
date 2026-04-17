@@ -1,10 +1,10 @@
-=====================
-Contribute to mlaunch
-=====================
+======================
+Contribute to mongorun
+======================
 
-Contributions to mlaunch are very welcome. Please check if the particular bug or
-issue has already been reported on the `mlaunch issues
-<https://github.com/mongodb/mlaunch/issues?state=open>`__ page and create a
+Contributions to mongorun are very welcome. Please check if the particular bug or
+issue has already been reported on the `mongorun issues
+<https://github.com/mongodb/mongorun/issues?state=open>`__ page and create a
 new issue if one doesn't exist yet.
 
 .. toctree::

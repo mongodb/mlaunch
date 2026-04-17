@@ -51,8 +51,10 @@ mloginfo
 mlogmerge
 mlogversion
 mongod
+mongorun
 mongos
 mplotqueries
+mrun
 mtools
 mtransfer
 Namespace

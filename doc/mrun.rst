@@ -1,17 +1,17 @@
-.. _mlaunch:
+.. _mrun:
 
-=======
-mlaunch
-=======
+========
+mongorun
+========
 
 This tool lets you quickly spin up and monitor MongoDB environments on your
 local machine. It supports various configurations of stand-alone servers,
 replica sets and sharded clusters. Individual nodes or groups of nodes can
 easily be stopped and started again.
 
-In addition to all the listed parameters of **mlaunch** below, you can pass in
+In addition to all the listed parameters of **mrun** below, you can pass in
 any arbitrary options that a ``mongos`` or ``mongod`` binary would understand,
-and **mlaunch** will pass them on to the correct binary. This includes the
+and **mrun** will pass them on to the correct binary. This includes the
 ``-f`` option to read further options from a MongoDB configuration file.
 
 
@@ -20,7 +20,7 @@ Usage
 
 .. code-block:: bash
 
-   mlaunch [-h] [--version] [--no-progressbar]
+   mrun [-h] [--version] [--no-progressbar]
            {init,start,stop,restart,list,kill} ...
 
 
@@ -47,7 +47,7 @@ Verbosity
 Data directory
 --------------
 ``--dir DIR``
-   This parameter changes the directory where **mlaunch** stores its data and
+   This parameter changes the directory where **mrun** stores its data and
    log files. By default, the directory is the local directory ``./data``,
    below the current working directory.
 
@@ -55,12 +55,12 @@ Data directory
 Commands
 ~~~~~~~~
 
-``mlaunch`` uses different commands to initialize, stop, start and list test
+``mrun`` uses different commands to initialize, stop, start and list test
 environments. The general syntax is:
 
 .. code-block:: bash
 
-   mlaunch <command> [--parameters ...]
+   mrun <command> [--parameters ...]
 
 where ``<command>`` is one of the following choices:
 
@@ -73,8 +73,8 @@ where ``<command>`` is one of the following choices:
 
 For a given environment (specified by its data directory with the ``--dir``
 argument, the default is ``./data``), the ``init`` command only needs to be
-called once. ``mlaunch`` stores the configuration in a config file within the
-data directory, called ``.mlaunch_startup``. With this file, mlaunch remembers
+called once. ``mrun`` stores the configuration in a config file within the
+data directory, called ``.mrun_startup``. With this file, mongorun remembers
 the configuration and can ``start`` and ``stop`` nodes when required.
 
 -----
@@ -92,7 +92,7 @@ Usage
 
 .. code-block:: bash
 
-   mlaunch init [-h] (--single | --replicaset) [--nodes NUM] [--arbiter]
+   mrun init [-h] (--single | --replicaset) [--nodes NUM] [--arbiter]
                 [--name NAME] [--priority] [--sharded N [N ...]]
                 [--config NUM] [--csrs] [--mongos NUM] [--verbose]
                 [--port PORT] [--binarypath PATH] [--dir DIR]
@@ -120,7 +120,7 @@ Required Parameters
 ^^^^^^^^^^^^^^^^^^^
 The ``init`` command requires **exactly one** of the following two parameters
 to run: ``--single`` or ``--replicaset``. They are mutually exclusive and one
-must be specified for each ``mlaunch init`` execution.
+must be specified for each ``mrun init`` execution.
 
 ``--single``
    This parameter will create a single stand-alone node. If ``--sharded`` is
@@ -131,11 +131,11 @@ must be specified for each ``mlaunch init`` execution.
 
    .. code-block:: bash
 
-      mlaunch --single
+      mrun --single
 
 ``--replicaset``
    This parameter will create a replica set rather than a single node. Other
-   :ref:`mlaunch-repl-params` apply and can modify the properties of the
+   :ref:`mrun-repl-params` apply and can modify the properties of the
    replica set to launch. If ``--sharded`` is also specified, this parameter
    will create one such replica sets for each shard.
 
@@ -144,9 +144,9 @@ must be specified for each ``mlaunch init`` execution.
 
    .. code-block:: bash
 
-      mlaunch --replicaset
+      mrun --replicaset
 
-.. _mlaunch-repl-params:
+.. _mrun-repl-params:
 
 Replica Set Parameters
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -163,21 +163,21 @@ parameters.
 
    .. code-block:: bash
 
-      mlaunch --replicaset --nodes 5
+      mrun --replicaset --nodes 5
 
    This command starts 5 mongod instances and configures them to one replica
    set.
 
 ``--arbiter``
    If this parameter is present, an additional arbiter is added to the replica
-   set. Currently, **mlaunch** only supports adding one arbiter. Additional
+   set. Currently, **mrun** only supports adding one arbiter. Additional
    arbiters can be started and added to the replica set manually.
 
    For example:
 
    .. code-block:: bash
 
-      mlaunch --replicaset --nodes 2 --arbiter
+      mrun --replicaset --nodes 2 --arbiter
 
    This command starts 2 data-bearing mongod instances and adds one arbiter to
    the replica set, for a total of 3 voting nodes.
@@ -193,7 +193,7 @@ parameters.
 
    .. code-block:: bash
 
-      mlaunch --replicaset --name "my_rs_1"
+      mrun --replicaset --name "my_rs_1"
 
    This command will create a replica set with the name ``my_rs_1`` and will
    also store the dbpath and log files under ``./data/my_rs_1``.
@@ -206,7 +206,7 @@ shard will be a copy of the previously specified setup, be it a single instance
 or a replica set.
 
 ``--sharded S [S ...]``
-   If this parameter is provided, sharding is enabled and **mlaunch** will
+   If this parameter is provided, sharding is enabled and **mrun** will
    create the specified number of shards and add the shards together to a
    sharded cluster. The parameter can work in two ways: Either by specifying a
    single number, which is the number of shards, or by specifying a list of
@@ -216,7 +216,7 @@ or a replica set.
 
    .. code-block:: bash
 
-      mlaunch --single --sharded 3
+      mrun --single --sharded 3
 
    This command will create an environment of 3 shards, each consisting of a
    single stand-alone node. The shard names are ``shard0001``, ``shard0002``,
@@ -226,7 +226,7 @@ or a replica set.
 
    .. code-block:: bash
 
-      mlaunch --replicaset --sharded tic tac toe
+      mrun --replicaset --sharded tic tac toe
 
    This command will create 3 shards, named ``tic``, ``tac`` and ``toe``. Each
    shard will consist of a replica set of (per default) 3 nodes. It will also
@@ -238,14 +238,14 @@ or a replica set.
    or 3.
 
 ``--csrs``
-   This parameter has ``mlaunch`` use `Config Servers as a Replica Set (CSRS)
+   This parameter has ``mrun`` use `Config Servers as a Replica Set (CSRS)
    <https://docs.mongodb.com/manual/core/sharded-cluster-config-servers/#replica-set-config-servers>`__
    rather than the older Sync Cluster Connection Config (SCCC).
 
    The CSRS deployment option is supported by MongoDB 3.2+, and as of MongoDB
    3.4 is the default (and only) supported option.
 
-   If you are using MongoDB 3.4 and greater, ``mlaunch`` will use CSRS by
+   If you are using MongoDB 3.4 and greater, ``mrun`` will use CSRS by
    default.
 
    *Changed in version 1.2.3*
@@ -283,10 +283,10 @@ Authentication Parameters
    .. note::
 
       The default password is chosen deliberately to be easy to remember or
-      guess. ``mlaunch`` is meant for testing and issue reproduction, not for
+      guess. ``mrun`` is meant for testing and issue reproduction, not for
       production use. Even a strong password will not guarantee security with
-      mlaunch-generated environments, because the username and password are
-      included in the ``data/.mlaunch_startup`` file in clear text.
+      mongorun-generated environments, because the username and password are
+      included in the ``data/.mrun_startup`` file in clear text.
 
 ``--auth-db``
    This parameter changes the default database, from ``admin``, in which the
@@ -294,11 +294,11 @@ Authentication Parameters
 
    .. note::
 
-      If you change the database, it may not be possible for ``mlaunch`` to
+      If you change the database, it may not be possible for ``mrun`` to
       execute certain commands due to missing privileges. This may lead to
-      unexpected behavior for some ``mlaunch`` operations, like for example
-      ``mlaunch stop``, which uses the internal ``shutdown`` command. If this
-      is the case, use ``mlaunch kill`` instead.
+      unexpected behavior for some ``mrun`` operations, like for example
+      ``mrun stop``, which uses the internal ``shutdown`` command. If this
+      is the case, use ``mrun kill`` instead.
 
 ``--auth-roles``
    This parameter changes the initial default roles that the user will receive.
@@ -308,22 +308,22 @@ Authentication Parameters
 
    .. note::
 
-      If you change the default roles, it may not be possible for ``mlaunch``
+      If you change the default roles, it may not be possible for ``mrun``
       to execute certain commands due to missing privileges. This may lead to
-      unexpected behavior for some ``mlaunch`` operations, like for example
-      ``mlaunch stop``, which uses the internal ``shutdown`` command. If this
-      is the case, use ``mlaunch kill`` instead.
+      unexpected behavior for some ``mrun`` operations, like for example
+      ``mrun stop``, which uses the internal ``shutdown`` command. If this
+      is the case, use ``mrun kill`` instead.
 
    For example:
 
    .. code-block:: bash
 
-      mlaunch --sharded 2 --single --auth --username thomas --password my_s3cr3t_p4ssw0rd
+      mrun --sharded 2 --single --auth --username thomas --password my_s3cr3t_p4ssw0rd
 
    This command would start a sharded cluster with 2 single shards, 1 config
    server, 1 mongos, and create the user ``thomas`` with password
    ``my_s3cr3t_p4ssw0rd``. It will use the default roles and place the user in
-   the ``admin`` database. ``mlaunch`` will
+   the ``admin`` database. ``mrun`` will
 
 ``--auth-role-docs``
    Use with ``--auth-roles`` to interpret roles specified as JSON documents.
@@ -344,23 +344,23 @@ Optional Parameters
 
    .. code-block:: bash
 
-      mlaunch --replicaset --nodes 3 --port 30000
+      mrun --replicaset --nodes 3 --port 30000
 
    This command would start a replica set of 3 nodes using ports 30000, 30001
    and 30002.
 
 ``--binarypath PATH``
-   Will set the path where **mlaunch** looks for the binaries of ``mongod`` and
+   Will set the path where **mrun** looks for the binaries of ``mongod`` and
    ``mongos`` to the provided ``PATH``. By default, the $PATH environment
    variable is used to determine which binary is started. You can use this
    option to overwrite the default setting. This is useful for example if you
-   compile your own source code and want mlaunch to use the compiled version.
+   compile your own source code and want mongorun to use the compiled version.
 
    For example:
 
    .. code-block:: bash
 
-      mlaunch --single --binarypath ./build/bin
+      mrun --single --binarypath ./build/bin
 
    This command will look for the ``mongod`` binary in ``./build/bin/mongod``
    instead of the default location.
@@ -421,7 +421,7 @@ Client TLS/SSL options
 
 -----
 
-.. _mlaunch-kill:
+.. _mrun-kill:
 
 kill
 ----
@@ -430,8 +430,8 @@ The ``kill`` command stops some or all running nodes in the current
 environment, depending on the specified tags, by sending the processes the
 ``SIGTERM`` (15) signal.
 
-If no tags are specified, ``mlaunch kill`` will kill all nodes. If one or more
-tags are specified, ``mlaunch kill`` will only kill the nodes that have all of
+If no tags are specified, ``mrun kill`` will kill all nodes. If one or more
+tags are specified, ``mrun kill`` will only kill the nodes that have all of
 the given tags (set intersection). This works even if there is no ``admin``
 user with the ``clusterAdmin`` role.
 
@@ -443,13 +443,13 @@ Usage
 
 .. code-block:: bash
 
-   mlaunch kill [TAG [TAG ...]] [--signal S] [--dir DIR] [--verbose]
+   mrun kill [TAG [TAG ...]] [--signal S] [--dir DIR] [--verbose]
 
 
 Tag Parameters
 ^^^^^^^^^^^^^^
 
-The following tags are used with mlaunch, although not all tags are present in
+The following tags are used with mrun, although not all tags are present in
 every environment:
 
 -  ``all``: all nodes in the environment.
@@ -475,7 +475,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill
+   mrun kill
 
 This command kills all running nodes in the current environment.
 
@@ -483,7 +483,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill mongos
+   mrun kill mongos
 
 This command kills all running mongos processes in the current environment.
 
@@ -491,7 +491,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill shard-a secondary
+   mrun kill shard-a secondary
 
 This command kills all running secondary nodes of the shard called 'shard-a' in
 the current environment.
@@ -500,7 +500,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill config primary
+   mrun kill config primary
 
 This command would not kill any nodes, because there is no node with both tags
 ``config`` and ``primary``.
@@ -509,7 +509,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill 27017
+   mrun kill 27017
 
 This command would kill the node running on port 27017.
 
@@ -520,7 +520,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill shard 1
+   mrun kill shard 1
 
 This command kills all members of shard 1 in the current _sharded_ environment.
 
@@ -528,7 +528,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill shard 2 primary
+   mrun kill shard 2 primary
 
 This command kills the primary of the second shard in the current _sharded_
 environment.
@@ -537,7 +537,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill secondary 1
+   mrun kill secondary 1
 
 This command kills the first secondary node of all shards if the environment is
 _sharded_. If the environment is a _replicaset_, it only applies to the first
@@ -547,7 +547,7 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill
+   mrun kill
 
 This command sends signal ``SIGTERM`` (15) to all running processes in the
 current environment.
@@ -556,22 +556,22 @@ For example:
 
 .. code-block:: bash
 
-   mlaunch kill --signal SIGUSR1
+   mrun kill --signal SIGUSR1
 
 This command sends signal ``SIGUSR1`` (30) to all running processes in the
 current environment, which in MongoDB causes a log rotation.
 
 -----
 
-.. _mlaunch-start:
+.. _mrun-start:
 
 start
 -----
 
 The ``start`` command starts some or all nodes that are currently down in the
 current environment, depending on the specified tags. If no tags are specified,
-``mlaunch start`` will start all nodes. If one or more tags are specified,
-``mlaunch start`` will only start the nodes that have all of the given tags
+``mrun start`` will start all nodes. If one or more tags are specified,
+``mrun start`` will only start the nodes that have all of the given tags
 (set intersection).
 
 Usage
@@ -579,12 +579,12 @@ Usage
 
 .. code-block:: bash
 
-   mlaunch start [TAG [TAG ...]] [--dir DIR] [--verbose]
+   mrun start [TAG [TAG ...]] [--dir DIR] [--verbose]
 
 Tag Parameters
 ^^^^^^^^^^^^^^
 
-The following tags are used with mlaunch, although not all tags are present in
+The following tags are used with mrun, although not all tags are present in
 every environment:
 
 -  ``all``: all nodes in the environment.
@@ -604,11 +604,11 @@ Different to the ``stop`` command, there tags for ``primary`` and ``secondary``
 are not available for the ``start`` command. This is because the replica set
 state of a running node is undetermined.
 
-For examples, see :ref:`mlaunch-stop`.
+For examples, see :ref:`mrun-stop`.
 
 -----
 
-.. _mlaunch-stop:
+.. _mrun-stop:
 
 stop
 ----
@@ -617,8 +617,8 @@ The ``stop`` command stops some or all running nodes in the current
 environment, depending on the specified tags, by sending the ``shutdown``
 command to the mongod or mongos instance.
 
-If no tags are specified, ``mlaunch stop`` will stop all nodes. If one or more
-tags are specified, ``mlaunch stop`` will only stop the nodes that have all of
+If no tags are specified, ``mrun stop`` will stop all nodes. If one or more
+tags are specified, ``mrun stop`` will only stop the nodes that have all of
 the given tags (set intersection).
 
 In authenticated environments, the ``stop`` command requires a user in the
@@ -630,19 +630,19 @@ instead.
 
 As of version 1.2.3, the ``stop`` command is an alias for the ``kill`` command.
 
-For examples, see :ref:`mlaunch-kill`.
+For examples, see :ref:`mrun-kill`.
 
 Usage
 ^^^^^
 
 .. code-block:: bash
 
-   mlaunch stop [TAG [TAG ...]] [--dir DIR] [--verbose]
+   mrun stop [TAG [TAG ...]] [--dir DIR] [--verbose]
 
 Tag Parameters
 ^^^^^^^^^^^^^^
 
-The tags for the ``stop`` command are the same as for :ref:`mlaunch-kill`.
+The tags for the ``stop`` command are the same as for :ref:`mrun-kill`.
 
 -----
 
@@ -652,8 +652,8 @@ restart
 The ``restart`` command stops, then restarts some or all nodes in the current
 environment, depending on the specified tags. It is added for convenience and
 behaves like a ``stop`` and ``start`` command in succession. If no tags are
-specified, ``mlaunch restart`` will restart all nodes. If one or more tags are
-specified, ``mlaunch restart`` will only restart the nodes that have all of the
+specified, ``mrun restart`` will restart all nodes. If one or more tags are
+specified, ``mrun restart`` will only restart the nodes that have all of the
 given tags (set intersection).
 
 
@@ -662,13 +662,13 @@ Usage
 
 .. code-block:: bash
 
-   mlaunch restart [TAG [TAG ...]] [--dir DIR] [--verbose]
+   mrun restart [TAG [TAG ...]] [--dir DIR] [--verbose]
 
 
 Tag Parameters
 ^^^^^^^^^^^^^^
 
-See :ref:`mlaunch-start` and :ref:`mlaunch-stop`.
+See :ref:`mrun-start` and :ref:`mrun-stop`.
 
 -----
 
@@ -685,13 +685,13 @@ Usage
 
 .. code-block:: bash
 
-   mlaunch list [-h] [--dir DIR] [--json] [--tags] [--startup] [--verbose]
+   mrun list [-h] [--dir DIR] [--json] [--tags] [--startup] [--verbose]
 
 For example:
 
 .. code-block:: bash
 
-   mlaunch list
+   mrun list
 
    PROCESS          STATUS     PORT
 
@@ -717,7 +717,7 @@ this case, the environment was started with:
 
 .. code-block:: bash
 
-   mlaunch --sharded 2 --replicaset --nodes 2 --arbiter --config 3 --mongos 2
+   mrun --sharded 2 --replicaset --nodes 2 --arbiter --config 3 --mongos 2
 
 Optional Parameters
 ^^^^^^^^^^^^^^^^^^^
@@ -735,7 +735,7 @@ Optional Parameters
 
    .. code-block:: bash
 
-      mlaunch list --tags
+      mrun list --tags
 
       PROCESS      STATUS     PORT     TAGS
 
@@ -748,7 +748,7 @@ Optional Parameters
 
    .. code-block:: bash
 
-      mlaunch --replicaset
+      mrun --replicaset
 
 ``--startup``
    This option additionally shows a column with the startup strings that was
@@ -759,7 +759,7 @@ Optional Parameters
 
    .. code-block:: bash
 
-      mlaunch list --startup
+      mrun list --startup
 
       PROCESS      PORT     STATUS     PID     STARTUP COMMAND
 
@@ -775,6 +775,6 @@ Disclaimer
 
 This software is not supported by `MongoDB, Inc. <https://www.mongodb.com>`__
 under any of their commercial support subscriptions or otherwise. Any usage of
-mlaunch is at your own risk. Bug reports, feature requests and questions can be
+mongorun is at your own risk. Bug reports, feature requests and questions can be
 posted in the `Issues
-<https://github.com/mongodb/mlaunch/issues?state=open>`__ section on GitHub.
+<https://github.com/mongodb/mongorun/issues?state=open>`__ section on GitHub.
