@@ -2,11 +2,11 @@
 Changes to mlaunch
 ==================
 
-version 1.8.0 - first release of mlaunch standalone
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * Remove all tools except mlaunch from the mtools package
- * Rebrand to mlaunch
- * Add support for MongoDB 8.2 on MacOS
+version 1.8.0 - first release of mongorun standalone
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Remove all tools except mrun from the mtools package
+ * Rebrand to mongorun/mrun
+ * Add support for MongoDB 8.2+ on MacOS
 
 version 1.7.2 - final release of mtools
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

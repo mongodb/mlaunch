@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import mlaunch.mlaunch
+import mrun.mrun
 
 if __name__ == "__main__":
-    mlaunch.mlaunch.main()
+    mrun.mrun.main()

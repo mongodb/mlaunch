@@ -2,24 +2,24 @@
 Style Guidelines
 ================
 
-Before contributing code or documentation to the mlaunch project, please
+Before contributing code or documentation to the mongorun project, please
 familiarize yourself with these style guidelines.
 
 
 Code guidelines
 ~~~~~~~~~~~~~~~
 
-mlaunch is not overly prescriptive in terms of style: readability and
+mongorun is not overly prescriptive in terms of style: readability and
 functionality are the main guiding principles. As a general rule, follow the
 style used elsewhere in the code and always add meaningful comments.
 
-If you implement a new feature anywhere in mlaunch, please write a test
+If you implement a new feature anywhere in mongorun, please write a test
 function or test class for the feature and document it.
 
 PEP 8
 -----
 
-mlaunch adheres to most of the standard Python guidelines provided in `PEP 8
+mongorun adheres to most of the standard Python guidelines provided in `PEP 8
 <https://www.python.org/dev/peps/pep-0008/>`__, with the main exception being
 that mixedCase function and variable names are permitted in order to match
 usage in MongoDB (for example ``serverStatus``). `flake8
@@ -43,11 +43,11 @@ with `PEP 257 <https://www.python.org/dev/peps/pep-0257/>`__.
 Documentation guidelines
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-mlaunch documentation is written in `reStructuredText
+mongorun documentation is written in `reStructuredText
 <http://www.sphinx-doc.org/en/stable/rest.html>`__ and built using `Sphinx
 <http://www.sphinx-doc.org/en/stable/index.html>`__.
 
-The mlaunch documentation uses only standard RST and Sphinx syntax. As a general
+The mongorun documentation uses only standard RST and Sphinx syntax. As a general
 rule, follow the style used in the rest of the documentation.
 
 Indentation

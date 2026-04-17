@@ -17,10 +17,10 @@ from collections import defaultdict
 from operator import itemgetter
 
 import psutil
-from mlaunch.util import OrderedDict
-from mlaunch.util.cmdlinetool import BaseCmdLineTool
-from mlaunch.util.print_table import print_table
-from mlaunch.util.version import __version__
+from mrun.util import OrderedDict
+from mrun.util.cmdlinetool import BaseCmdLineTool
+from mrun.util.print_table import print_table
+from mrun.util.version import __version__
 
 try:
     import Queue
@@ -54,7 +54,7 @@ class MongoConnection(Connection):
         kwargs.setdefault('serverSelectionTimeoutMS', 1)
 
         # Set client application name for MongoDB 3.4+ servers
-        kwargs['appName'] = f'''mlaunch v{__version__}'''
+        kwargs['appName'] = f'''mrun v{__version__}'''
 
         Connection.__init__(self, *args, **kwargs)
 
@@ -157,7 +157,7 @@ def check_mongo_server_output(binary, argument, fatal = True):
     return out
 
 
-class MLaunchTool(BaseCmdLineTool):
+class MRunTool(BaseCmdLineTool):
     UNDOCUMENTED_MONGOD_ARGS = ['--nopreallocj', '--wiredTigerEngineConfigString']
     UNSUPPORTED_MONGOS_ARGS = ['--wiredTigerCacheSizeGB', '--storageEngine']
     UNSUPPORTED_CONFIG_ARGS = ['--oplogSize', '--storageEngine', '--smallfiles', '--nojournal']
@@ -216,7 +216,7 @@ class MLaunchTool(BaseCmdLineTool):
         # to run can call different sub-commands
         self.argparser = argparse.ArgumentParser()
         self.argparser.add_argument('--version', action='version',
-                                    version=f'''mlaunch version {__version__} || Python {sys.version}''')
+                                    version=f'''mrun version {__version__} || Python {sys.version}''')
         self.argparser.add_argument('--no-progressbar', action='store_true',
                                     default=False,
                                     help='disables progress bar')
@@ -239,8 +239,8 @@ class MLaunchTool(BaseCmdLineTool):
         self.argparser._action_groups[0].title = 'commands'
         self.argparser._action_groups[0].description = \
             ('init is the default command and can be omitted. To get help on '
-             'individual commands, run mlaunch <command> --help. Command line '
-             'arguments which are not handled by mlaunch will be passed '
+             'individual commands, run mrun <command> --help. Command line '
+             'arguments which are not handled by mrun will be passed '
              'through to mongod/mongos if those options are listed in the '
              '--help output for the current binary. For example: '
              '--storageEngine, --logappend, or --config.')
@@ -251,7 +251,7 @@ class MLaunchTool(BaseCmdLineTool):
                     'clusters.')
         desc = ('Initialize a new MongoDB environment and start stand-alone '
                 'instances, replica sets, or sharded clusters. Command line '
-                'arguments which are not handled by mlaunch will be passed '
+                'arguments which are not handled by mrun will be passed '
                 'through to mongod/mongos if those options are listed in the '
                 '--help output for the current binary. For example: '
                 '--storageEngine, --logappend, or --config.')
@@ -486,12 +486,12 @@ class MLaunchTool(BaseCmdLineTool):
         start_parser = subparsers.add_parser('start',
                                              help=('starts existing MongoDB '
                                                    'instances. Example: '
-                                                   '"mlaunch start config" '
+                                                   '"mrun start config" '
                                                    'will start all config '
                                                    'servers.'),
                                              description=('starts existing '
                                                           'MongoDB instances. '
-                                                          'Example: "mlaunch '
+                                                          'Example: "mrun '
                                                           'start config" will '
                                                           'start all config '
                                                           'servers.'))
@@ -513,11 +513,11 @@ class MLaunchTool(BaseCmdLineTool):
                                         'specified PATH.'))
 
         # stop command
-        helptext = ('stops running MongoDB instances. Example: "mlaunch stop '
+        helptext = ('stops running MongoDB instances. Example: "mlamrununch stop '
                     'shard 2 secondary" will stop all secondary nodes '
                     'of shard 2.')
         desc = ('stops running MongoDB instances with the shutdown command. '
-                'Example: "mlaunch stop shard 2 secondary" will stop all '
+                'Example: "mrun stop shard 2 secondary" will stop all '
                 'secondary nodes of shard 2.')
         stop_parser = subparsers.add_parser('stop',
                                             help=helptext,
@@ -638,7 +638,7 @@ class MLaunchTool(BaseCmdLineTool):
         Branches out to sharded, replicaset or single node methods.
         """
         # check for existing environment. Only allow subsequent
-        # 'mlaunch init' if they are identical.
+        # 'mrun init' if they are identical.
         if self._load_parameters():
             if self.loaded_args != self.args:
                 raise SystemExit('A different environment already exists '
@@ -676,7 +676,7 @@ class MLaunchTool(BaseCmdLineTool):
 
         # write out parameters
         if self.args['verbose']:
-            print("writing .mlaunch_startup file.")
+            print("writing .mrun_startup file.")
         self._store_parameters()
 
         # exit if running in testing mode
@@ -715,10 +715,10 @@ class MLaunchTool(BaseCmdLineTool):
                       % ', '.join([str(p[0])
                                    for p in ports_avail if not p[1]]))
             errmsg += (" * If you want to restart nodes from this "
-                       "environment, use 'mlaunch start%s' instead.\n"
+                       "environment, use 'mrun start%s' instead.\n"
                        % dir_addon)
-            errmsg += (" * If the ports are used by a different mlaunch "
-                       "environment, stop those first with 'mlaunch stop "
+            errmsg += (" * If the ports are used by a different mrun "
+                       "environment, stop those first with 'mrun stop "
                        "--dir <env>'.\n")
             errmsg += (" * You can also specify a different port range with "
                        "an additional '--port <startport>'\n")
@@ -957,14 +957,14 @@ class MLaunchTool(BaseCmdLineTool):
             # versions < 2: try to start nodes via init if all nodes are down
             if len(self.get_tagged(['down'])) == len(self.get_tagged(['all'])):
                 self.args = self.loaded_args
-                print("upgrading mlaunch environment meta-data.")
+                print("upgrading mrun environment meta-data.")
                 return self.init()
             else:
                 raise SystemExit("These nodes were created with an older "
-                                 "version of mlaunch (v1.1.1 or below). To "
+                                 "version of mrun (v1.1.1 or below). To "
                                  "upgrade this environment and make use of "
                                  "the start/stop/list commands, stop all "
-                                 "nodes manually, then run 'mlaunch start' "
+                                 "nodes manually, then run 'mrun start' "
                                  "again. You only have to do this once.")
 
         # if new unknown_args are present, compare them with loaded ones
@@ -980,7 +980,7 @@ class MLaunchTool(BaseCmdLineTool):
             self.args['binarypath'] = start_args['binarypath']
             # construct new startup strings with updated unknown args.
             # They are for this start only and will not be persisted in
-            # the .mlaunch_startup file
+            # the .mrun_startup file
             self._construct_cmdlines()
 
             # reset to original args for this start command
@@ -1203,7 +1203,7 @@ class MLaunchTool(BaseCmdLineTool):
         self.start()
 
     # --- below are api helper methods, can be called after creating an
-    # MLaunchTool() object
+    # MRunTool() object
 
     def discover(self):
         """
@@ -1217,15 +1217,15 @@ class MLaunchTool(BaseCmdLineTool):
                 self.args['command']):
             return
 
-        # load .mlaunch_startup file for start, stop, list, use current
+        # load .mrun_startup file for start, stop, list, use current
         # parameters for init
         if self.args['command'] == 'init':
             self.loaded_args = self.args
             self.loaded_unknown_args = self.unknown_args
         else:
             if not self._load_parameters():
-                startup_file = os.path.join(self.dir, ".mlaunch_startup")
-                raise SystemExit("Can't read %s, use 'mlaunch init ...' first."
+                startup_file = os.path.join(self.dir, ".mrun_startup")
+                raise SystemExit("Can't read %s, use 'mrun init ...' first."
                                  % startup_file)
 
         self.ssl_pymongo_options = self._get_ssl_pymongo_options(self.loaded_args)
@@ -1459,13 +1459,13 @@ class MLaunchTool(BaseCmdLineTool):
 
     def _load_parameters(self):
         """
-        Load the .mlaunch_startup file that exists in each datadir.
+        Load the .mrun_startup file that exists in each datadir.
 
         Handles different protocol versions.
         """
         datapath = self.dir
 
-        startup_file = os.path.join(datapath, '.mlaunch_startup')
+        startup_file = os.path.join(datapath, '.mrun_startup')
         if not os.path.exists(startup_file):
             return False
 
@@ -1492,12 +1492,12 @@ class MLaunchTool(BaseCmdLineTool):
         return True
 
     def _store_parameters(self):
-        """Store startup params and config in datadir/.mlaunch_startup."""
+        """Store startup params and config in datadir/.mrun_startup."""
         datapath = self.dir
 
         out_dict = {
             'protocol_version': 2,
-            'mlaunch_version': __version__,
+            'mrun_version': __version__,
             'parsed_args': self.args,
             'unknown_args': self.unknown_args,
             'startup_info': self.startup_info
@@ -1508,7 +1508,7 @@ class MLaunchTool(BaseCmdLineTool):
         try:
             json.dump(out_dict,
                       open(os.path.join(datapath,
-                                        '.mlaunch_startup'), 'w'), indent=-1)
+                                        '.mrun_startup'), 'w'), indent=-1)
         except Exception as ex:
             print("ERROR STORING Parameters:", ex)
 
@@ -2208,7 +2208,7 @@ class MLaunchTool(BaseCmdLineTool):
                 return ''.join(f.readlines())
 
 def main():
-    tool = MLaunchTool()
+    tool = MRunTool()
     tool.run()
 
 
