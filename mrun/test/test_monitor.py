@@ -13,6 +13,7 @@ from mrun.monitor import (
     ANSI_TEAL,
     ANSI_YELLOW,
     AUTH_REQUIRED_STATUS,
+    build_monitor_tls_kwargs,
     build_osc52_sequence,
     detect_log_severity,
     DiskMetrics,
@@ -20,6 +21,7 @@ from mrun.monitor import (
     filter_mrun_processes,
     LogTailer,
     load_monitor_auth_config,
+    load_monitor_tls_kwargs,
     load_mrun_process_specs,
     MonitorAuthConfig,
     Monitor,
@@ -195,6 +197,86 @@ def test_monitor_auth_config_credentials_override_startup_credentials():
         "username": "overrideuser",
         "password": "overridepass",
         "authSource": "admin2",
+    }
+
+
+def test_build_monitor_tls_kwargs_maps_tls_and_ssl_startup_args():
+    tls_kwargs = build_monitor_tls_kwargs({
+        "tlsMode": "requireTLS",
+        "tlsCAFile": "/tmp/ca.pem",
+        "tlsClientCertificateKeyFile": "/tmp/client.pem",
+        "tlsClientCertificateKeyFilePassword": "secret",
+        "tlsAllowInvalidHostnames": True,
+    })
+
+    assert tls_kwargs == {
+        "tls": True,
+        "tlsCAFile": "/tmp/ca.pem",
+        "tlsCertificateKeyFile": "/tmp/client.pem",
+        "tlsCertificateKeyFilePassword": "secret",
+        "tlsAllowInvalidHostnames": True,
+    }
+
+    ssl_kwargs = build_monitor_tls_kwargs({
+        "sslMode": "requireSSL",
+        "sslCAFile": "/tmp/ca.pem",
+        "sslClientPEMKeyFile": "/tmp/client.pem",
+        "sslClientPEMKeyPassword": "secret",
+        "sslAllowInvalidCertificates": True,
+    })
+
+    assert ssl_kwargs == {
+        "tls": True,
+        "tlsAllowInvalidCertificates": True,
+        "tlsCAFile": "/tmp/ca.pem",
+        "tlsCertificateKeyFile": "/tmp/client.pem",
+        "tlsCertificateKeyFilePassword": "secret",
+    }
+
+
+def test_monitor_loads_tls_kwargs_from_startup_file(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "parsed_args": {
+            "tlsMode": "requireTLS",
+            "tlsCAFile": "/tmp/ca.pem",
+            "tlsAllowInvalidCertificates": True,
+        },
+        "startup_info": {},
+    }))
+
+    assert load_monitor_tls_kwargs(str(tmp_path)) == {
+        "tls": True,
+        "tlsCAFile": "/tmp/ca.pem",
+        "tlsAllowInvalidCertificates": True,
+    }
+
+
+def test_monitor_network_sampler_combines_tls_and_auth_kwargs(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "parsed_args": {
+            "auth": True,
+            "username": "monitoruser",
+            "password": "monitorpass",
+            "auth_db": "admin",
+            "initial-user": True,
+            "tlsMode": "requireTLS",
+            "tlsCAFile": "/tmp/ca.pem",
+        },
+        "startup_info": {},
+    }))
+
+    monitor = Monitor(stdout=io.StringIO(), data_dir=str(tmp_path))
+
+    assert monitor.network_sampler.client_kwargs == {
+        "tls": True,
+        "tlsCAFile": "/tmp/ca.pem",
+        "username": "monitoruser",
+        "password": "monitorpass",
+        "authSource": "admin",
     }
 
 

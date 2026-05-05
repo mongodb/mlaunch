@@ -269,6 +269,83 @@ def load_monitor_auth_config(data_dir):
     )
 
 
+def build_monitor_tls_kwargs(parsed_args):
+    """Build PyMongo TLS kwargs from stored mongorun parsed args."""
+    opts = {}
+
+    tls_server_keys = (
+        "tlsMode",
+        "tlsCertificateKeyFile",
+        "tlsCertificateKeyFilePassword",
+        "tlsClusterFile",
+        "tlsClusterPassword",
+        "tlsDisabledProtocols",
+        "tlsAllowConnectionsWithoutCertificates",
+        "tlsFIPSMode",
+    )
+    if any(parsed_args.get(key) for key in tls_server_keys):
+        opts["tls"] = True
+
+    tls_client_map = {
+        "tlsClientCertificateKeyFile": "tlsCertificateKeyFile",
+        "tlsClientCertificateKeyFilePassword": "tlsCertificateKeyFilePassword",
+        "tlsCAFile": "tlsCAFile",
+        "tlsCRLFile": "tlsCRLFile",
+    }
+    for source, target in tls_client_map.items():
+        value = parsed_args.get(source)
+        if value:
+            opts["tls"] = True
+            opts[target] = value
+    if parsed_args.get("tlsAllowInvalidCertificates"):
+        opts["tls"] = True
+        opts["tlsAllowInvalidCertificates"] = True
+    if parsed_args.get("tlsAllowInvalidHostnames"):
+        opts["tls"] = True
+        opts["tlsAllowInvalidHostnames"] = True
+
+    ssl_server_keys = (
+        "sslMode",
+        "sslPEMKeyFile",
+        "sslPEMKeyPassword",
+        "sslClusterFile",
+        "sslClusterPassword",
+        "sslDisabledProtocols",
+        "sslAllowConnectionsWithoutCertificates",
+        "sslFIPSMode",
+    )
+    if any(parsed_args.get(key) for key in ssl_server_keys):
+        opts["tls"] = True
+        opts["tlsAllowInvalidCertificates"] = True
+
+    ssl_client_map = {
+        "sslClientCertificate": "tlsCertificateKeyFile",
+        "sslClientPEMKeyFile": "tlsCertificateKeyFile",
+        "sslClientPEMKeyPassword": "tlsCertificateKeyFilePassword",
+        "sslCAFile": "tlsCAFile",
+        "sslCRLFile": "tlsCRLFile",
+    }
+    for source, target in ssl_client_map.items():
+        value = parsed_args.get(source)
+        if value:
+            opts["tls"] = True
+            opts[target] = value
+    if parsed_args.get("sslAllowInvalidCertificates"):
+        opts["tls"] = True
+        opts["tlsAllowInvalidCertificates"] = True
+    if parsed_args.get("sslAllowInvalidHostnames"):
+        opts["tls"] = True
+        opts["tlsAllowInvalidHostnames"] = True
+
+    return opts
+
+
+def load_monitor_tls_kwargs(data_dir):
+    """Load PyMongo TLS kwargs from datadir/.mrun_startup parsed args."""
+    startup_config = load_mrun_startup_config(data_dir)
+    return build_monitor_tls_kwargs(startup_config.get("parsed_args", {}))
+
+
 def filter_mrun_processes(processes, specs):
     """Keep only discovered processes that are present in mrun startup specs."""
     filtered = []
@@ -1074,9 +1151,11 @@ class Monitor:
             password=monitor_password,
             auth_db=monitor_auth_db,
         )
+        network_client_kwargs = load_monitor_tls_kwargs(data_dir)
+        network_client_kwargs.update(self.auth_config.client_kwargs())
         self.network_sampler = NetworkSampler(
             client_factory=client_factory,
-            client_kwargs=self.auth_config.client_kwargs(),
+            client_kwargs=network_client_kwargs,
             auth_required=self.auth_config.requires_credentials(),
         )
         self.log_cursor = None
