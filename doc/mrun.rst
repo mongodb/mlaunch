@@ -20,6 +20,8 @@ Usage
 
 .. code-block:: bash
 
+   mrun [-h] [--version] [--no-progressbar] [--monitor] [--all]
+        [--dir DIR]
    mrun [-h] [--version] [--no-progressbar]
            {init,start,stop,restart,list,kill} ...
 
@@ -38,6 +40,43 @@ Version
 -------
 ``--version``
    shows the version number and exits.
+
+Monitor
+-------
+``--monitor``
+   opens a live terminal monitor for running **mrun** managed ``mongod`` and
+   ``mongos`` processes from the selected data directory. The monitor shows
+   CPU usage, memory usage, network activity, disk consumption, and a
+   selectable live log tail with severity colors. If no **mrun** managed
+   MongoDB server processes are running, **mrun** will print a message and
+   exit.
+
+``--all``
+   used with ``--monitor`` to include all local ``mongod`` and ``mongos``
+   processes instead of only the processes listed in ``.mrun_startup``.
+
+   Monitor controls:
+
+   -  ``q`` or ``Ctrl+C`` quits.
+   -  ``r`` reselects logs.
+   -  ``a`` toggles between **mrun** managed processes and all detected local
+      MongoDB processes, then prompts for log selection again.
+   -  ``z`` toggles a full-screen log tail view.
+   -  ``j``/``k`` or up/down arrows move the highlighted log line.
+   -  ``g`` jumps to the newest log line and resumes live-follow.
+   -  ``p`` prettifies the highlighted line as JSON, pauses live-follow, and
+      expands the log view. Press ``p`` again to return to the raw log line.
+   -  ``y`` yanks the highlighted log line to the terminal clipboard when
+      supported.
+   -  Space pauses or resumes log streaming. While paused, the current log
+      buffer stays frozen; resuming catches up from the same file offset.
+   -  ``s`` cycles the refresh interval through 1, 5, and 10 seconds.
+   -  Log lines are color coded by severity: fatal uses red inverse, errors
+      use red, warnings use yellow, info uses muted teal, and debug uses dim
+      gray. Selection uses inverse video so it remains visible without hiding
+      the severity color. After yanking, that line is highlighted green.
+   -  Moving away from the newest log line pauses live-follow. Moving back to
+      the newest line resumes live-follow.
 
 Verbosity
 ---------

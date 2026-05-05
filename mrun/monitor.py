@@ -1,0 +1,1225 @@
+#!/usr/bin/env python3
+"""Live terminal monitor for local MongoDB server processes."""
+
+import base64
+import json
+import os
+import select
+import shlex
+import shutil
+import sys
+import time
+from collections import deque
+from dataclasses import dataclass
+
+import psutil
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+try:
+    import termios
+    import tty
+except ImportError:
+    termios = None
+    tty = None
+
+
+NO_PROCESSES_MESSAGE = (
+    "No running mongod or mongos processes found.\n"
+    "Start MongoDB nodes first, then run: mrun --monitor"
+)
+NO_MRUN_PROCESSES_MESSAGE = (
+    "No running mongorun-managed MongoDB processes found.\n"
+    "Start nodes with mrun first, or run: mrun --monitor --all"
+)
+
+ANSI_RESET = "\033[0m"
+ANSI_YELLOW = "\033[33m"
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
+ANSI_TEAL = "\033[38;5;44m"
+ANSI_DIM = "\033[2m"
+ANSI_INVERSE = "\033[7m"
+STYLE_SELECTED = "\x00selected\x00"
+STYLE_YANKED = "\x00yanked\x00"
+STYLE_SEVERITY_FATAL = "\x00severity:fatal\x00"
+STYLE_SEVERITY_ERROR = "\x00severity:error\x00"
+STYLE_SEVERITY_WARNING = "\x00severity:warning\x00"
+STYLE_SEVERITY_INFO = "\x00severity:info\x00"
+STYLE_SEVERITY_DEBUG = "\x00severity:debug\x00"
+REFRESH_INTERVALS = (1.0, 5.0, 10.0)
+ESCAPE_READ_TIMEOUT = 0.03
+STYLE_MARKERS = (
+    STYLE_SELECTED,
+    STYLE_YANKED,
+    STYLE_SEVERITY_FATAL,
+    STYLE_SEVERITY_ERROR,
+    STYLE_SEVERITY_WARNING,
+    STYLE_SEVERITY_INFO,
+    STYLE_SEVERITY_DEBUG,
+)
+
+
+@dataclass
+class MongoProcessInfo:
+    """Metadata for a discovered local MongoDB server process."""
+
+    pid: int
+    name: str
+    port: int
+    logpath: str
+    dbpath: str
+    cmdline: list
+
+
+@dataclass
+class MRunProcessSpec:
+    """Expected process metadata loaded from a mongorun startup file."""
+
+    port: int
+    logpath: str
+    dbpath: str
+    cmdline: list
+
+
+@dataclass
+class ProcessMetrics:
+    """Live process resource metrics."""
+
+    cpu_percent: float
+    memory_rss: int
+    status: str
+
+
+@dataclass
+class NetworkMetrics:
+    """MongoDB serverStatus network rates."""
+
+    available: bool
+    bytes_in_per_sec: float = 0.0
+    bytes_out_per_sec: float = 0.0
+    requests_per_sec: float = 0.0
+    error: str = ""
+
+
+@dataclass
+class DiskMetrics:
+    """Disk consumption for a MongoDB dbpath and log file."""
+
+    available: bool
+    db_size: int = 0
+    log_size: int = 0
+    error: str = ""
+
+
+def _normalize_process_name(name):
+    name = os.path.basename(name or "").lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name
+
+
+def _get_cmdline_arg(cmdline, option):
+    for index, arg in enumerate(cmdline):
+        if arg == option and index + 1 < len(cmdline):
+            return cmdline[index + 1].strip('"')
+        if arg.startswith(option + "="):
+            return arg.split("=", 1)[1].strip('"')
+    return None
+
+
+def _get_cmdline_int(cmdline, option, default=None):
+    value = _get_cmdline_arg(cmdline, option)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def process_to_info(process):
+    """Convert a psutil process into MongoProcessInfo, or None if unrelated."""
+    try:
+        name = _normalize_process_name(process.name())
+        if name not in ("mongod", "mongos"):
+            return None
+        cmdline = process.cmdline()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+        return None
+
+    port = _get_cmdline_int(cmdline, "--port", default=27017)
+    logpath = _get_cmdline_arg(cmdline, "--logpath") or ""
+    dbpath = _get_cmdline_arg(cmdline, "--dbpath") or ""
+
+    return MongoProcessInfo(
+        pid=process.pid,
+        name=name,
+        port=port,
+        logpath=logpath,
+        dbpath=dbpath,
+        cmdline=cmdline,
+    )
+
+
+def load_mrun_process_specs(data_dir):
+    """Load expected mongorun server processes from datadir/.mrun_startup."""
+    startup_file = os.path.join(os.path.abspath(data_dir), ".mrun_startup")
+    if not os.path.exists(startup_file):
+        return {}
+
+    try:
+        with open(startup_file, "r") as fp:
+            startup_config = json.load(fp)
+    except (OSError, ValueError):
+        return {}
+
+    startup_info = startup_config.get("startup_info", {})
+    specs = {}
+    for port_key, command_str in startup_info.items():
+        try:
+            cmdline = shlex.split(command_str)
+        except ValueError:
+            cmdline = str(command_str).split()
+
+        port = _get_cmdline_int(cmdline, "--port")
+        if port is None:
+            try:
+                port = int(port_key)
+            except (TypeError, ValueError):
+                continue
+
+        specs[port] = MRunProcessSpec(
+            port=port,
+            logpath=_get_cmdline_arg(cmdline, "--logpath") or "",
+            dbpath=_get_cmdline_arg(cmdline, "--dbpath") or "",
+            cmdline=cmdline,
+        )
+    return specs
+
+
+def filter_mrun_processes(processes, specs):
+    """Keep only discovered processes that are present in mrun startup specs."""
+    filtered = []
+    for process in processes:
+        spec = specs.get(process.port)
+        if spec is None:
+            continue
+        filtered.append(MongoProcessInfo(
+            process.pid,
+            process.name,
+            process.port,
+            process.logpath or spec.logpath,
+            process.dbpath or spec.dbpath,
+            process.cmdline,
+        ))
+    return sorted(filtered, key=lambda p: (p.port, p.name, p.pid))
+
+
+def discover_mongo_processes(process_iter=None):
+    """Discover local running mongod/mongos processes without .mrun_startup."""
+    if process_iter is None:
+        process_iter = psutil.process_iter
+
+    processes = []
+    for process in process_iter():
+        info = process_to_info(process)
+        if info is not None:
+            processes.append(info)
+
+    return sorted(processes, key=lambda p: (p.port, p.name, p.pid))
+
+
+def discover_mrun_processes(data_dir, process_iter=None):
+    """Discover running mongod/mongos processes launched by this mrun data dir."""
+    specs = load_mrun_process_specs(data_dir)
+    if not specs:
+        return []
+    return filter_mrun_processes(discover_mongo_processes(process_iter), specs)
+
+
+def read_process_metrics(process_info, process_factory=None):
+    """Read CPU and memory metrics for a discovered process."""
+    if process_factory is None:
+        process_factory = psutil.Process
+
+    try:
+        process = process_factory(process_info.pid)
+        memory_rss = process.memory_info().rss
+        cpu_percent = process.cpu_percent(interval=None)
+        status = process.status()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+        return ProcessMetrics(0.0, 0, "unavailable")
+
+    return ProcessMetrics(cpu_percent, memory_rss, status)
+
+
+def calculate_path_size(path):
+    """Calculate path size using only the standard library."""
+    if not path:
+        return 0, "missing path"
+    if os.path.isfile(path):
+        try:
+            return os.path.getsize(path), ""
+        except OSError as exc:
+            return 0, str(exc)
+    if not os.path.isdir(path):
+        return 0, "path unavailable"
+
+    total = 0
+    errors = []
+    for root, _, files in os.walk(path):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            try:
+                total += os.path.getsize(filepath)
+            except OSError as exc:
+                errors.append(str(exc))
+    return total, "; ".join(errors[:2])
+
+
+def read_disk_metrics(processes):
+    """Read dbpath and logpath disk consumption for each process."""
+    metrics = {}
+    for process in processes:
+        db_size, db_error = calculate_path_size(process.dbpath)
+        log_size, log_error = calculate_path_size(process.logpath)
+        errors = [error for error in (db_error, log_error) if error]
+        metrics[process.port] = DiskMetrics(
+            available=not errors,
+            db_size=db_size,
+            log_size=log_size,
+            error="; ".join(errors),
+        )
+    return metrics
+
+
+class NetworkSampler:
+    """Sample MongoDB serverStatus network counters and expose per-second rates."""
+
+    def __init__(self, client_factory=None, clock=None):
+        self.client_factory = client_factory or self._default_client_factory
+        self.clock = clock or time.time
+        self.previous = {}
+
+    def sample(self, processes):
+        now = self.clock()
+        metrics = {}
+        for process in processes:
+            counters, error = self._read_counters(process.port)
+            if counters is None:
+                metrics[process.port] = NetworkMetrics(False, error=error)
+                continue
+
+            previous = self.previous.get(process.port)
+            self.previous[process.port] = (now, counters)
+            if previous is None:
+                metrics[process.port] = NetworkMetrics(True)
+                continue
+
+            previous_time, previous_counters = previous
+            elapsed = max(now - previous_time, 0.001)
+            metrics[process.port] = NetworkMetrics(
+                True,
+                bytes_in_per_sec=max(
+                    0.0, (counters["bytesIn"] - previous_counters["bytesIn"]) / elapsed),
+                bytes_out_per_sec=max(
+                    0.0, (counters["bytesOut"] - previous_counters["bytesOut"]) / elapsed),
+                requests_per_sec=max(
+                    0.0,
+                    (counters["numRequests"] - previous_counters["numRequests"]) / elapsed,
+                ),
+            )
+        return metrics
+
+    def _read_counters(self, port):
+        client = None
+        try:
+            client = self.client_factory(
+                "localhost:%i" % port,
+                directConnection=True,
+                serverSelectionTimeoutMS=200,
+            )
+            status = client.admin.command("serverStatus")
+            network = status.get("network", {})
+            counters = {
+                "bytesIn": int(network.get("bytesIn", 0)),
+                "bytesOut": int(network.get("bytesOut", 0)),
+                "numRequests": int(network.get("numRequests", 0)),
+            }
+            return counters, ""
+        except Exception as exc:
+            return None, str(exc)
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
+
+    @staticmethod
+    def _default_client_factory(host, **kwargs):
+        from pymongo import MongoClient
+
+        return MongoClient(host, **kwargs)
+
+
+class LogTailer:
+    """Tail selected log files and retain a bounded in-memory buffer."""
+
+    def __init__(self, logpaths_by_port, max_lines=200):
+        self.logpaths_by_port = dict(logpaths_by_port)
+        self.max_lines = max_lines
+        self.lines = deque(maxlen=max_lines)
+        self.offsets = {}
+        self.missing_paths = set()
+        self._seed()
+
+    def _seed(self):
+        for port, path in self.logpaths_by_port.items():
+            if not path:
+                continue
+            try:
+                with open(path, "rb") as logfile:
+                    recent = deque(logfile, maxlen=20)
+                    self.offsets[port] = logfile.tell()
+            except OSError:
+                self.offsets[port] = 0
+                self._append_missing(port, path)
+                continue
+
+            for line in recent:
+                self._append_line(port, line)
+
+    def poll(self):
+        for port, path in self.logpaths_by_port.items():
+            if not path:
+                continue
+            try:
+                with open(path, "rb") as logfile:
+                    logfile.seek(0, os.SEEK_END)
+                    end = logfile.tell()
+                    offset = self.offsets.get(port, 0)
+                    if offset > end:
+                        offset = 0
+                    logfile.seek(offset)
+                    for line in logfile:
+                        self._append_line(port, line)
+                    self.offsets[port] = logfile.tell()
+            except OSError:
+                self._append_missing(port, path)
+        return list(self.lines)
+
+    def _append_missing(self, port, path):
+        marker = (port, path)
+        if marker in self.missing_paths:
+            return
+        self.missing_paths.add(marker)
+        self.lines.append("%s | log unavailable: %s" % (port, path))
+
+    def _append_line(self, port, line):
+        text = line.decode("utf-8", "replace").rstrip()
+        self.lines.append("%s | %s" % (port, text))
+
+
+def read_log_stream(tailer, stream_paused):
+    """Return visible log lines, optionally without advancing file offsets."""
+    if stream_paused:
+        return list(tailer.lines)
+    return tailer.poll()
+
+
+def parse_log_selection(selection, candidates):
+    """Return selected ports from a comma/space separated index or port list."""
+    if selection is None or selection.strip() == "" or selection.strip().lower() == "all":
+        return [candidate.port for candidate in candidates]
+
+    selected_ports = []
+    tokens = [token.strip() for token in selection.replace(",", " ").split()]
+    for token in tokens:
+        try:
+            value = int(token)
+        except ValueError:
+            continue
+
+        if 1 <= value <= len(candidates):
+            port = candidates[value - 1].port
+        else:
+            port = value
+
+        if port in [candidate.port for candidate in candidates] and port not in selected_ports:
+            selected_ports.append(port)
+
+    return selected_ports
+
+
+def choose_logpaths(processes, input_func=input, stdout=None):
+    """Prompt the user to choose log files to tail."""
+    stdout = stdout or sys.stdout
+    candidates = [process for process in processes if process.logpath]
+    if not candidates:
+        stdout.write("No --logpath values found; log tail quadrant will be empty.\n")
+        stdout.flush()
+        return {}
+
+    stdout.write("\nSelect MongoDB logs to tail:\n")
+    for index, process in enumerate(candidates, start=1):
+        stdout.write("  [%i] %s port %s pid %s  %s\n" % (
+            index, process.name, process.port, process.pid, process.logpath))
+    stdout.write("Enter indexes or ports separated by commas, or press Enter for all: ")
+    stdout.flush()
+
+    selection = input_func()
+    selected_ports = parse_log_selection(selection, candidates)
+    return {
+        process.port: process.logpath
+        for process in candidates
+        if process.port in selected_ports
+    }
+
+
+def format_bytes(value):
+    value = float(value)
+    units = ["B", "KB", "MB", "GB", "TB"]
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return "%i%s" % (value, unit)
+            return "%.1f%s" % (value, unit)
+        value /= 1024.0
+
+
+def format_rate(value):
+    return format_bytes(value) + "/s"
+
+
+def _truncate(text, width):
+    text = str(text)
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    return text[:width - 1] + "~"
+
+
+def _styled_line(styles, text):
+    if isinstance(styles, str):
+        styles = [styles]
+    return "".join(styles) + text
+
+
+def _split_style(text):
+    styles = []
+    if not isinstance(text, str):
+        return styles, text
+
+    matched = True
+    while matched:
+        matched = False
+        for marker in STYLE_MARKERS:
+            if text.startswith(marker):
+                styles.append(marker)
+                text = text[len(marker):]
+                matched = True
+                break
+    return styles, text
+
+
+def _style_ansi(styles):
+    if STYLE_YANKED in styles:
+        return ANSI_GREEN + ANSI_INVERSE
+
+    color = ""
+    if STYLE_SEVERITY_FATAL in styles:
+        color = ANSI_RED + ANSI_INVERSE
+    elif STYLE_SEVERITY_ERROR in styles:
+        color = ANSI_RED
+    elif STYLE_SEVERITY_WARNING in styles:
+        color = ANSI_YELLOW
+    elif STYLE_SEVERITY_INFO in styles:
+        color = ANSI_TEAL
+    elif STYLE_SEVERITY_DEBUG in styles:
+        color = ANSI_DIM
+
+    if STYLE_SELECTED in styles:
+        return color + ANSI_INVERSE
+    return color
+
+
+def clamp_log_cursor(log_lines, cursor, follow_tail):
+    """Return a valid highlighted log-line index."""
+    if not log_lines:
+        return None
+    if follow_tail or cursor is None:
+        return len(log_lines) - 1
+    return max(0, min(cursor, len(log_lines) - 1))
+
+
+def clamp_optional_log_cursor(log_lines, cursor):
+    """Return a valid optional log-line index without defaulting to tail."""
+    if not log_lines or cursor is None:
+        return None
+    return max(0, min(cursor, len(log_lines) - 1))
+
+
+def move_log_cursor(log_lines, cursor, delta):
+    """Move the highlighted log-line index by delta."""
+    if not log_lines:
+        return None
+    cursor = clamp_log_cursor(log_lines, cursor, follow_tail=False)
+    return max(0, min(cursor + delta, len(log_lines) - 1))
+
+
+def next_refresh_interval(current_interval):
+    """Cycle the monitor refresh interval through supported values."""
+    try:
+        index = REFRESH_INTERVALS.index(float(current_interval))
+    except ValueError:
+        return REFRESH_INTERVALS[0]
+    return REFRESH_INTERVALS[(index + 1) % len(REFRESH_INTERVALS)]
+
+
+def format_seconds(seconds):
+    """Format a refresh interval for display."""
+    if float(seconds).is_integer():
+        return "%is" % int(seconds)
+    return "%.1fs" % seconds
+
+
+def _visible_log_window(log_lines, cursor, height):
+    height = max(height, 1)
+    if not log_lines:
+        return [], 0
+
+    cursor = clamp_log_cursor(log_lines, cursor, follow_tail=False)
+    start = max(0, cursor - height + 1)
+    if cursor < start:
+        start = cursor
+    end = min(len(log_lines), start + height)
+    return log_lines[start:end], start
+
+
+def format_log_lines(log_lines, cursor, height, yanked_cursor=None):
+    """Format log lines with a highlighted cursor marker."""
+    visible, start = _visible_log_window(log_lines, cursor, height)
+    formatted = []
+    for offset, line in enumerate(visible):
+        line_index = start + offset
+        marker = ">" if line_index == cursor else " "
+        text = "%s %s" % (marker, line)
+        styles = []
+        detected_style = severity_style(detect_log_severity(line))
+        if detected_style:
+            styles.append(detected_style)
+        if line_index == yanked_cursor:
+            styles.append(STYLE_YANKED)
+        elif line_index == cursor:
+            styles.append(STYLE_SELECTED)
+        if styles:
+            text = _styled_line(styles, text)
+        formatted.append(text)
+    return formatted
+
+
+def strip_log_port_prefix(line):
+    """Remove the monitor-added 'port | ' prefix from a log line."""
+    prefix, separator, body = str(line).partition(" | ")
+    if separator and prefix.strip().isdigit():
+        return body
+    return str(line)
+
+
+def _json_log_candidates(text):
+    text = str(text).strip()
+    candidates = [text]
+    object_start = text.find("{")
+    if object_start > 0:
+        candidates.append(text[object_start:])
+    return candidates
+
+
+def _severity_from_value(value):
+    value = str(value or "").strip().lower()
+    if value in ("f", "fatal", "critical"):
+        return "fatal"
+    if value in ("e", "error", "err"):
+        return "error"
+    if value in ("w", "warn", "warning"):
+        return "warning"
+    if value in ("i", "info", "information", "informational"):
+        return "info"
+    if value in ("d", "debug", "trace"):
+        return "debug"
+    return ""
+
+
+def detect_log_severity(line):
+    """Detect MongoDB log severity from JSON fields or plain text."""
+    text = strip_log_port_prefix(line).strip()
+    for candidate in _json_log_candidates(text):
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            for key in ("s", "severity", "level"):
+                severity = _severity_from_value(parsed.get(key))
+                if severity:
+                    return severity
+
+    lowered = text.lower()
+    if "fatal" in lowered or "critical" in lowered:
+        return "fatal"
+    if "error" in lowered or " err " in (" " + lowered + " "):
+        return "error"
+    if "warning" in lowered or " warn " in (" " + lowered + " "):
+        return "warning"
+    if "debug" in lowered or " trace " in (" " + lowered + " "):
+        return "debug"
+    if "information" in lowered or " info " in (" " + lowered + " "):
+        return "info"
+    return ""
+
+
+def severity_style(severity):
+    return {
+        "fatal": STYLE_SEVERITY_FATAL,
+        "error": STYLE_SEVERITY_ERROR,
+        "warning": STYLE_SEVERITY_WARNING,
+        "info": STYLE_SEVERITY_INFO,
+        "debug": STYLE_SEVERITY_DEBUG,
+    }.get(severity)
+
+
+def prettify_log_line(line):
+    """Return indented JSON lines for a raw log line, or None when invalid."""
+    text = strip_log_port_prefix(line).strip()
+    for candidate in _json_log_candidates(text):
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        return json.dumps(parsed, indent=2).splitlines()
+
+    return None
+
+
+def format_pretty_log_lines(pretty_lines, height):
+    """Format a fixed pretty JSON view for the log panel."""
+    if not pretty_lines:
+        return []
+    return list(pretty_lines[:max(height, 1)])
+
+
+def build_osc52_sequence(text):
+    """Build an OSC 52 clipboard escape sequence for terminal clipboard yank."""
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return "\033]52;c;%s\a" % payload
+
+
+def _footer(status_message, controls):
+    return "%s | %s" % (status_message, controls) if status_message else controls
+
+
+def make_panel(title, lines, width, height):
+    """Render one bordered panel with clipped content."""
+    if width < 4 or height < 3:
+        return [" " * max(width, 0) for _ in range(max(height, 0))]
+
+    inner_width = width - 2
+    inner_height = height - 2
+    title = " %s " % title
+    border = "+" + _truncate(title, inner_width).ljust(inner_width, "-") + "+"
+    rows = [border]
+
+    for index in range(inner_height):
+        text = lines[index] if index < len(lines) else ""
+        styles, text = _split_style(text)
+        row_text = _truncate(text, inner_width).ljust(inner_width)
+        ansi = _style_ansi(styles)
+        if ansi:
+            rows.append(ansi + "|" + row_text + "|" + ANSI_RESET)
+        else:
+            rows.append("|" + row_text + "|")
+
+    rows.append("+" + "-" * inner_width + "+")
+    return rows
+
+
+def render_dashboard(processes, process_metrics, network_metrics, log_lines,
+                     selected_ports=None, terminal_size=None, log_cursor=None,
+                     status_message="", zoom_logs=False, yanked_cursor=None,
+                     refresh_interval=1.0, pretty_lines=None,
+                     stream_paused=False, disk_metrics=None,
+                     process_scope="mrun"):
+    """Render the full four-quadrant monitor frame as a string."""
+    if terminal_size is None:
+        terminal_size = shutil.get_terminal_size((120, 40))
+
+    columns = max(terminal_size.columns, 40)
+    rows = max(terminal_size.lines - 1, 12)
+
+    selected_ports = selected_ports or []
+    if selected_ports:
+        log_title = "Log Tail: " + ", ".join(str(port) for port in selected_ports)
+    else:
+        log_title = "Log Tail"
+
+    pretty_active = pretty_lines is not None
+    if pretty_active:
+        log_title += " (Pretty JSON)"
+    elif stream_paused:
+        log_title += " (Paused)"
+
+    stream_control = (
+        "space resume stream" if stream_paused else "space pause stream")
+    scope_label = "scope %s" % process_scope
+    scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
+
+    if zoom_logs:
+        log_cursor = clamp_log_cursor(log_lines, log_cursor, follow_tail=False)
+        yanked_cursor = clamp_optional_log_cursor(log_lines, yanked_cursor)
+        content_height = rows - 2
+        if pretty_active:
+            log_content = format_pretty_log_lines(pretty_lines, content_height)
+        else:
+            log_content = (
+                format_log_lines(log_lines, log_cursor, content_height,
+                                 yanked_cursor) if log_lines
+                else ["No log selected."]
+            )
+        frame = make_panel(log_title, log_content, columns, rows)
+        frame.append(_footer(
+            status_message,
+            "q/Ctrl+C quit | z quadrants | r reselect | j/k arrows move | "
+            "g latest | p %s | y yank | %s | %s | %s | s refresh %s" % (
+                "raw" if pretty_active else "pretty JSON",
+                stream_control,
+                scope_label,
+                scope_toggle,
+                format_seconds(refresh_interval))))
+        return "\n".join(frame)
+
+    left_width = columns // 2
+    right_width = columns - left_width
+    top_height = rows // 2
+    bottom_height = rows - top_height
+
+    cpu_lines = ["PORT   PID      PROCESS  CPU%   STATUS"]
+    mem_lines = ["PORT   PID      PROCESS  RSS"]
+    net_lines = ["PORT   IN       OUT      REQ/s   STATUS"]
+    disk_lines = ["PORT   DB SIZE   LOG SIZE  STATUS"]
+    disk_metrics = disk_metrics or {}
+
+    for process in processes:
+        metrics = process_metrics.get(process.pid, ProcessMetrics(0.0, 0, "unavailable"))
+        network = network_metrics.get(process.port, NetworkMetrics(False))
+        disk = disk_metrics.get(process.port, DiskMetrics(False))
+        cpu_lines.append("%-6s %-8s %-8s %5.1f  %s" % (
+            process.port, process.pid, process.name, metrics.cpu_percent, metrics.status))
+        mem_lines.append("%-6s %-8s %-8s %s" % (
+            process.port, process.pid, process.name, format_bytes(metrics.memory_rss)))
+        if network.available:
+            net_lines.append("%-6s %-8s %-8s %-7.1f ok" % (
+                process.port,
+                format_rate(network.bytes_in_per_sec),
+                format_rate(network.bytes_out_per_sec),
+                network.requests_per_sec,
+            ))
+        else:
+            net_lines.append("%-6s %-8s %-8s %-7s unavailable" % (
+                process.port, "-", "-", "-"))
+        if disk.available:
+            disk_lines.append("%-6s %-9s %-9s ok" % (
+                process.port,
+                format_bytes(disk.db_size),
+                format_bytes(disk.log_size),
+            ))
+        else:
+            disk_lines.append("%-6s %-9s %-9s unavailable" % (
+                process.port,
+                format_bytes(disk.db_size),
+                format_bytes(disk.log_size),
+            ))
+
+    log_cursor = clamp_log_cursor(log_lines, log_cursor, follow_tail=False)
+    yanked_cursor = clamp_optional_log_cursor(log_lines, yanked_cursor)
+    log_content_height = max(bottom_height - 2, 1)
+    if pretty_active:
+        log_content = format_pretty_log_lines(pretty_lines, log_content_height)
+    else:
+        log_content = (
+            format_log_lines(log_lines, log_cursor, log_content_height,
+                             yanked_cursor) if log_lines
+            else ["No log selected."]
+        )
+
+    cpu_panel = make_panel("CPU Usage", cpu_lines, left_width, top_height)
+    mem_panel = make_panel("Memory Usage", mem_lines, right_width, top_height)
+    net_height = max(bottom_height // 2, 3)
+    disk_height = max(bottom_height - net_height, 3)
+    if net_height + disk_height > bottom_height:
+        disk_height = max(bottom_height - net_height, 0)
+    net_panel = make_panel("Network Usage", net_lines, left_width, net_height)
+    disk_panel = make_panel("Disk Usage", disk_lines, left_width, disk_height)
+    lower_left_panel = net_panel + disk_panel
+    log_panel = make_panel(log_title, log_content, right_width, bottom_height)
+
+    frame = []
+    frame.extend(left + right for left, right in zip(cpu_panel, mem_panel))
+    frame.extend(left + right for left, right in zip(lower_left_panel, log_panel))
+    frame.append(_footer(
+        status_message,
+        "q/Ctrl+C quit | r reselect | z zoom logs | j/k arrows move | "
+        "g latest | p %s | y yank | %s | %s | %s | s refresh %s" % (
+            "raw" if pretty_active else "pretty JSON",
+            stream_control,
+            scope_label,
+            scope_toggle,
+            format_seconds(refresh_interval))))
+    return "\n".join(frame)
+
+
+def parse_escape_sequence(sequence):
+    """Translate terminal escape sequences into logical keys."""
+    if sequence in ("\x1b[A", "\x1bOA"):
+        return "up"
+    if sequence in ("\x1b[B", "\x1bOB"):
+        return "down"
+    if sequence.startswith("\x1b[") and sequence[-1:] in ("A", "B"):
+        return {"A": "up", "B": "down"}[sequence[-1]]
+    return "escape"
+
+
+def _escape_sequence_complete(sequence):
+    if len(sequence) < 3:
+        return False
+    return sequence[-1].isalpha() or sequence[-1] == "~"
+
+
+class TerminalController:
+    """Minimal nonblocking terminal key reader with raw-mode cleanup."""
+
+    def __init__(self, stdin=None, stdout=None):
+        self.stdin = stdin or sys.stdin
+        self.stdout = stdout or sys.stdout
+        self.previous_settings = None
+
+    def __enter__(self):
+        if self._posix_raw_supported():
+            self.previous_settings = termios.tcgetattr(self.stdin.fileno())
+            tty.setcbreak(self.stdin.fileno())
+        self.stdout.write("\033[?25l")
+        self.stdout.flush()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if self.previous_settings is not None:
+            termios.tcsetattr(self.stdin.fileno(), termios.TCSADRAIN, self.previous_settings)
+        self.stdout.write("\033[?25h\n")
+        self.stdout.flush()
+
+    def read_key(self):
+        if msvcrt is not None and msvcrt.kbhit():
+            key = msvcrt.getwch()
+            if key in ("\x00", "\xe0"):
+                return {"H": "up", "P": "down"}.get(msvcrt.getwch(), key)
+            if key == "\x03":
+                return "ctrl-c"
+            return key
+
+        if not self._posix_raw_supported():
+            return None
+
+        readable, _, _ = select.select([self.stdin], [], [], 0)
+        if readable:
+            key = self.stdin.read(1)
+            if key == "\x03":
+                return "ctrl-c"
+            if key == "\x1b":
+                sequence = key
+                deadline = time.time() + ESCAPE_READ_TIMEOUT
+                while time.time() < deadline:
+                    timeout = max(0.0, deadline - time.time())
+                    if not select.select([self.stdin], [], [], timeout)[0]:
+                        break
+                    sequence += self.stdin.read(1)
+                    if _escape_sequence_complete(sequence):
+                        break
+                return parse_escape_sequence(sequence)
+            return key
+        return None
+
+    def _posix_raw_supported(self):
+        return (
+            termios is not None and
+            tty is not None and
+            hasattr(self.stdin, "isatty") and
+            self.stdin.isatty() and
+            hasattr(self.stdin, "fileno")
+        )
+
+
+class Monitor:
+    """Run the interactive monitor command."""
+
+    def __init__(self, client_factory=None, refresh_interval=1.0,
+                 process_iter=None, stdout=None, stdin=None, input_func=None,
+                 data_dir="./data", include_all=False):
+        self.client_factory = client_factory
+        self.refresh_interval = (
+            refresh_interval if refresh_interval in REFRESH_INTERVALS
+            else REFRESH_INTERVALS[0])
+        self.process_iter = process_iter
+        self.data_dir = data_dir
+        self.process_scope = "all" if include_all else "mrun"
+        self.stdout = stdout or sys.stdout
+        self.stdin = stdin or sys.stdin
+        self.input_func = input_func or input
+        self.network_sampler = NetworkSampler(client_factory=client_factory)
+        self.log_cursor = None
+        self.follow_tail = True
+        self.zoom_logs = False
+        self.status_message = ""
+        self.yanked_cursor = None
+        self.pretty_lines = None
+        self.pretty_previous_zoom = None
+        self.stream_paused = False
+
+    def run(self):
+        processes = self._discover_processes()
+        if not processes:
+            self.stdout.write(self._no_processes_message() + "\n")
+            self.stdout.flush()
+            return 1
+
+        if not self._interactive_terminal():
+            self.stdout.write("mrun --monitor requires an interactive terminal.\n")
+            self.stdout.flush()
+            return 1
+
+        while True:
+            try:
+                logpaths = choose_logpaths(processes, self.input_func, self.stdout)
+            except KeyboardInterrupt:
+                self.stdout.write("\n")
+                self.stdout.flush()
+                return 0
+            action = self._run_dashboard(logpaths)
+            if action != "reselect":
+                return 0
+            processes = self._discover_processes()
+            if not processes:
+                self.stdout.write(self._no_processes_message() + "\n")
+                self.stdout.flush()
+                return 1
+
+    def _run_dashboard(self, logpaths):
+        tailer = LogTailer(logpaths)
+        self._prime_cpu()
+
+        with TerminalController(self.stdin, self.stdout) as terminal:
+            try:
+                while True:
+                    start = time.time()
+                    processes = self._discover_processes()
+                    if not processes:
+                        self.stdout.write(
+                            "\033[2J\033[H" + self._no_processes_message() + "\n")
+                        self.stdout.flush()
+                        return "quit"
+
+                    process_metrics = {
+                        process.pid: read_process_metrics(process)
+                        for process in processes
+                    }
+                    network_metrics = self.network_sampler.sample(processes)
+                    disk_metrics = read_disk_metrics(processes)
+                    log_lines = read_log_stream(tailer, self.stream_paused)
+                    selected_ports = sorted(logpaths)
+                    self.log_cursor = clamp_log_cursor(
+                        log_lines, self.log_cursor, self.follow_tail)
+                    self.yanked_cursor = clamp_optional_log_cursor(
+                        log_lines, self.yanked_cursor)
+
+                    frame = render_dashboard(
+                        processes,
+                        process_metrics,
+                        network_metrics,
+                        log_lines,
+                        selected_ports,
+                        log_cursor=self.log_cursor,
+                        status_message=self.status_message,
+                        zoom_logs=self.zoom_logs,
+                        yanked_cursor=self.yanked_cursor,
+                        refresh_interval=self.refresh_interval,
+                        pretty_lines=self.pretty_lines,
+                        stream_paused=self.stream_paused,
+                        disk_metrics=disk_metrics,
+                        process_scope=self.process_scope,
+                    )
+                    self.stdout.write("\033[2J\033[H" + frame)
+                    self.stdout.flush()
+
+                    action = self._wait_for_action(terminal, start, log_lines)
+                    if action in ("quit", "reselect"):
+                        return action
+            except KeyboardInterrupt:
+                return "quit"
+
+    def _prime_cpu(self):
+        for process in self._discover_processes():
+            try:
+                psutil.Process(process.pid).cpu_percent(interval=None)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+
+    def _discover_processes(self):
+        if self.process_scope == "all":
+            return discover_mongo_processes(self.process_iter)
+        return discover_mrun_processes(self.data_dir, self.process_iter)
+
+    def _no_processes_message(self):
+        if self.process_scope == "all":
+            return NO_PROCESSES_MESSAGE
+        return NO_MRUN_PROCESSES_MESSAGE
+
+    def _wait_for_action(self, terminal, start, log_lines):
+        while time.time() - start < self.refresh_interval:
+            key = terminal.read_key()
+            if key in ("q", "ctrl-c", "\x03"):
+                return "quit"
+            if key == "r":
+                return "reselect"
+            if key == "a":
+                self._toggle_process_scope()
+                return "reselect"
+            if key == "z":
+                self._clear_pretty_log_line(restore_zoom=False)
+                self.zoom_logs = not self.zoom_logs
+                self.status_message = (
+                    "log zoom on" if self.zoom_logs else "log zoom off")
+                return "redraw"
+            if key in ("up", "k"):
+                self._move_log_cursor(log_lines, -1)
+                return "redraw"
+            if key in ("down", "j"):
+                self._move_log_cursor(log_lines, 1)
+                return "redraw"
+            if key == "g":
+                self._jump_to_latest(log_lines)
+                return "redraw"
+            if key in ("p", "P"):
+                self._toggle_pretty_log_line(log_lines)
+                return "redraw"
+            if key == "y":
+                self._yank_log_line(log_lines)
+                return "redraw"
+            if key == "s":
+                self._cycle_refresh_interval()
+                return "redraw"
+            if key == " ":
+                self._toggle_streaming()
+                return "redraw"
+            time.sleep(0.05)
+        return None
+
+    def _move_log_cursor(self, log_lines, delta):
+        self._clear_pretty_log_line()
+        self.log_cursor = move_log_cursor(log_lines, self.log_cursor, delta)
+        if self.log_cursor is None:
+            self.follow_tail = False
+            self.status_message = "no log line selected"
+        elif delta > 0 and self.log_cursor == len(log_lines) - 1:
+            self.follow_tail = True
+            self.status_message = "following latest log line"
+        else:
+            self.follow_tail = False
+            self.status_message = "highlighted log line %i" % (self.log_cursor + 1)
+
+    def _cycle_refresh_interval(self):
+        self.refresh_interval = next_refresh_interval(self.refresh_interval)
+        self.status_message = "refresh interval %s" % format_seconds(
+            self.refresh_interval)
+
+    def _toggle_streaming(self):
+        self.stream_paused = not self.stream_paused
+        if self.stream_paused:
+            self.status_message = "log streaming paused"
+        else:
+            self.status_message = "log streaming resumed"
+
+    def _toggle_process_scope(self):
+        self.process_scope = "all" if self.process_scope == "mrun" else "mrun"
+        self.log_cursor = None
+        self.yanked_cursor = None
+        self.follow_tail = True
+        self.stream_paused = False
+        self._clear_pretty_log_line(restore_zoom=False)
+        self.status_message = (
+            "showing all MongoDB processes" if self.process_scope == "all"
+            else "showing mongorun-managed processes")
+
+    def _jump_to_latest(self, log_lines):
+        self._clear_pretty_log_line(restore_zoom=False)
+        self.log_cursor = clamp_log_cursor(log_lines, self.log_cursor,
+                                           follow_tail=True)
+        if self.log_cursor is None:
+            self.follow_tail = False
+            self.status_message = "no log line selected"
+            return
+
+        self.follow_tail = True
+        self.status_message = "following latest log line"
+
+    def _toggle_pretty_log_line(self, log_lines):
+        if self.pretty_lines is not None:
+            self._clear_pretty_log_line()
+            self.status_message = "raw log line view"
+            return
+
+        self.log_cursor = clamp_log_cursor(log_lines, self.log_cursor,
+                                           self.follow_tail)
+        if self.log_cursor is None:
+            self.follow_tail = False
+            self.status_message = "no log line selected"
+            return
+
+        self.follow_tail = False
+        pretty_lines = prettify_log_line(log_lines[self.log_cursor])
+        if pretty_lines is None:
+            self.status_message = "selected line is not valid JSON"
+            return
+
+        self.pretty_lines = pretty_lines
+        self.pretty_previous_zoom = self.zoom_logs
+        self.zoom_logs = True
+        self.status_message = "prettified highlighted log line"
+
+    def _clear_pretty_log_line(self, restore_zoom=True):
+        if self.pretty_lines is None:
+            return
+        self.pretty_lines = None
+        if restore_zoom and self.pretty_previous_zoom is not None:
+            self.zoom_logs = self.pretty_previous_zoom
+        self.pretty_previous_zoom = None
+
+    def _yank_log_line(self, log_lines):
+        self.log_cursor = clamp_log_cursor(log_lines, self.log_cursor,
+                                           self.follow_tail)
+        if self.log_cursor is None:
+            self.status_message = "no log line selected"
+            return
+
+        line = log_lines[self.log_cursor]
+        self.stdout.write(build_osc52_sequence(line))
+        self.stdout.flush()
+        self.follow_tail = False
+        self.yanked_cursor = self.log_cursor
+        self.status_message = "yanked highlighted log line"
+
+    def _interactive_terminal(self):
+        return (
+            hasattr(self.stdin, "isatty") and self.stdin.isatty() and
+            hasattr(self.stdout, "isatty") and self.stdout.isatty()
+        )
