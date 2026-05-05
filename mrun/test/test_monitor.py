@@ -178,6 +178,26 @@ def test_monitor_auth_config_reports_missing_initial_user_credentials():
     assert auth_config.client_kwargs() == {}
 
 
+def test_monitor_auth_config_credentials_override_startup_credentials():
+    auth_config = MonitorAuthConfig(
+        enabled=True,
+        username="storeduser",
+        password="storedpass",
+        auth_db="admin",
+        initial_user=True,
+    ).with_overrides(
+        username="overrideuser",
+        password="overridepass",
+        auth_db="admin2",
+    )
+
+    assert auth_config.client_kwargs() == {
+        "username": "overrideuser",
+        "password": "overridepass",
+        "authSource": "admin2",
+    }
+
+
 def test_filter_mrun_processes_keeps_only_startup_ports(tmp_path):
     startup_file = tmp_path / ".mrun_startup"
     startup_file.write_text(json.dumps({
@@ -278,6 +298,30 @@ def test_mrun_monitor_rejects_init_only_auth_flags(capsys):
     assert "unsupported monitor argument: --auth-db" in capsys.readouterr().err
 
 
+def test_mrun_monitor_accepts_monitor_credential_flags(monkeypatch):
+    called = {}
+
+    def fake_monitor(self):
+        called["username"] = self.args["monitor_username"]
+        called["password"] = self.args["monitor_password"]
+        called["auth_db"] = self.args["monitor_auth_db"]
+        return 0
+
+    monkeypatch.setattr(MRunTool, "monitor", fake_monitor)
+
+    tool = MRunTool(test=True)
+    result = tool.run(
+        "--monitor --monitor-username monitoruser "
+        "--monitor-password monitorpass --monitor-auth-db admin")
+
+    assert result == 0
+    assert called == {
+        "username": "monitoruser",
+        "password": "monitorpass",
+        "auth_db": "admin",
+    }
+
+
 def test_mrun_monitor_flag_from_sys_argv_does_not_print_version(monkeypatch, capsys):
     called = {}
 
@@ -310,6 +354,9 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     flat_output = " ".join(output.split())
     assert "--monitor" in output
     assert "--all" in output
+    assert "--monitor-username" in output
+    assert "--monitor-password" in output
+    assert "--monitor-auth-db" in output
     assert "CPU, memory, network, disk activity, and selectable log tail" in flat_output
     assert "fatal/error/warning/info/debug severity colors" in flat_output
     assert "q or Ctrl+C quit" in flat_output

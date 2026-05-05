@@ -123,6 +123,18 @@ class MonitorAuthConfig:
             kwargs["password"] = self.password
         return kwargs
 
+    def with_overrides(self, username=None, password=None, auth_db=None):
+        if username is None and password is None and auth_db is None:
+            return self
+
+        return MonitorAuthConfig(
+            enabled=True,
+            username=username if username is not None else self.username,
+            password=password if password is not None else self.password,
+            auth_db=auth_db if auth_db is not None else self.auth_db,
+            initial_user=True,
+        )
+
 
 @dataclass
 class ProcessMetrics:
@@ -1044,7 +1056,9 @@ class Monitor:
 
     def __init__(self, client_factory=None, refresh_interval=1.0,
                  process_iter=None, stdout=None, stdin=None, input_func=None,
-                 data_dir="./data", include_all=False):
+                 data_dir="./data", include_all=False,
+                 monitor_username=None, monitor_password=None,
+                 monitor_auth_db=None):
         self.client_factory = client_factory
         self.refresh_interval = (
             refresh_interval if refresh_interval in REFRESH_INTERVALS
@@ -1055,7 +1069,11 @@ class Monitor:
         self.stdout = stdout or sys.stdout
         self.stdin = stdin or sys.stdin
         self.input_func = input_func or input
-        self.auth_config = load_monitor_auth_config(data_dir)
+        self.auth_config = load_monitor_auth_config(data_dir).with_overrides(
+            username=monitor_username,
+            password=monitor_password,
+            auth_db=monitor_auth_db,
+        )
         self.network_sampler = NetworkSampler(
             client_factory=client_factory,
             client_kwargs=self.auth_config.client_kwargs(),

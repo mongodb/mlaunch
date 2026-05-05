@@ -249,6 +249,18 @@ class MRunTool(BaseCmdLineTool):
                                     help=('base directory for --monitor '
                                           '.mrun_startup lookup '
                                           '(default=./data/)'))
+        self.argparser.add_argument('--monitor-username', action='store',
+                                    default=None,
+                                    help=('username override for --monitor '
+                                          'network sampling'))
+        self.argparser.add_argument('--monitor-password', action='store',
+                                    default=None,
+                                    help=('password override for --monitor '
+                                          'network sampling'))
+        self.argparser.add_argument('--monitor-auth-db', action='store',
+                                    default=None, metavar='DB',
+                                    help=('auth database override for '
+                                          '--monitor network sampling'))
 
         self.argparser.description = ('script to launch MongoDB stand-alone '
                                       'servers, replica sets and shards.')
@@ -679,7 +691,12 @@ class MRunTool(BaseCmdLineTool):
         if any(token in ('-h', '--help', '--version') for token in tokens):
             return
 
-        value_options = {'--dir'}
+        value_options = {
+            '--dir',
+            '--monitor-username',
+            '--monitor-password',
+            '--monitor-auth-db',
+        }
         flag_options = {'--monitor', '--all', '--no-progressbar'}
         index = 0
         while index < len(tokens):
@@ -708,6 +725,9 @@ class MRunTool(BaseCmdLineTool):
             client_factory=self.client,
             data_dir=self.args.get('dir', './data'),
             include_all=self.args.get('all', False),
+            monitor_username=self.args.get('monitor_username'),
+            monitor_password=self.args.get('monitor_password'),
+            monitor_auth_db=self.args.get('monitor_auth_db'),
         ).run()
 
     def init(self):
