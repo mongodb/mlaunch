@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+import pytest
+
 from mrun.monitor import (
     ANSI_GREEN,
     ANSI_INVERSE,
@@ -183,6 +185,43 @@ def test_mrun_monitor_all_flag_is_parsed(monkeypatch):
         "all": True,
         "dir": "/tmp/mrun-data",
     }
+
+
+def test_mrun_monitor_flag_order_from_sys_argv(monkeypatch, capsys):
+    calls = []
+
+    def fake_monitor(self):
+        calls.append((self.args["all"], self.args["dir"],
+                      self.args["no_progressbar"]))
+        return 0
+
+    monkeypatch.setattr(MRunTool, "monitor", fake_monitor)
+
+    cases = [
+        ["mrun", "--all", "--monitor"],
+        ["mrun", "--dir", "/tmp/mrun-data", "--monitor"],
+        ["mrun", "--no-progressbar", "--monitor"],
+    ]
+    for argv in cases:
+        monkeypatch.setattr("sys.argv", argv)
+        tool = MRunTool(test=True)
+        assert tool.run() == 0
+
+    assert calls == [
+        (True, os.path.abspath("./data"), False),
+        (False, "/tmp/mrun-data", False),
+        (False, os.path.abspath("./data"), True),
+    ]
+    assert "Detected mongod version" not in capsys.readouterr().out
+
+
+def test_mrun_monitor_rejects_init_only_auth_flags(capsys):
+    tool = MRunTool(test=True)
+
+    with pytest.raises(SystemExit):
+        tool.run("--monitor --auth-db admin")
+
+    assert "unsupported monitor argument: --auth-db" in capsys.readouterr().err
 
 
 def test_mrun_monitor_flag_from_sys_argv_does_not_print_version(monkeypatch, capsys):

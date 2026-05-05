@@ -259,6 +259,9 @@ class MRunTool(BaseCmdLineTool):
             (not argument_tokens and len(sys.argv) > 1 and
              '--monitor' in sys.argv[1:])
         )
+        if monitor_requested:
+            monitor_tokens = argument_tokens if arguments else sys.argv[1:]
+            self._validate_monitor_arguments(monitor_tokens)
 
         # make sure init is default command even when specifying
         # arguments directly
@@ -267,8 +270,8 @@ class MRunTool(BaseCmdLineTool):
 
         # default sub-command is `init` if none provided
         elif (len(sys.argv) > 1 and sys.argv[1].startswith('-') and
-                sys.argv[1] not in ['-h', '--help', '--version',
-                                     '--monitor']):
+                sys.argv[1] not in ['-h', '--help', '--version'] and
+                not monitor_requested):
             sys.argv = sys.argv[0:1] + ['init'] + sys.argv[1:]
 
         # create command sub-parsers
@@ -671,6 +674,32 @@ class MRunTool(BaseCmdLineTool):
             getattr(self, self.args['command'])()
 
     # -- below are the main commands: init, start, stop, list, kill
+    def _validate_monitor_arguments(self, tokens):
+        """Reject unsupported monitor-mode arguments before subparser parsing."""
+        if any(token in ('-h', '--help', '--version') for token in tokens):
+            return
+
+        value_options = {'--dir'}
+        flag_options = {'--monitor', '--all', '--no-progressbar'}
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in flag_options:
+                index += 1
+                continue
+            if token in value_options:
+                if index + 1 >= len(tokens):
+                    self.argparser.error(
+                        'argument %s: expected one argument' % token)
+                index += 2
+                continue
+            if any(token.startswith(option + '=') for option in value_options):
+                index += 1
+                continue
+
+            self.argparser.error(
+                'unsupported monitor argument: %s' % token)
+
     def monitor(self):
         """Monitor running local MongoDB server processes."""
         from mrun.monitor import Monitor
