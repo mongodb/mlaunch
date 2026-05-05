@@ -24,6 +24,7 @@ from mrun.monitor import (
     NetworkSampler,
     NO_MRUN_PROCESSES_MESSAGE,
     NO_PROCESSES_MESSAGE,
+    ProcessDiscoveryError,
     ProcessMetrics,
     read_disk_metrics,
     discover_mongo_processes,
@@ -104,6 +105,16 @@ def test_discover_mongo_processes_filters_and_sorts():
         ("mongos", 27017),
         ("mongod", 27018),
     ]
+
+
+def test_discover_mongo_processes_reports_process_iter_permission_error():
+    def denied_process_iter():
+        raise PermissionError("denied")
+
+    with pytest.raises(ProcessDiscoveryError) as exc:
+        discover_mongo_processes(denied_process_iter)
+
+    assert "could not list local processes: permission denied" in str(exc.value)
 
 
 def test_load_mrun_process_specs_reads_startup_file(tmp_path):
@@ -287,6 +298,20 @@ def test_monitor_defaults_to_mrun_managed_processes(tmp_path):
 
     assert result == 1
     assert NO_MRUN_PROCESSES_MESSAGE in stdout.getvalue()
+
+
+def test_monitor_reports_process_discovery_permission_error():
+    def denied_process_iter():
+        raise PermissionError("denied")
+
+    stdout = io.StringIO()
+    monitor = Monitor(process_iter=denied_process_iter, stdout=stdout,
+                      include_all=True)
+
+    result = monitor.run()
+
+    assert result == 1
+    assert "could not list local processes: permission denied" in stdout.getvalue()
 
 
 def test_parse_log_selection_accepts_indexes_ports_and_all():

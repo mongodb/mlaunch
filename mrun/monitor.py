@@ -35,6 +35,9 @@ NO_MRUN_PROCESSES_MESSAGE = (
     "No running mongorun-managed MongoDB processes found.\n"
     "Start nodes with mrun first, or run: mrun --monitor --all"
 )
+PROCESS_DISCOVERY_ERROR_MESSAGE = (
+    "mrun --monitor could not list local processes: %s"
+)
 
 ANSI_RESET = "\033[0m"
 ANSI_YELLOW = "\033[33m"
@@ -61,6 +64,10 @@ STYLE_MARKERS = (
     STYLE_SEVERITY_INFO,
     STYLE_SEVERITY_DEBUG,
 )
+
+
+class ProcessDiscoveryError(RuntimeError):
+    """Raised when the monitor cannot enumerate local processes."""
 
 
 @dataclass
@@ -225,10 +232,17 @@ def discover_mongo_processes(process_iter=None):
         process_iter = psutil.process_iter
 
     processes = []
-    for process in process_iter():
-        info = process_to_info(process)
-        if info is not None:
-            processes.append(info)
+    try:
+        for process in process_iter():
+            info = process_to_info(process)
+            if info is not None:
+                processes.append(info)
+    except PermissionError as exc:
+        raise ProcessDiscoveryError(
+            PROCESS_DISCOVERY_ERROR_MESSAGE % "permission denied") from exc
+    except psutil.Error as exc:
+        raise ProcessDiscoveryError(
+            PROCESS_DISCOVERY_ERROR_MESSAGE % str(exc)) from exc
 
     return sorted(processes, key=lambda p: (p.port, p.name, p.pid))
 
@@ -987,7 +1001,9 @@ class Monitor:
         self.stream_paused = False
 
     def run(self):
-        processes = self._discover_processes()
+        processes = self._discover_processes_or_report()
+        if processes is None:
+            return 1
         if not processes:
             self.stdout.write(self._no_processes_message() + "\n")
             self.stdout.flush()
@@ -1008,7 +1024,9 @@ class Monitor:
             action = self._run_dashboard(logpaths)
             if action != "reselect":
                 return 0
-            processes = self._discover_processes()
+            processes = self._discover_processes_or_report()
+            if processes is None:
+                return 1
             if not processes:
                 self.stdout.write(self._no_processes_message() + "\n")
                 self.stdout.flush()
@@ -1022,7 +1040,10 @@ class Monitor:
             try:
                 while True:
                     start = time.time()
-                    processes = self._discover_processes()
+                    processes = self._discover_processes_or_report(
+                        clear_screen=True)
+                    if processes is None:
+                        return "quit"
                     if not processes:
                         self.stdout.write(
                             "\033[2J\033[H" + self._no_processes_message() + "\n")
@@ -1068,11 +1089,24 @@ class Monitor:
                 return "quit"
 
     def _prime_cpu(self):
-        for process in self._discover_processes():
+        try:
+            processes = self._discover_processes()
+        except ProcessDiscoveryError:
+            return
+        for process in processes:
             try:
                 psutil.Process(process.pid).cpu_percent(interval=None)
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
+
+    def _discover_processes_or_report(self, clear_screen=False):
+        try:
+            return self._discover_processes()
+        except ProcessDiscoveryError as exc:
+            prefix = "\033[2J\033[H" if clear_screen else ""
+            self.stdout.write(prefix + str(exc) + "\n")
+            self.stdout.flush()
+            return None
 
     def _discover_processes(self):
         if self.process_scope == "all":
