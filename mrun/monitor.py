@@ -38,6 +38,7 @@ NO_MRUN_PROCESSES_MESSAGE = (
 PROCESS_DISCOVERY_ERROR_MESSAGE = (
     "mrun --monitor could not list local processes: %s"
 )
+AUTH_REQUIRED_STATUS = "auth required"
 
 ANSI_RESET = "\033[0m"
 ANSI_YELLOW = "\033[33m"
@@ -90,6 +91,37 @@ class MRunProcessSpec:
     logpath: str
     dbpath: str
     cmdline: list
+
+
+@dataclass
+class MonitorAuthConfig:
+    """Authentication metadata used by monitor network sampling."""
+
+    enabled: bool = False
+    username: str = ""
+    password: str = ""
+    auth_db: str = "admin"
+    initial_user: bool = True
+
+    def has_credentials(self):
+        if not self.enabled or not self.initial_user or not self.username:
+            return False
+        return bool(self.password) or self.auth_db == "$external"
+
+    def requires_credentials(self):
+        return self.enabled and not self.has_credentials()
+
+    def client_kwargs(self):
+        if not self.has_credentials():
+            return {}
+
+        kwargs = {
+            "username": self.username,
+            "authSource": self.auth_db,
+        }
+        if self.auth_db != "$external":
+            kwargs["password"] = self.password
+        return kwargs
 
 
 @dataclass
@@ -172,18 +204,22 @@ def process_to_info(process):
     )
 
 
-def load_mrun_process_specs(data_dir):
-    """Load expected mongorun server processes from datadir/.mrun_startup."""
+def load_mrun_startup_config(data_dir):
+    """Load datadir/.mrun_startup, returning an empty dict on failure."""
     startup_file = os.path.join(os.path.abspath(data_dir), ".mrun_startup")
     if not os.path.exists(startup_file):
         return {}
 
     try:
         with open(startup_file, "r") as fp:
-            startup_config = json.load(fp)
+            return json.load(fp)
     except (OSError, ValueError):
         return {}
 
+
+def load_mrun_process_specs(data_dir):
+    """Load expected mongorun server processes from datadir/.mrun_startup."""
+    startup_config = load_mrun_startup_config(data_dir)
     startup_info = startup_config.get("startup_info", {})
     specs = {}
     for port_key, command_str in startup_info.items():
@@ -206,6 +242,19 @@ def load_mrun_process_specs(data_dir):
             cmdline=cmdline,
         )
     return specs
+
+
+def load_monitor_auth_config(data_dir):
+    """Load monitor auth metadata from datadir/.mrun_startup parsed args."""
+    startup_config = load_mrun_startup_config(data_dir)
+    parsed_args = startup_config.get("parsed_args", {})
+    return MonitorAuthConfig(
+        enabled=bool(parsed_args.get("auth")),
+        username=parsed_args.get("username") or "",
+        password=parsed_args.get("password") or "",
+        auth_db=parsed_args.get("auth_db") or "admin",
+        initial_user=parsed_args.get("initial-user", True),
+    )
 
 
 def filter_mrun_processes(processes, specs):
@@ -314,9 +363,12 @@ def read_disk_metrics(processes):
 class NetworkSampler:
     """Sample MongoDB serverStatus network counters and expose per-second rates."""
 
-    def __init__(self, client_factory=None, clock=None):
+    def __init__(self, client_factory=None, clock=None, client_kwargs=None,
+                 auth_required=False):
         self.client_factory = client_factory or self._default_client_factory
         self.clock = clock or time.time
+        self.client_kwargs = dict(client_kwargs or {})
+        self.auth_required = auth_required
         self.previous = {}
 
     def sample(self, processes):
@@ -350,12 +402,19 @@ class NetworkSampler:
         return metrics
 
     def _read_counters(self, port):
+        if self.auth_required:
+            return None, AUTH_REQUIRED_STATUS
+
         client = None
         try:
+            client_kwargs = {
+                "directConnection": True,
+                "serverSelectionTimeoutMS": 200,
+            }
+            client_kwargs.update(self.client_kwargs)
             client = self.client_factory(
                 "localhost:%i" % port,
-                directConnection=True,
-                serverSelectionTimeoutMS=200,
+                **client_kwargs
             )
             status = client.admin.command("serverStatus")
             network = status.get("network", {})
@@ -505,6 +564,12 @@ def format_bytes(value):
 
 def format_rate(value):
     return format_bytes(value) + "/s"
+
+
+def network_status_label(network):
+    if network.error == AUTH_REQUIRED_STATUS:
+        return AUTH_REQUIRED_STATUS
+    return "unavailable"
 
 
 def _truncate(text, width):
@@ -841,8 +906,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                 network.requests_per_sec,
             ))
         else:
-            net_lines.append("%-6s %-8s %-8s %-7s unavailable" % (
-                process.port, "-", "-", "-"))
+            net_lines.append("%-6s %-8s %-8s %-7s %s" % (
+                process.port, "-", "-", "-", network_status_label(network)))
         if disk.available:
             disk_lines.append("%-6s %-9s %-9s ok" % (
                 process.port,
@@ -990,7 +1055,12 @@ class Monitor:
         self.stdout = stdout or sys.stdout
         self.stdin = stdin or sys.stdin
         self.input_func = input_func or input
-        self.network_sampler = NetworkSampler(client_factory=client_factory)
+        self.auth_config = load_monitor_auth_config(data_dir)
+        self.network_sampler = NetworkSampler(
+            client_factory=client_factory,
+            client_kwargs=self.auth_config.client_kwargs(),
+            auth_required=self.auth_config.requires_credentials(),
+        )
         self.log_cursor = None
         self.follow_tail = True
         self.zoom_logs = False

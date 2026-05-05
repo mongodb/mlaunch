@@ -12,13 +12,16 @@ from mrun.monitor import (
     ANSI_DIM,
     ANSI_TEAL,
     ANSI_YELLOW,
+    AUTH_REQUIRED_STATUS,
     build_osc52_sequence,
     detect_log_severity,
     DiskMetrics,
     format_log_lines,
     filter_mrun_processes,
     LogTailer,
+    load_monitor_auth_config,
     load_mrun_process_specs,
+    MonitorAuthConfig,
     Monitor,
     MongoProcessInfo,
     NetworkSampler,
@@ -30,6 +33,7 @@ from mrun.monitor import (
     discover_mongo_processes,
     move_log_cursor,
     next_refresh_interval,
+    network_status_label,
     parse_escape_sequence,
     parse_log_selection,
     process_to_info,
@@ -133,6 +137,45 @@ def test_load_mrun_process_specs_reads_startup_file(tmp_path):
     assert specs[27018].port == 27018
     assert specs[27018].dbpath == "/tmp/db"
     assert specs[27018].logpath == "/tmp/mongod.log"
+
+
+def test_load_monitor_auth_config_reads_startup_credentials(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "parsed_args": {
+            "auth": True,
+            "username": "monitoruser",
+            "password": "monitorpass",
+            "auth_db": "admin",
+            "initial-user": True,
+        },
+        "startup_info": {},
+    }))
+
+    auth_config = load_monitor_auth_config(str(tmp_path))
+
+    assert auth_config.enabled is True
+    assert auth_config.has_credentials() is True
+    assert auth_config.client_kwargs() == {
+        "username": "monitoruser",
+        "password": "monitorpass",
+        "authSource": "admin",
+    }
+
+
+def test_monitor_auth_config_reports_missing_initial_user_credentials():
+    auth_config = MonitorAuthConfig(
+        enabled=True,
+        username="monitoruser",
+        password="monitorpass",
+        auth_db="admin",
+        initial_user=False,
+    )
+
+    assert auth_config.has_credentials() is False
+    assert auth_config.requires_credentials() is True
+    assert auth_config.client_kwargs() == {}
 
 
 def test_filter_mrun_processes_keeps_only_startup_ports(tmp_path):
@@ -366,6 +409,56 @@ def test_network_sampler_computes_rates_from_server_status_deltas():
     assert second.requests_per_sec == 3
 
 
+def test_network_sampler_passes_auth_kwargs_to_client_factory():
+    captured = {}
+
+    def client_factory(host, **kwargs):
+        captured["host"] = host
+        captured["kwargs"] = kwargs
+        return FakeClient({"network": {}})
+
+    sampler = NetworkSampler(
+        client_factory=client_factory,
+        client_kwargs={
+            "username": "monitoruser",
+            "password": "monitorpass",
+            "authSource": "admin",
+        },
+    )
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    result = sampler.sample([process])[27017]
+
+    assert result.available is True
+    assert captured == {
+        "host": "localhost:27017",
+        "kwargs": {
+            "directConnection": True,
+            "serverSelectionTimeoutMS": 200,
+            "username": "monitoruser",
+            "password": "monitorpass",
+            "authSource": "admin",
+        },
+    }
+
+
+def test_network_sampler_reports_auth_required_without_connecting():
+    called = {}
+
+    def client_factory(host, **kwargs):
+        called["client"] = True
+
+    sampler = NetworkSampler(client_factory=client_factory, auth_required=True)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    result = sampler.sample([process])[27017]
+
+    assert result.available is False
+    assert result.error == AUTH_REQUIRED_STATUS
+    assert called == {}
+    assert network_status_label(result) == AUTH_REQUIRED_STATUS
+
+
 def test_log_tailer_seeds_and_polls_new_lines(tmp_path):
     logfile = tmp_path / "mongod.log"
     logfile.write_text("first\nsecond\n")
@@ -474,6 +567,21 @@ def test_render_dashboard_paused_stream_updates_title_and_footer():
 
     assert "Log Tail: 27017 (Paused)" in rendered
     assert "space resume stream" in rendered
+
+
+def test_render_dashboard_shows_auth_required_network_status():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {27017: NetworkSampler(auth_required=True).sample([process])[27017]},
+        ["27017 | first"],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((100, 24)),
+        log_cursor=0,
+    )
+
+    assert AUTH_REQUIRED_STATUS in rendered
 
 
 def test_render_dashboard_pretty_json_mode_replaces_raw_log_tail():
