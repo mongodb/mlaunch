@@ -34,7 +34,9 @@ from mrun.monitor import (
     read_disk_metrics,
     discover_mongo_processes,
     move_log_cursor,
+    move_process_cursor,
     next_refresh_interval,
+    next_pane,
     network_status_label,
     parse_escape_sequence,
     parse_log_selection,
@@ -42,6 +44,9 @@ from mrun.monitor import (
     prettify_log_line,
     read_log_stream,
     render_dashboard,
+    selected_process,
+    ThreadMetrics,
+    ThreadSampler,
 )
 from mrun.mrun import MRunTool
 
@@ -57,6 +62,21 @@ class FakeProcess:
 
     def cmdline(self):
         return self._cmdline
+
+
+class FakeThread:
+    def __init__(self, thread_id, user_time, system_time):
+        self.id = thread_id
+        self.user_time = user_time
+        self.system_time = system_time
+
+
+class FakeThreadProcess:
+    def __init__(self, threads):
+        self._threads = threads
+
+    def threads(self):
+        return list(self._threads)
 
 
 def test_process_to_info_extracts_port_logpath_and_dbpath():
@@ -443,7 +463,9 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "fatal/error/warning/info/debug severity colors" in flat_output
     assert "q or Ctrl+C quit" in flat_output
     assert "a toggle mrun/all processes" in flat_output
-    assert "z zoom logs" in flat_output
+    assert "Tab switch panes" in flat_output
+    assert "z zoom logs or focused pane" in flat_output
+    assert "t toggles thread view" in flat_output
     assert "g latest log line" in flat_output
     assert "p prettify highlighted log line as JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
@@ -634,6 +656,35 @@ def test_read_disk_metrics_reports_dbpath_and_log_sizes(tmp_path):
     assert metrics.log_size == 6
 
 
+def test_thread_sampler_computes_thread_cpu_from_time_deltas():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+    samples = [
+        [FakeThread(101, 1.0, 0.5), FakeThread(102, 0.5, 0.5)],
+        [FakeThread(101, 2.0, 0.5), FakeThread(102, 0.5, 1.0)],
+    ]
+    times = [10.0, 12.0]
+
+    def process_factory(pid):
+        assert pid == 10
+        return FakeThreadProcess(samples.pop(0))
+
+    sampler = ThreadSampler(
+        process_factory=process_factory,
+        clock=lambda: times.pop(0),
+    )
+
+    first_threads, first_error = sampler.sample(process)
+    second_threads, second_error = sampler.sample(process)
+
+    assert first_error == ""
+    assert second_error == ""
+    assert [thread.cpu_percent for thread in first_threads] == [0.0, 0.0]
+    assert [(thread.thread_id, thread.cpu_percent) for thread in second_threads] == [
+        (101, 50.0),
+        (102, 25.0),
+    ]
+
+
 def test_render_dashboard_contains_four_quadrants():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     rendered = render_dashboard(
@@ -653,6 +704,84 @@ def test_render_dashboard_contains_four_quadrants():
     assert "2.0KB" in rendered
     assert "Log Tail: 27017" in rendered
     assert "27017" in rendered
+
+
+def test_render_dashboard_marks_focused_cpu_process_selection():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "/tmp/b.log", "", []),
+    ]
+
+    rendered = render_dashboard(
+        processes,
+        {
+            10: ProcessMetrics(12.5, 1024 * 1024, "running"),
+            11: ProcessMetrics(3.0, 1024 * 1024, "sleeping"),
+        },
+        {},
+        ["27017 | log line"],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((100, 24)),
+        focused_pane="cpu",
+        cpu_cursor=1,
+    )
+
+    assert "[CPU Usage]" in rendered
+    assert "> 27018" in rendered
+    assert ANSI_INVERSE in rendered
+    assert "t thread view" in rendered
+
+
+def test_render_dashboard_thread_view_is_toggle_only_not_default():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+
+    default_rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((100, 24)),
+        focused_pane="cpu",
+        cpu_cursor=0,
+    )
+    thread_rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((100, 24)),
+        focused_pane="cpu",
+        cpu_cursor=0,
+        cpu_thread_view=True,
+        thread_metrics=[ThreadMetrics(101, 25.0, 1.0, 0.5, 1.5)],
+    )
+
+    assert "CPU Threads" not in default_rendered
+    assert "CPU Threads: port 27017 pid 10" in thread_rendered
+    assert "TID        CPU%" in thread_rendered
+    assert "101" in thread_rendered
+    assert "t process list" in thread_rendered
+
+
+def test_render_dashboard_cpu_zoom_uses_current_cpu_mode():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((80, 18)),
+        focused_pane="cpu",
+        zoom_pane="cpu",
+        cpu_cursor=0,
+        cpu_thread_view=True,
+        thread_metrics=[ThreadMetrics(101, 25.0, 1.0, 0.5, 1.5)],
+    )
+
+    assert "[CPU Threads: port 27017 pid 10]" in rendered
+    assert "Memory Usage" not in rendered
+    assert "Log Tail" not in rendered
+    assert "z quadrants" in rendered
 
 
 def test_render_dashboard_zoom_mode_focuses_log_tail():
@@ -883,6 +1012,7 @@ def test_parse_escape_sequence_accepts_common_arrow_variants():
     assert parse_escape_sequence("\x1bOB") == "down"
     assert parse_escape_sequence("\x1b[1;2A") == "up"
     assert parse_escape_sequence("\x1b[1;5B") == "down"
+    assert parse_escape_sequence("\x1b[Z") == "shift-tab"
     assert parse_escape_sequence("\x1b[C") == "escape"
 
 
@@ -1014,6 +1144,116 @@ class FakeTerminal:
 
     def read_key(self):
         return self.key
+
+
+def test_pane_focus_helpers_cycle_forward_and_backward():
+    assert next_pane("logs", 1) == "cpu"
+    assert next_pane("cpu", 1) == "memory"
+    assert next_pane("cpu", -1) == "logs"
+    assert next_pane("unknown", 1) == "cpu"
+
+
+def test_process_cursor_helpers_select_processes():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+
+    assert move_process_cursor(processes, None, 1) == 1
+    assert move_process_cursor(processes, 1, 1) == 1
+    assert selected_process(processes, 5).pid == 11
+    assert selected_process([], 0) is None
+
+
+def test_monitor_tab_cycles_focus_and_cpu_keys_select_process():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+    monitor = Monitor(stdout=io.StringIO())
+
+    action = monitor._wait_for_action(
+        FakeTerminal("\t"), time.time(), [], processes)
+
+    assert action == "redraw"
+    assert monitor.focused_pane == "cpu"
+    assert monitor.status_message == "focus cpu pane"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("down"), time.time(), [], processes)
+
+    assert action == "redraw"
+    assert monitor.cpu_cursor == 1
+    assert monitor.status_message == "selected port 27018 pid 11"
+
+
+def test_monitor_shift_tab_cycles_focus_backward():
+    monitor = Monitor(stdout=io.StringIO())
+
+    action = monitor._wait_for_action(
+        FakeTerminal("shift-tab"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.focused_pane == "disk"
+    assert monitor.status_message == "focus disk pane"
+
+
+def test_monitor_t_toggles_cpu_thread_view_only_when_cpu_focused():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.refresh_interval = 0.01
+
+    action = monitor._wait_for_action(
+        FakeTerminal("t"), time.time(), [], [process])
+
+    assert action is None
+    assert monitor.cpu_thread_view is False
+
+    monitor.focused_pane = "cpu"
+    action = monitor._wait_for_action(
+        FakeTerminal("t"), time.time(), [], [process])
+
+    assert action == "redraw"
+    assert monitor.cpu_thread_view is True
+    assert monitor.status_message == "thread view for port 27017 pid 10"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("t"), time.time(), [], [process])
+
+    assert action == "redraw"
+    assert monitor.cpu_thread_view is False
+    assert monitor.status_message == "CPU process list"
+
+
+def test_monitor_z_zooms_focused_pane():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.focused_pane = "cpu"
+
+    action = monitor._wait_for_action(FakeTerminal("z"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.zoom_pane == "cpu"
+    assert monitor.zoom_logs is False
+    assert monitor.status_message == "cpu zoom on"
+
+    action = monitor._wait_for_action(FakeTerminal("z"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.zoom_pane is None
+    assert monitor.status_message == "cpu zoom off"
+
+
+def test_monitor_log_controls_do_not_move_log_cursor_outside_logs_pane():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.focused_pane = "cpu"
+    monitor.log_cursor = 1
+
+    action = monitor._wait_for_action(
+        FakeTerminal("up"), time.time(), ["first", "second"], [])
+
+    assert action == "redraw"
+    assert monitor.log_cursor == 1
+    assert monitor.status_message == "no MongoDB process selected"
 
 
 def test_ctrl_c_quits_monitor():
