@@ -49,6 +49,7 @@ from mrun.monitor import (
     selected_process,
     ThreadMetrics,
     ThreadSampler,
+    TerminalController,
 )
 from mrun.mrun import MRunTool
 
@@ -1211,6 +1212,41 @@ class FakeTerminalContext:
 
     def read_key(self):
         return "q"
+
+
+class FakeTTY:
+    def __init__(self, fd):
+        self.fd = fd
+
+    def fileno(self):
+        return self.fd
+
+    def isatty(self):
+        return True
+
+
+def test_terminal_controller_reads_arrow_sequence_from_tty_fd():
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"\x1b[A")
+        terminal = TerminalController(stdin=FakeTTY(read_fd), stdout=io.StringIO())
+
+        assert terminal.read_key() == "up"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_terminal_controller_reads_down_arrow_sequence_from_tty_fd():
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"\x1b[B")
+        terminal = TerminalController(stdin=FakeTTY(read_fd), stdout=io.StringIO())
+
+        assert terminal.read_key() == "down"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def test_monitor_run_dashboard_renders_cached_snapshot_disk_metrics(monkeypatch):

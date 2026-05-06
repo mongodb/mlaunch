@@ -1434,9 +1434,10 @@ class TerminalController:
         if not self._posix_raw_supported():
             return None
 
-        readable, _, _ = select.select([self.stdin], [], [], 0)
+        stdin_fd = self.stdin.fileno()
+        readable, _, _ = select.select([stdin_fd], [], [], 0)
         if readable:
-            key = self.stdin.read(1)
+            key = self._read_posix_char()
             if key == "\x03":
                 return "ctrl-c"
             if key == "\x1b":
@@ -1444,14 +1445,20 @@ class TerminalController:
                 deadline = time.time() + ESCAPE_READ_TIMEOUT
                 while time.time() < deadline:
                     timeout = max(0.0, deadline - time.time())
-                    if not select.select([self.stdin], [], [], timeout)[0]:
+                    if not select.select([stdin_fd], [], [], timeout)[0]:
                         break
-                    sequence += self.stdin.read(1)
+                    sequence += self._read_posix_char()
                     if _escape_sequence_complete(sequence):
                         break
                 return parse_escape_sequence(sequence)
             return key
         return None
+
+    def _read_posix_char(self):
+        data = os.read(self.stdin.fileno(), 1)
+        if not data:
+            return ""
+        return data.decode("latin-1")
 
     def _posix_raw_supported(self):
         return (
