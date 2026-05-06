@@ -78,6 +78,7 @@ mrun/monitor.py
 |   +-- fatal/error/warning/info/debug log rows receive severity colors
 |   +-- selected log row uses inverse video over severity color
 |   +-- yanked log row uses green inverse video
+|   +-- DashboardSnapshot caches sampled data for fast cursor-only redraws
 |
 +-- keyboard control
     +-- TerminalController
@@ -268,6 +269,12 @@ The `s` key cycles the refresh interval:
 ```text
 1s -> 5s -> 10s -> 1s
 ```
+
+Cursor movement does not resample every metric source. The dashboard keeps a
+`DashboardSnapshot` of the last process, network, disk, thread, and log sample.
+Cursor-only actions redraw from that snapshot until the next refresh deadline.
+This keeps log and CPU arrow-key movement responsive while preserving the
+configured sampling interval.
 
 ## Failure behavior
 

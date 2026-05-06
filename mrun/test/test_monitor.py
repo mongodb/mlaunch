@@ -16,6 +16,7 @@ from mrun.monitor import (
     AUTH_REQUIRED_STATUS,
     build_monitor_tls_kwargs,
     build_osc52_sequence,
+    dashboard_snapshot_due,
     detect_log_severity,
     DiskMetrics,
     format_log_lines,
@@ -1008,6 +1009,15 @@ def test_log_cursor_helpers_move_and_mark_lines():
     assert formatted[2] == "  third"
 
 
+def test_dashboard_snapshot_due_skips_sampler_work_for_fast_redraws():
+    snapshot = object()
+
+    assert dashboard_snapshot_due(None, 10.0, 20.0) is True
+    assert dashboard_snapshot_due(snapshot, 10.0, 20.0) is False
+    assert dashboard_snapshot_due(snapshot, 20.0, 20.0) is True
+    assert dashboard_snapshot_due(snapshot, 10.0, 20.0, force_sample=True) is True
+
+
 def test_monitor_yanks_highlighted_log_line_to_terminal_clipboard():
     stdout = io.StringIO()
     monitor = Monitor(stdout=stdout)
@@ -1256,16 +1266,33 @@ def test_monitor_t_toggles_cpu_thread_view_only_when_cpu_focused():
     action = monitor._wait_for_action(
         FakeTerminal("t"), time.time(), [], [process])
 
-    assert action == "redraw"
+    assert action == "resample"
     assert monitor.cpu_thread_view is True
     assert monitor.status_message == "thread view for port 27017 pid 10"
 
     action = monitor._wait_for_action(
         FakeTerminal("t"), time.time(), [], [process])
 
-    assert action == "redraw"
+    assert action == "resample"
     assert monitor.cpu_thread_view is False
     assert monitor.status_message == "CPU process list"
+
+
+def test_monitor_cpu_selection_resamples_when_thread_view_is_active():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.focused_pane = "cpu"
+    monitor.cpu_thread_view = True
+
+    action = monitor._wait_for_action(
+        FakeTerminal("down"), time.time(), [], processes)
+
+    assert action == "resample"
+    assert monitor.cpu_cursor == 1
+    assert monitor.status_message == "selected port 27018 pid 11"
 
 
 def test_monitor_z_zooms_focused_pane():

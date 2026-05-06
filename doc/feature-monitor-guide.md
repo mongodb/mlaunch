@@ -381,6 +381,16 @@ DiskMetrics
 +-- db_size
 +-- log_size
 +-- error
+
+DashboardSnapshot
+|
++-- processes
++-- process_metrics
++-- network_metrics
++-- disk_metrics
++-- log_lines
++-- thread_metrics/thread_error/thread_count
++-- sampled_at
 ```
 
 CPU and memory come from `psutil.Process`. Network rates are computed by
@@ -445,6 +455,31 @@ PROCESS port 27017 pid 86094 mongod
 THREAD COUNT 113
 thread details unavailable
 ```
+
+## Fast cursor redraws
+
+The dashboard samples process, network, disk, thread, and log data on the
+configured refresh cadence. Cursor-only actions such as log up/down, CPU
+process up/down, pane focus, and zoom redraw from the most recent
+`DashboardSnapshot` instead of re-running all samplers.
+
+```text
+arrow key
+    |
+    v
+update cursor state
+    |
+    v
+render cached DashboardSnapshot
+    |
+    +-- no process discovery
+    +-- no serverStatus network query
+    +-- no disk walk
+    +-- no log file poll until refresh deadline
+```
+
+When CPU thread view is active, changing the selected CPU process forces a
+fresh sample so the thread count/details match the newly selected process.
 
 ## Log tailing
 
@@ -680,6 +715,7 @@ The focused monitor test module covers:
 - CPU thread view is off by default.
 - CPU thread view toggle.
 - thread-count fallback when detailed thread timing is denied.
+- fast cached redraws for cursor-only interactions.
 - CPU focused-pane zoom.
 - log controls remain pane-specific.
 - documentation sanity checks.
@@ -722,6 +758,7 @@ Use this list for manual review:
 [ ] CPU pane t toggles thread view for the selected process.
 [ ] CPU thread view is not shown by default.
 [ ] If detailed thread timing is denied, CPU thread view shows THREAD COUNT.
+[ ] Up/down in logs and CPU process-list mode feels immediate.
 [ ] Log pane j/k or arrows move the highlighted log row.
 [ ] p toggles pretty JSON view.
 [ ] Space pauses and resumes log streaming.

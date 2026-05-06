@@ -19,6 +19,7 @@ Feature area
 |   +-- t toggles thread view for the selected process
 |   +-- z zooms the CPU pane in process-list or thread mode
 |   +-- denied thread details fall back to thread count
+|   +-- cursor-only redraws reuse cached dashboard samples
 |
 +-- logs pane
 |   +-- existing log cursor, pretty JSON, yank, pause, and latest controls
@@ -43,10 +44,10 @@ python3 -m py_compile mrun/monitor.py mrun/mrun.py mrun/test/test_monitor.py
 Result: passed
 
 uv run --with pytest pytest mrun/test/test_monitor.py
-Result: 68 passed
+Result: 70 passed
 
 uv run --with pytest pytest
-Result: 87 passed, 1 xfailed, 1 warning
+Result: 89 passed, 1 xfailed, 1 warning
 ```
 
 The xfail is pre-existing expected behavior in the wider suite. The warning is
@@ -70,6 +71,7 @@ because it has a __init__ constructor
 | A4 | none     | Logs controls remain scoped to logs focus.     | Closed |
 | A5 | low      | Existing pytest collection warning remains.    | Known  |
 | A6 | none     | Access-denied threads show thread count.       | Closed |
+| A7 | none     | Cursor redraws avoid full metric resampling.   | Closed |
 +----+----------+------------------------------------------------+--------+
 ```
 
@@ -89,6 +91,8 @@ No new anomalies were detected by automated tests.
 [ ] Press z while CPU is focused and confirm CPU zoom opens.
 [ ] Press z again and confirm the quadrant layout returns.
 [ ] Press Tab to logs and confirm log movement/yank/pretty controls work there.
+[ ] Hold Up/Down in logs and confirm cursor movement feels responsive.
+[ ] Pause log streaming and confirm Up/Down still feels responsive.
 [ ] Confirm log movement keys do not move logs while CPU is focused.
 [ ] Press Shift+Tab and confirm focus moves backward.
 [ ] Press q or Ctrl+C and confirm the monitor exits cleanly.

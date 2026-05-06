@@ -56,6 +56,7 @@ STYLE_SEVERITY_INFO = "\x00severity:info\x00"
 STYLE_SEVERITY_DEBUG = "\x00severity:debug\x00"
 REFRESH_INTERVALS = (1.0, 5.0, 10.0)
 ESCAPE_READ_TIMEOUT = 0.03
+KEY_POLL_INTERVAL = 0.01
 PANE_ORDER = ("cpu", "memory", "network", "disk", "logs")
 PANE_TITLES = {
     "cpu": "CPU Usage",
@@ -171,6 +172,22 @@ class ThreadSnapshot:
     metrics: list
     error: str = ""
     thread_count: int = None
+
+
+@dataclass
+class DashboardSnapshot:
+    """One sampled dashboard state reused for fast cursor redraws."""
+
+    processes: list
+    process_metrics: dict
+    network_metrics: dict
+    disk_metrics: dict
+    log_lines: list
+    selected_ports: list
+    thread_metrics: list
+    thread_error: str = ""
+    thread_count: int = None
+    sampled_at: float = 0.0
 
 
 @dataclass
@@ -889,6 +906,11 @@ def selected_process(processes, cursor):
     return processes[cursor]
 
 
+def dashboard_snapshot_due(snapshot, now, next_sample_at, force_sample=False):
+    """Return True when dashboard samplers should run again."""
+    return force_sample or snapshot is None or now >= next_sample_at
+
+
 def next_refresh_interval(current_interval):
     """Cycle the monitor refresh interval through supported values."""
     try:
@@ -1520,51 +1542,28 @@ class Monitor:
     def _run_dashboard(self, logpaths):
         tailer = LogTailer(logpaths)
         self._prime_cpu()
+        snapshot = None
+        next_sample_at = 0.0
+        force_sample = True
 
         with TerminalController(self.stdin, self.stdout) as terminal:
             try:
                 while True:
-                    start = time.time()
-                    processes = self._discover_processes_or_report(
-                        clear_screen=True)
-                    if processes is None:
-                        return "quit"
-                    if not processes:
-                        self.stdout.write(
-                            "\033[2J\033[H" + self._no_processes_message() + "\n")
-                        self.stdout.flush()
-                        return "quit"
-
-                    process_metrics = {
-                        process.pid: read_process_metrics(process)
-                        for process in processes
-                    }
-                    self.cpu_cursor = clamp_process_cursor(
-                        processes, self.cpu_cursor)
-                    selected_cpu = selected_process(processes, self.cpu_cursor)
-                    thread_metrics = []
-                    thread_error = ""
-                    thread_count = None
-                    if self.cpu_thread_view and selected_cpu is not None:
-                        thread_snapshot = self.thread_sampler.sample(selected_cpu)
-                        thread_metrics = thread_snapshot.metrics
-                        thread_error = thread_snapshot.error
-                        thread_count = thread_snapshot.thread_count
-                    network_metrics = self.network_sampler.sample(processes)
-                    disk_metrics = read_disk_metrics(processes)
-                    log_lines = read_log_stream(tailer, self.stream_paused)
-                    selected_ports = sorted(logpaths)
-                    self.log_cursor = clamp_log_cursor(
-                        log_lines, self.log_cursor, self.follow_tail)
-                    self.yanked_cursor = clamp_optional_log_cursor(
-                        log_lines, self.yanked_cursor)
+                    now = time.time()
+                    if dashboard_snapshot_due(
+                            snapshot, now, next_sample_at, force_sample):
+                        snapshot = self._read_dashboard_snapshot(tailer, logpaths)
+                        if snapshot is None:
+                            return "quit"
+                        next_sample_at = snapshot.sampled_at + self.refresh_interval
+                        force_sample = False
 
                     frame = render_dashboard(
-                        processes,
-                        process_metrics,
-                        network_metrics,
-                        log_lines,
-                        selected_ports,
+                        snapshot.processes,
+                        snapshot.process_metrics,
+                        snapshot.network_metrics,
+                        snapshot.log_lines,
+                        snapshot.selected_ports,
                         log_cursor=self.log_cursor,
                         status_message=self.status_message,
                         zoom_logs=self.zoom_logs,
@@ -1578,19 +1577,69 @@ class Monitor:
                         zoom_pane=self.zoom_pane,
                         cpu_cursor=self.cpu_cursor,
                         cpu_thread_view=self.cpu_thread_view,
-                        thread_metrics=thread_metrics,
-                        thread_error=thread_error,
-                        thread_count=thread_count,
+                        thread_metrics=snapshot.thread_metrics,
+                        thread_error=snapshot.thread_error,
+                        thread_count=snapshot.thread_count,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()
 
+                    wait_start = time.time()
+                    wait_timeout = max(0.0, next_sample_at - wait_start)
                     action = self._wait_for_action(
-                        terminal, start, log_lines, processes)
+                        terminal, wait_start, snapshot.log_lines,
+                        snapshot.processes, timeout=wait_timeout)
                     if action in ("quit", "reselect"):
                         return action
+                    if action == "resample":
+                        force_sample = True
             except KeyboardInterrupt:
                 return "quit"
+
+    def _read_dashboard_snapshot(self, tailer, logpaths):
+        processes = self._discover_processes_or_report(clear_screen=True)
+        if processes is None:
+            return None
+        if not processes:
+            self.stdout.write(
+                "\033[2J\033[H" + self._no_processes_message() + "\n")
+            self.stdout.flush()
+            return None
+
+        process_metrics = {
+            process.pid: read_process_metrics(process)
+            for process in processes
+        }
+        self.cpu_cursor = clamp_process_cursor(processes, self.cpu_cursor)
+        selected_cpu = selected_process(processes, self.cpu_cursor)
+        thread_metrics = []
+        thread_error = ""
+        thread_count = None
+        if self.cpu_thread_view and selected_cpu is not None:
+            thread_snapshot = self.thread_sampler.sample(selected_cpu)
+            thread_metrics = thread_snapshot.metrics
+            thread_error = thread_snapshot.error
+            thread_count = thread_snapshot.thread_count
+        network_metrics = self.network_sampler.sample(processes)
+        disk_metrics = read_disk_metrics(processes)
+        log_lines = read_log_stream(tailer, self.stream_paused)
+        self.log_cursor = clamp_log_cursor(
+            log_lines, self.log_cursor, self.follow_tail)
+        self.yanked_cursor = clamp_optional_log_cursor(
+            log_lines, self.yanked_cursor)
+
+        return DashboardSnapshot(
+            processes=processes,
+            process_metrics=process_metrics,
+            network_metrics=network_metrics,
+            disk_metrics=disk_metrics,
+            log_lines=log_lines,
+            selected_ports=sorted(logpaths),
+            thread_metrics=thread_metrics,
+            thread_error=thread_error,
+            thread_count=thread_count,
+            sampled_at=time.time(),
+        )
 
     def _prime_cpu(self):
         try:
@@ -1622,9 +1671,12 @@ class Monitor:
             return NO_PROCESSES_MESSAGE
         return NO_MRUN_PROCESSES_MESSAGE
 
-    def _wait_for_action(self, terminal, start, log_lines, processes=None):
+    def _wait_for_action(self, terminal, start, log_lines, processes=None,
+                         timeout=None):
         processes = processes or []
-        while time.time() - start < self.refresh_interval:
+        if timeout is None:
+            timeout = self.refresh_interval
+        while time.time() - start < timeout:
             key = terminal.read_key()
             if key in ("q", "ctrl-c", "\x03"):
                 return "quit"
@@ -1649,13 +1701,17 @@ class Monitor:
             if self.focused_pane == "cpu":
                 if key in ("up", "k"):
                     self._move_cpu_cursor(processes, -1)
+                    if self.cpu_thread_view:
+                        return "resample"
                     return "redraw"
                 if key in ("down", "j"):
                     self._move_cpu_cursor(processes, 1)
+                    if self.cpu_thread_view:
+                        return "resample"
                     return "redraw"
                 if key in ("t", "T"):
                     self._toggle_cpu_thread_view(processes)
-                    return "redraw"
+                    return "resample"
             elif self.focused_pane == "logs":
                 if key in ("up", "k"):
                     self._move_log_cursor(log_lines, -1)
@@ -1678,7 +1734,7 @@ class Monitor:
             elif key == " ":
                 self.status_message = "space applies to logs pane"
                 return "redraw"
-            time.sleep(0.05)
+            time.sleep(KEY_POLL_INTERVAL)
         return None
 
     def _focus_next_pane(self, delta):
