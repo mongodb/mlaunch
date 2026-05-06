@@ -663,23 +663,57 @@ without terminating the monitor.
 ## Anomaly resolution traceability
 
 ```text
-+-----------------+--------+-----------------------------------+----------------+
-| ID              | Source | Summary                           | Status         |
-+-----------------+--------+-----------------------------------+----------------+
-| FM-MON-CLI-001 | A3     | monitor flag order routing        | Implemented    |
-| FM-MON-CLI-002 | A2     | monitor unknown argument handling | Implemented    |
-| FM-MON-PROC-001| A4     | process-list permission handling  | Implemented    |
-| FM-MON-AUTH-001| A1,A6  | load auth metadata                | Implemented    |
-| FM-MON-AUTH-002| A1     | pass auth to NetworkSampler       | Implemented    |
-| FM-MON-AUTH-003| A1,A6  | auth required network status      | Implemented    |
-| FM-MON-AUTH-004| A2,A6  | monitor credential overrides      | Implemented    |
-| FM-MON-TLS-001 | A5     | TLS/SSL network kwargs            | Implemented    |
-| FM-MON-DOC-001 | all    | traceable docs                    | Implemented    |
-| FM-MON-PANE-001| user   | pane focus and focused zoom       | Implemented    |
-| FM-MON-CPU-001 | user   | CPU process selection             | Implemented    |
-| FM-MON-CPU-002 | user   | toggled CPU thread view           | Implemented    |
-| FM-MON-QA-001  | user   | final anomaly report              | Implemented    |
-+-----------------+--------+-----------------------------------+----------------+
++-------------------+--------+-----------------------------------+---------+-------------+
+| ID                | Source | Summary                           | Commit  | Status      |
++-------------------+--------+-----------------------------------+---------+-------------+
+| FM-MON-BASE-001  | user   | initial monitor dashboard         | 6dd5ff2 | Implemented |
+| FM-MON-CLI-001   | A3     | monitor flag order routing        | 1266878 | Implemented |
+| FM-MON-CLI-002   | A2     | monitor unknown argument handling | 1266878 | Implemented |
+| FM-MON-PROC-001  | A4     | process-list permission handling  | efebf01 | Implemented |
+| FM-MON-AUTH-001  | A1,A6  | load auth metadata                | d9f3060 | Implemented |
+| FM-MON-AUTH-002  | A1     | pass auth to NetworkSampler       | d9f3060 | Implemented |
+| FM-MON-AUTH-003  | A1,A6  | auth required network status      | d9f3060 | Implemented |
+| FM-MON-AUTH-004  | A2,A6  | monitor credential overrides      | c8376cc | Implemented |
+| FM-MON-TLS-001   | A5     | TLS/SSL network kwargs            | d1454f0 | Implemented |
+| FM-MON-DOC-001   | all    | traceable auth/TLS anomaly docs   | 264f6da | Implemented |
+| FM-MON-PANE-001  | user   | pane focus and focused zoom       | f354587 | Implemented |
+| FM-MON-CPU-001   | user   | CPU process selection             | f354587 | Implemented |
+| FM-MON-CPU-002   | user   | toggled CPU thread view           | f354587 | Implemented |
+| FM-MON-QA-001    | user   | thread view anomaly report        | 52a8234 | Implemented |
+| FM-MON-THREAD-001| user   | denied thread details show count  | fbd7996 | Implemented |
+| FM-MON-PERF-001  | user   | fast cursor redraws               | 95ea616 | Implemented |
+| FM-MON-RENDER-001| user   | cached disk metrics NameError fix | b095c9b | Implemented |
++-------------------+--------+-----------------------------------+---------+-------------+
+```
+
+## Feature monitor commit map
+
+```text
++---------+-----------------------------------------------+-------------------+-------------------------------+
+| Commit  | Purpose                                       | Trace IDs         | Key files                     |
++---------+-----------------------------------------------+-------------------+-------------------------------+
+| 6dd5ff2 | Add base interactive monitor dashboard         | FM-MON-BASE-001   | monitor.py, mrun.py, docs     |
+| 1266878 | Fix monitor CLI routing and monitor args       | FM-MON-CLI-001/2  | mrun.py, test_monitor.py      |
+| efebf01 | Handle process discovery permission failures   | FM-MON-PROC-001   | monitor.py, test_monitor.py   |
+| d9f3060 | Load auth metadata for network sampling        | FM-MON-AUTH-001/3 | monitor.py, test_monitor.py   |
+| c8376cc | Add explicit monitor credential overrides      | FM-MON-AUTH-004   | mrun.py, monitor.py, tests    |
+| d1454f0 | Propagate TLS/SSL settings to network sampling | FM-MON-TLS-001    | monitor.py, test_monitor.py   |
+| 264f6da | Add anomaly traceability docs                  | FM-MON-DOC-001    | feature-monitor-guide.md      |
+| f354587 | Add pane focus, CPU selection, thread toggle   | FM-MON-PANE/CPU   | monitor.py, mrun.py, tests    |
+| 52a8234 | Document pane focus and thread-view behavior   | FM-MON-QA-001     | docs, anomaly report          |
+| fbd7996 | Fall back to thread count when details denied  | FM-MON-THREAD-001 | monitor.py, tests, docs       |
+| 95ea616 | Redraw cursor moves from cached samples        | FM-MON-PERF-001   | monitor.py, tests, docs       |
+| b095c9b | Fix cached disk metrics render NameError       | FM-MON-RENDER-001 | monitor.py, tests, report     |
++---------+-----------------------------------------------+-------------------+-------------------------------+
+```
+
+Reading order for reviewers:
+
+```text
+1. Start with 6dd5ff2 to understand the dashboard shape.
+2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
+3. Review f354587 and 52a8234 for pane focus and CPU thread view.
+4. Review fbd7996, 95ea616, and b095c9b for live-testing follow-up fixes.
 ```
 
 ## Testing added by the branch
