@@ -48,12 +48,14 @@ feature-monitor branch
 |
 +-- mrun/mrun.py
 |   +-- adds top-level --monitor, --all, and --dir handling
+|   +-- adds --monitor-username, --monitor-password, --monitor-auth-db
 |   +-- routes monitor requests before normal command dispatch
 |   +-- constructs Monitor with data_dir and include_all options
 |
 +-- mrun/monitor.py
 |   +-- new interactive monitor implementation
 |   +-- process discovery, metrics sampling, log tailing, rendering, key input
+|   +-- auth and TLS metadata loading for network sampling
 |
 +-- mrun/test/test_monitor.py
 |   +-- focused tests for monitor behavior and rendering helpers
@@ -112,6 +114,8 @@ The integration is intentionally narrow:
 - `--monitor` is treated as a separate top-level mode.
 - `--dir` is reused by monitor mode to find `.mrun_startup`.
 - `--all` only affects monitor process discovery.
+- `--monitor-username`, `--monitor-password`, and `--monitor-auth-db` only
+  affect monitor network sampling.
 - The monitor exits with status `1` when it cannot find matching processes and
   `0` for normal interactive exits.
 
@@ -155,6 +159,25 @@ sequenceDiagram
     User-->>Monitor: press a
     Monitor->>Monitor: toggle process_scope to mrun
     Monitor-->>User: reselect logs using mrun-managed scope
+```
+
+## Auth and TLS network sequence
+
+```mermaid
+sequenceDiagram
+    participant Monitor as Monitor
+    participant FS as .mrun_startup
+    participant Sampler as NetworkSampler
+    participant Mongo as MongoDB
+
+    Monitor->>FS: load parsed_args
+    FS-->>Monitor: auth, username, password, auth_db, TLS/SSL fields
+    Monitor->>Monitor: apply monitor credential overrides if present
+    Monitor->>Monitor: build PyMongo kwargs
+    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required)
+    Sampler->>Mongo: admin.command(serverStatus)
+    Mongo-->>Sampler: network counters or auth/TLS error
+    Sampler-->>Monitor: NetworkMetrics
 ```
 
 ## Runtime dashboard loop
@@ -314,6 +337,16 @@ NetworkMetrics
 +-- requests_per_sec
 +-- error
 
+MonitorAuthConfig
+|
++-- enabled
++-- username
++-- password
++-- auth_db
++-- initial_user
++-- client_kwargs()
++-- requires_credentials()
+
 DiskMetrics
 |
 +-- available
@@ -324,8 +357,13 @@ DiskMetrics
 
 CPU and memory come from `psutil.Process`. Network rates are computed by
 sampling MongoDB `serverStatus().network` counters and calculating deltas
-between refreshes. Disk size is computed with standard library file traversal:
-`os.walk()` and `os.path.getsize()`.
+between refreshes. For authenticated deployments, monitor mode loads stored
+credentials from `.mrun_startup` and passes them to the network sampler. If
+`--monitor-username`, `--monitor-password`, or `--monitor-auth-db` are provided,
+those values override stored credentials for monitor network sampling only.
+TLS/SSL client options are also rehydrated from `.mrun_startup` and passed to
+the same network client path. Disk size is computed with standard library file
+traversal: `os.walk()` and `os.path.getsize()`.
 
 ## Log tailing
 
@@ -483,8 +521,39 @@ PORT   IN       OUT      REQ/s   STATUS
 27018  -        -        -       unavailable
 ```
 
+Auth-enabled deployment without usable monitor credentials:
+
+```text
+PORT   IN       OUT      REQ/s   STATUS
+27018  -        -        -       auth required
+```
+
+Restricted process-list environment:
+
+```text
+mrun --monitor could not list local processes: permission denied
+```
+
 Missing or unreadable disk paths are reported as unavailable in the disk panel,
 without terminating the monitor.
+
+## Anomaly resolution traceability
+
+```text
++-----------------+--------+-----------------------------------+----------------+
+| ID              | Source | Summary                           | Status         |
++-----------------+--------+-----------------------------------+----------------+
+| FM-MON-CLI-001 | A3     | monitor flag order routing        | Implemented    |
+| FM-MON-CLI-002 | A2     | monitor unknown argument handling | Implemented    |
+| FM-MON-PROC-001| A4     | process-list permission handling  | Implemented    |
+| FM-MON-AUTH-001| A1,A6  | load auth metadata                | Implemented    |
+| FM-MON-AUTH-002| A1     | pass auth to NetworkSampler       | Implemented    |
+| FM-MON-AUTH-003| A1,A6  | auth required network status      | Implemented    |
+| FM-MON-AUTH-004| A2,A6  | monitor credential overrides      | Implemented    |
+| FM-MON-TLS-001 | A5     | TLS/SSL network kwargs            | Implemented    |
+| FM-MON-DOC-001 | all    | traceable docs                    | Implemented    |
++-----------------+--------+-----------------------------------+----------------+
+```
 
 ## Testing added by the branch
 
@@ -492,11 +561,17 @@ The focused monitor test module covers:
 
 - CLI routing for `--monitor`.
 - `--monitor --all` parsing.
+- monitor flag order with `--all`, `--dir`, and `--no-progressbar`.
+- monitor-specific rejection of init-only auth flags.
+- monitor credential override flags.
 - Help text for monitor controls.
 - mrun-managed process filtering from `.mrun_startup`.
 - all-process discovery.
+- process-list permission failures.
 - CPU/memory metric helpers.
 - network counter deltas.
+- auth metadata loading and auth-required status.
+- auth/TLS client kwargs passed to network sampling.
 - disk size calculation.
 - log tail seeding and polling.
 - stream pause/resume behavior.
@@ -525,6 +600,12 @@ Use this list for manual review:
 ```text
 [ ] mrun --monitor defaults to mrun-managed processes.
 [ ] mrun --monitor --all shows all local mongod/mongos processes.
+[ ] mrun --all --monitor routes to monitor mode.
+[ ] mrun --dir data --monitor routes to monitor mode.
+[ ] init-only auth flags are rejected clearly in monitor mode.
+[ ] auth-enabled deployments show network rates when credentials are available.
+[ ] auth-enabled deployments without credentials show auth required.
+[ ] --monitor-username/--monitor-password/--monitor-auth-db override stored credentials.
 [ ] a toggles process scope and prompts for log selection again.
 [ ] CPU and memory panels show the expected ports and pids.
 [ ] Network panel reports rates or unavailable status.

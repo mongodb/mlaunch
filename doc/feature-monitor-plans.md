@@ -50,7 +50,7 @@ Trace:
 Code: mrun/mrun.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ### FM-MON-CLI-002: Add monitor-specific unknown argument handling
@@ -78,7 +78,7 @@ Trace:
 Code: mrun/mrun.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ## Phase 2: Process discovery hardening
@@ -108,7 +108,7 @@ Trace:
 Code: mrun/monitor.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ## Phase 3: Auth-aware network sampling
@@ -139,7 +139,7 @@ Trace:
 Code: mrun/monitor.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ### FM-MON-AUTH-002: Pass auth credentials into `NetworkSampler`
@@ -168,7 +168,7 @@ Trace:
 Code: mrun/monitor.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ### FM-MON-AUTH-003: Improve auth-required network status
@@ -196,7 +196,7 @@ Trace:
 Code: mrun/monitor.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ## Phase 4: Optional monitor credential overrides
@@ -232,7 +232,7 @@ Trace:
 Code: mrun/mrun.py, mrun/monitor.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ## Phase 5: TLS/SSL compatibility
@@ -260,7 +260,7 @@ Trace:
 Code: mrun/mrun.py, mrun/monitor.py
 Tests: mrun/test/test_monitor.py
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ## Phase 6: Documentation traceability
@@ -286,7 +286,7 @@ Trace:
 
 ```text
 Docs: doc/feature-monitor-guide.md
-Status: Planned
+Status: Implemented
 ```
 
 ## Verification plan

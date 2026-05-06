@@ -21,7 +21,8 @@ Usage
 .. code-block:: bash
 
    mrun [-h] [--version] [--no-progressbar] [--monitor] [--all]
-        [--dir DIR]
+        [--dir DIR] [--monitor-username USER]
+        [--monitor-password PASSWORD] [--monitor-auth-db DB]
    mrun [-h] [--version] [--no-progressbar]
            {init,start,stop,restart,list,kill} ...
 
@@ -54,6 +55,12 @@ Monitor
 ``--all``
    used with ``--monitor`` to include all local ``mongod`` and ``mongos``
    processes instead of only the processes listed in ``.mrun_startup``.
+
+``--monitor-username USER``, ``--monitor-password PASSWORD``,
+``--monitor-auth-db DB``
+   optional credential overrides used only by ``--monitor`` network sampling.
+   By default, monitor mode loads credentials from ``.mrun_startup`` when an
+   authenticated **mrun** deployment created an initial user.
 
    Monitor controls:
 
