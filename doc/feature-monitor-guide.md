@@ -32,6 +32,9 @@ The monitor shows:
 - MongoDB network counter rates from `serverStatus().network`.
 - Disk consumption for each process dbpath and log file.
 - Selectable live log tail with severity colors.
+- Focusable panes with full-pane zoom.
+- Selectable CPU process rows.
+- Optional CPU thread view for the selected process.
 - Zoomed log view.
 - Pretty JSON view for a highlighted log line.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
@@ -56,6 +59,7 @@ feature-monitor branch
 |   +-- new interactive monitor implementation
 |   +-- process discovery, metrics sampling, log tailing, rendering, key input
 |   +-- auth and TLS metadata loading for network sampling
+|   +-- pane focus, focused-pane zoom, CPU process selection, thread sampling
 |
 +-- mrun/test/test_monitor.py
 |   +-- focused tests for monitor behavior and rendering helpers
@@ -204,13 +208,16 @@ flowchart TD
     M -- q or Ctrl+C --> N[Exit]
     M -- r --> O[Reselect logs]
     M -- a --> P[Toggle process scope and reselect logs]
-    M -- z --> Q[Toggle log zoom]
-    M -- arrows/j/k --> R[Move highlighted line]
-    M -- g --> S[Jump to newest line]
-    M -- p --> T[Toggle pretty JSON]
-    M -- y --> U[Yank highlighted raw line]
-    M -- space --> V[Pause or resume log streaming]
-    M -- s --> W[Cycle refresh interval]
+    M -- Tab or Shift+Tab --> Q[Move pane focus]
+    M -- z --> R[Toggle focused-pane zoom]
+    M -- CPU arrows/j/k --> S[Select MongoDB process]
+    M -- CPU t --> T[Toggle selected-process thread view]
+    M -- logs arrows/j/k --> U[Move highlighted line]
+    M -- logs g --> V[Jump to newest line]
+    M -- logs p --> W[Toggle pretty JSON]
+    M -- logs y --> X[Yank highlighted raw line]
+    M -- logs space --> Y[Pause or resume log streaming]
+    M -- s --> Z[Cycle refresh interval]
     O --> A
     P --> A
     Q --> A
@@ -220,6 +227,9 @@ flowchart TD
     U --> A
     V --> A
     W --> A
+    X --> A
+    Y --> A
+    Z --> A
 ```
 
 ## Terminal layout
@@ -229,11 +239,11 @@ half contains CPU and memory panels. The lower-left area is split horizontally
 into network and disk usage. The lower-right area is the log tail.
 
 ```text
-+ CPU Usage --------------------++ Memory Usage -----------------+
-| PORT   PID      PROCESS  CPU% || PORT   PID      PROCESS  RSS  |
-| 27017  12345    mongod   12.3 || 27017  12345    mongod   1.2G |
-| 27018  12346    mongod    5.1 || 27018  12346    mongod   1.1G |
-+-------------------------------++-------------------------------+
++ [CPU Usage] ==================++ Memory Usage -----------------+
+|   PORT   PID      PROCESS CPU% || PORT   PID      PROCESS  RSS  |
+| > 27017  12345    mongod  12.3 || 27017  12345    mongod   1.2G |
+|   27018  12346    mongod   5.1 || 27018  12346    mongod   1.1G |
++===============================++-------------------------------+
 + Network Usage ----------------++ Log Tail: 27017, 27018 -------+
 | PORT   IN       OUT      REQ/s ||  27017 | {"s":"I", ...}       |
 | 27017  1.5KB/s  4.0KB/s  12.0 ||  27018 | {"s":"W", ...}       |
@@ -241,18 +251,28 @@ into network and disk usage. The lower-right area is the log tail.
 | PORT   DB SIZE   LOG SIZE     ||  27017 | {"s":"I", ...}       |
 | 27017  540.2MB   12.1MB       ||  27018 | {"s":"D", ...}       |
 +-------------------------------++-------------------------------+
-status text | q/Ctrl+C quit | r reselect | z zoom logs | ...
+status text | q/Ctrl+C quit | Tab pane | z zoom focus | ...
 ```
 
-When zoom mode is active, the log panel owns the full frame:
+When zoom mode is active, the focused pane owns the full frame. For logs:
 
 ```text
-+ Log Tail: 27018 ------------------------------------------------+
++ [Log Tail: 27018] ==============================================+
 |  27018 | {"s":"I","msg":"startup complete"}                     |
 |  27018 | {"s":"W","msg":"slow operation"}                       |
 |> 27018 | {"s":"E","msg":"connection failed"}                    |
 |  27018 | {"s":"I","msg":"listening"}                            |
-+-----------------------------------------------------------------+
++=================================================================+
+```
+
+CPU thread view is toggled only from the CPU pane with `t`:
+
+```text
++ [CPU Threads: port 27017 pid 12345] ============================+
+| PROCESS port 27017 pid 12345 mongod                             |
+| TID        CPU%    USER     SYSTEM   TOTAL                       |
+| 456789      12.5   2.10     0.30     2.40                        |
++=================================================================+
 ```
 
 Pretty JSON mode also uses the full log view:
@@ -329,6 +349,14 @@ ProcessMetrics
 +-- memory_rss
 +-- status
 
+ThreadMetrics
+|
++-- thread_id
++-- cpu_percent
++-- user_time
++-- system_time
++-- total_time
+
 NetworkMetrics
 |
 +-- available
@@ -365,6 +393,48 @@ TLS/SSL client options are also rehydrated from `.mrun_startup` and passed to
 the same network client path. Disk size is computed with standard library file
 traversal: `os.walk()` and `os.path.getsize()`.
 
+Thread metrics are sampled only when the CPU pane is in thread view. The
+monitor reads `psutil.Process(pid).threads()` for the selected process and
+computes per-thread CPU percentage from user/system time deltas between
+refreshes.
+
+## Pane focus and CPU thread view
+
+The monitor starts with the logs pane focused, preserving the existing behavior
+where log navigation works immediately after the dashboard opens.
+
+```text
+focus order
+
+logs --Tab--> cpu --Tab--> memory --Tab--> network --Tab--> disk --Tab--> logs
+logs --Shift+Tab--> disk
+```
+
+The focused pane receives an emphasized border. `z` zooms the focused pane,
+not only logs. When a zoomed pane is active, `z` returns to the quadrant view.
+
+CPU pane behavior:
+
+```text
+default CPU pane
+    |
+    |  j/k or arrows
+    v
+selected mongod/mongos row
+    |
+    |  t
+    v
+thread view for selected process
+    |
+    |  t
+    v
+default CPU pane
+```
+
+Thread view is not rendered by default. It is a pane-local toggle, so log
+tailing, memory, network, and disk views do not change unless their pane is
+focused or zoomed.
+
 ## Log tailing
 
 The log tailer keeps a bounded in-memory buffer. Each line is prefixed with the
@@ -399,8 +469,9 @@ sequenceDiagram
     Tailer-->>Loop: existing buffer without reading file
 ```
 
-Pausing log streaming with Space freezes the visible buffer and does not advance
-file offsets. Resuming catches up from the same offsets.
+Pausing log streaming with Space while the logs pane is focused freezes the
+visible buffer and does not advance file offsets. Resuming catches up from the
+same offsets.
 
 ## Log colors and highlight priority
 
@@ -452,13 +523,18 @@ does not include ANSI escape sequences or visual cursor markers.
 | Ctrl+C     | Quit monitor                                        |
 | r          | Reselect logs                                       |
 | a          | Toggle mrun-managed/all process scope               |
-| z          | Toggle full-screen log zoom                         |
-| Up or k    | Move highlighted log line up, pause live-follow     |
-| Down or j  | Move highlighted log line down                      |
-| g          | Jump to newest log line and resume live-follow      |
-| p          | Pretty-print highlighted JSON log line              |
-| y          | Yank highlighted raw line through OSC 52            |
-| Space      | Pause or resume log streaming                       |
+| Tab        | Focus next pane                                     |
+| Shift+Tab  | Focus previous pane                                 |
+| z          | Toggle full-screen zoom for focused pane            |
+| CPU Up/k   | Select previous MongoDB process                     |
+| CPU Down/j | Select next MongoDB process                         |
+| CPU t      | Toggle selected-process thread view                 |
+| Logs Up/k  | Move highlighted log line up, pause live-follow     |
+| Logs Down/j| Move highlighted log line down                      |
+| Logs g     | Jump to newest log line and resume live-follow      |
+| Logs p     | Pretty-print highlighted JSON log line              |
+| Logs y     | Yank highlighted raw line through OSC 52            |
+| Logs Space | Pause or resume log streaming                       |
 | s          | Cycle refresh interval: 1s -> 5s -> 10s -> 1s       |
 +------------+-----------------------------------------------------+
 ```
@@ -469,6 +545,7 @@ Arrow keys are parsed directly from common terminal escape sequences:
 CSI arrows:         ESC [ A / ESC [ B
 Application arrows: ESC O A / ESC O B
 Modified arrows:    ESC [ 1 ; 2 A / ESC [ 1 ; 5 B
+Shift+Tab:          ESC [ Z
 ```
 
 ## Log interaction states
@@ -476,18 +553,18 @@ Modified arrows:    ESC [ 1 ; 2 A / ESC [ 1 ; 5 B
 ```mermaid
 stateDiagram-v2
     [*] --> Following
-    Following --> PausedFollow: Up or k
-    PausedFollow --> Following: Down/j reaches newest
-    PausedFollow --> Following: g
-    Following --> StreamPaused: Space
-    PausedFollow --> StreamPaused: Space
-    StreamPaused --> Following: Space and follow_tail true
-    StreamPaused --> PausedFollow: Space and follow_tail false
-    Following --> PrettyJSON: p on JSON line
-    PausedFollow --> PrettyJSON: p on JSON line
-    PrettyJSON --> PausedFollow: p again
-    Following --> Zoomed: z
-    PausedFollow --> Zoomed: z
+    Following --> PausedFollow: logs Up or k
+    PausedFollow --> Following: logs Down/j reaches newest
+    PausedFollow --> Following: logs g
+    Following --> StreamPaused: logs Space
+    PausedFollow --> StreamPaused: logs Space
+    StreamPaused --> Following: logs Space and follow_tail true
+    StreamPaused --> PausedFollow: logs Space and follow_tail false
+    Following --> PrettyJSON: logs p on JSON line
+    PausedFollow --> PrettyJSON: logs p on JSON line
+    PrettyJSON --> PausedFollow: logs p again
+    Following --> Zoomed: logs focused and z
+    PausedFollow --> Zoomed: logs focused and z
     Zoomed --> Following: z when follow_tail true
     Zoomed --> PausedFollow: z when follow_tail false
 ```
@@ -552,6 +629,10 @@ without terminating the monitor.
 | FM-MON-AUTH-004| A2,A6  | monitor credential overrides      | Implemented    |
 | FM-MON-TLS-001 | A5     | TLS/SSL network kwargs            | Implemented    |
 | FM-MON-DOC-001 | all    | traceable docs                    | Implemented    |
+| FM-MON-PANE-001| user   | pane focus and focused zoom       | Implemented    |
+| FM-MON-CPU-001 | user   | CPU process selection             | Implemented    |
+| FM-MON-CPU-002 | user   | toggled CPU thread view           | Implemented    |
+| FM-MON-QA-001  | user   | final anomaly report              | Implemented    |
 +-----------------+--------+-----------------------------------+----------------+
 ```
 
@@ -583,6 +664,12 @@ The focused monitor test module covers:
 - severity color detection and rendering.
 - selected/yanked color priority.
 - dashboard and zoom rendering.
+- pane focus cycling.
+- CPU process cursor movement.
+- CPU thread view is off by default.
+- CPU thread view toggle.
+- CPU focused-pane zoom.
+- log controls remain pane-specific.
 - documentation sanity checks.
 
 The verification commands used for this branch are:
@@ -617,7 +704,12 @@ Use this list for manual review:
 [ ] Fatal rows are red inverse.
 [ ] Selection remains visible on colored rows.
 [ ] yanked rows become green inverse.
-[ ] z toggles full-screen log view.
+[ ] Tab and Shift+Tab cycle focus across panes.
+[ ] z toggles full-screen zoom for the focused pane.
+[ ] CPU pane j/k or arrows select a MongoDB process row.
+[ ] CPU pane t toggles thread view for the selected process.
+[ ] CPU thread view is not shown by default.
+[ ] Log pane j/k or arrows move the highlighted log row.
 [ ] p toggles pretty JSON view.
 [ ] Space pauses and resumes log streaming.
 [ ] g jumps back to the newest log line.

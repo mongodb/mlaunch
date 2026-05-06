@@ -49,6 +49,9 @@ mrun/monitor.py
 +-- process metrics
 |   +-- read_process_metrics()
 |   +-- reads CPU percent, RSS memory, and process status from psutil
+|   +-- ThreadSampler
+|   +-- samples psutil Process.threads() only when CPU thread view is toggled
+|   +-- computes per-thread CPU from user/system time deltas
 |
 +-- network metrics
 |   +-- NetworkSampler
@@ -80,12 +83,15 @@ mrun/monitor.py
     +-- q or Ctrl+C quits
     +-- r reselects logs
     +-- a toggles mrun-managed/all process scope
-    +-- z toggles log zoom
-    +-- j/k or arrows move the highlighted log row
-    +-- g jumps to the newest log row and resumes live-follow
-    +-- p prettifies the highlighted row as JSON
-    +-- y yanks the highlighted raw log line with OSC 52
-    +-- space pauses or resumes log streaming
+    +-- Tab and Shift+Tab cycle focused panes
+    +-- z zooms the focused pane
+    +-- CPU focus: j/k or arrows select a MongoDB process
+    +-- CPU focus: t toggles process-list and selected-process thread views
+    +-- logs focus: j/k or arrows move the highlighted log row
+    +-- logs focus: g jumps to the newest log row and resumes live-follow
+    +-- logs focus: p prettifies the highlighted row as JSON
+    +-- logs focus: y yanks the highlighted raw log line with OSC 52
+    +-- logs focus: space pauses or resumes log streaming
     +-- s cycles refresh through 1s, 5s, and 10s
 ```
 
@@ -117,13 +123,16 @@ flowchart TD
     Q -- q or Ctrl+C --> R[Exit monitor]
     Q -- r --> J
     Q -- a --> J
-    Q -- z --> S[Toggle log zoom]
-    Q -- j/k/arrows --> T[Move highlighted row]
-    Q -- g --> U[Jump to newest row and follow]
-    Q -- p --> V[Toggle pretty JSON view]
-    Q -- y --> W[Yank raw highlighted line]
-    Q -- space --> X[Pause or resume log streaming]
-    Q -- s --> Y[Cycle refresh interval]
+    Q -- Tab or Shift+Tab --> S[Move pane focus]
+    Q -- z --> T[Toggle focused-pane zoom]
+    Q -- CPU j/k/arrows --> U[Select MongoDB process]
+    Q -- CPU t --> V[Toggle selected-process thread view]
+    Q -- logs j/k/arrows --> W[Move highlighted row]
+    Q -- logs g --> X[Jump to newest row and follow]
+    Q -- logs p --> Y[Toggle pretty JSON view]
+    Q -- logs y --> Z[Yank raw highlighted line]
+    Q -- logs space --> AA[Pause or resume log streaming]
+    Q -- s --> AB[Cycle refresh interval]
     S --> L
     T --> L
     U --> L
@@ -131,6 +140,9 @@ flowchart TD
     W --> L
     X --> L
     Y --> L
+    Z --> L
+    AA --> L
+    AB --> L
     Q -- none --> L
 ```
 
@@ -139,7 +151,7 @@ flowchart TD
 ```text
 four-panel mode
 
-+ CPU Usage -----------++ Memory Usage --------+
++ [CPU Usage] ---------++ Memory Usage --------+
 | port pid process cpu || port pid process rss |
 +----------------------++----------------------+
 + Network Usage -------++ Log Tail -----------+
@@ -148,9 +160,17 @@ four-panel mode
 | port db size log size|| > yanked log line    |  green inverse
 +----------------------++----------------------+
 
+CPU thread mode, toggled with t while CPU is focused
+
++ [CPU Threads: port 27017 pid 12345] --------+
+| PROCESS port 27017 pid 12345 mongod         |
+| TID        CPU%    USER     SYSTEM   TOTAL   |
+| 456789      12.5   2.10     0.30     2.40    |
++---------------------------------------------+
+
 zoom mode
 
-+ Log Tail: 27017 -----------------------------+
++ [Log Tail: 27017] ---------------------------+
 |  normal log line                              |
 |> selected error log line                      |  red inverse row
 |> yanked log line                              |  green inverse row
@@ -175,6 +195,35 @@ selected row remains visible without making warnings, errors, and info rows
 look the same. `y` copies the raw log line, without ANSI escape sequences and
 without the visual cursor marker.
 
+## Pane focus and CPU threads
+
+The dashboard starts with the logs pane focused so log navigation remains
+immediately available. `Tab` and `Shift+Tab` cycle focus across:
+
+```text
++-----+--------+---------+------+------+
+| CPU | Memory | Network | Disk | Logs |
++-----+--------+---------+------+------+
+```
+
+The focused pane uses an emphasized ASCII border. Pressing `z` zooms that
+focused pane; pressing `z` again returns to the quadrant layout.
+
+CPU thread view is intentionally not the default. When the CPU pane is focused,
+`j`/`k` or the up/down arrows select a MongoDB process row. Pressing `t`
+toggles the CPU pane from the process CPU list to threads for the selected
+process. Pressing `t` again returns to the process CPU list.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ProcessList
+    ProcessList --> ProcessList: CPU j/k/arrows select process
+    ProcessList --> ThreadView: CPU t
+    ThreadView --> ThreadView: refresh selected process threads
+    ThreadView --> ThreadView: CPU j/k/arrows select another process
+    ThreadView --> ProcessList: CPU t
+```
+
 ## Process scope
 
 The default scope is mrun-managed processes. `Monitor.run()` loads
@@ -186,19 +235,22 @@ and all detected local MongoDB processes, then prompts for log selection again.
 ## Tail-follow behavior
 
 The monitor starts in live-follow mode: the highlighted row stays on the newest
-log line as the log grows. Scrolling upward with `k` or the up arrow freezes
-the viewport on the selected historical line. Scrolling downward with `j` or
-the down arrow resumes live-follow once the selection reaches the newest line.
-The `g` key jumps directly to the newest line and resumes live-follow.
+log line as the log grows. When the logs pane is focused, scrolling upward with
+`k` or the up arrow freezes the viewport on the selected historical line.
+Scrolling downward with `j` or the down arrow resumes live-follow once the
+selection reaches the newest line. The `g` key jumps directly to the newest
+line and resumes live-follow.
 
-The `p` key parses the highlighted raw log line as JSON. If parsing succeeds,
-the monitor pauses live-follow, expands the log panel, and renders indented
-JSON. Pressing `p` again returns to the raw log-line view. If the line is not
-valid JSON, the status footer reports the parse failure and keeps the raw view.
+In the logs pane, `p` parses the highlighted raw log line as JSON. If parsing
+succeeds, the monitor pauses live-follow, expands the log panel, and renders
+indented JSON. Pressing `p` again returns to the raw log-line view. If the line
+is not valid JSON, the status footer reports the parse failure and keeps the raw
+view.
 
-The spacebar pauses or resumes log streaming. Pausing does not read from the
-selected log files, so the visible buffer remains frozen. Resuming polls from
-the same file offsets and catches up with lines that were written while paused.
+In the logs pane, the spacebar pauses or resumes log streaming. Pausing does
+not read from the selected log files, so the visible buffer remains frozen.
+Resuming polls from the same file offsets and catches up with lines that were
+written while paused.
 
 The `s` key cycles the refresh interval:
 

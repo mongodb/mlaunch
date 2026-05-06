@@ -68,8 +68,15 @@ Monitor
    -  ``r`` reselects logs.
    -  ``a`` toggles between **mrun** managed processes and all detected local
       MongoDB processes, then prompts for log selection again.
-   -  ``z`` toggles a full-screen log tail view.
-   -  ``j``/``k`` or up/down arrows move the highlighted log line.
+   -  ``Tab`` and ``Shift+Tab`` move focus across CPU, memory, network, disk,
+      and logs panes.
+   -  ``z`` toggles a full-screen view for the focused pane.
+   -  In the CPU pane, ``j``/``k`` or up/down arrows select a MongoDB process.
+   -  In the CPU pane, ``t`` toggles between the default process CPU list and
+      a thread view for the selected process. Thread view is never shown by
+      default.
+   -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
+      line.
    -  ``g`` jumps to the newest log line and resumes live-follow.
    -  ``p`` prettifies the highlighted line as JSON, pauses live-follow, and
       expands the log view. Press ``p`` again to return to the raw log line.
