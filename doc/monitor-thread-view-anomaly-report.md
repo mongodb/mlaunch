@@ -22,8 +22,8 @@ Feature area
 |   +-- cursor-only redraws reuse cached dashboard samples
 |
 +-- logs pane
-|   +-- existing log cursor, pretty JSON, yank, pause, and latest controls
-|       remain scoped to logs focus
+|   +-- existing log cursor, syntax-colored pretty JSON, yank, pause, and
+|       latest controls remain scoped to logs focus
 |
 +-- docs
     +-- feature guide, implementation note, and command help updated
@@ -44,10 +44,10 @@ python3 -m py_compile mrun/monitor.py mrun/mrun.py mrun/test/test_monitor.py
 Result: passed
 
 uv run --with pytest pytest mrun/test/test_monitor.py
-Result: 73 passed
+Result: 77 passed
 
 uv run --with pytest pytest
-Result: 92 passed, 1 xfailed, 1 warning
+Result: 96 passed, 1 xfailed, 1 warning
 ```
 
 The xfail is pre-existing expected behavior in the wider suite. The warning is
@@ -74,6 +74,7 @@ because it has a __init__ constructor
 | A7 | none     | Cursor redraws avoid full metric resampling.   | Closed |
 | A8 | high     | Cached redraw used stale disk_metrics local.   | Closed |
 | A9 | medium   | Arrow keys used buffered text reads.           | Closed |
+| A10| none     | Pretty JSON view receives syntax colors.       | Closed |
 +----+----------+------------------------------------------------+--------+
 ```
 
@@ -93,6 +94,7 @@ No new anomalies were detected by automated tests.
 [ ] Press z while CPU is focused and confirm CPU zoom opens.
 [ ] Press z again and confirm the quadrant layout returns.
 [ ] Press Tab to logs and confirm log movement/yank/pretty controls work there.
+[ ] Press p on a JSON log and confirm keys, strings, numbers, and keywords use distinct colors.
 [ ] Hold Up/Down in logs and confirm cursor movement feels responsive.
 [ ] Pause log streaming and confirm Up/Down still feels responsive.
 [ ] Confirm log movement keys do not move logs while CPU is focused.

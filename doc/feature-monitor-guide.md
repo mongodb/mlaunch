@@ -36,7 +36,7 @@ The monitor shows:
 - Selectable CPU process rows.
 - Optional CPU thread view for the selected process.
 - Zoomed log view.
-- Pretty JSON view for a highlighted log line.
+- Syntax-colored Pretty JSON view for a highlighted log line.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
 No new terminal UI dependency is introduced. Rendering and keyboard input use
@@ -289,6 +289,10 @@ Pretty JSON mode also uses the full log view:
 | }                                                               |
 +-----------------------------------------------------------------+
 ```
+
+In the real terminal view, Pretty JSON mode colors object keys, string values,
+numbers, booleans/null, and punctuation independently. This is separate from
+raw log severity coloring.
 
 ## Process discovery
 
@@ -559,6 +563,36 @@ normal line
 The copied/yanked text is always the raw log line from the in-memory buffer. It
 does not include ANSI escape sequences or visual cursor markers.
 
+## Pretty JSON syntax colors
+
+Pretty JSON mode is entered from the logs pane with `p`. The monitor keeps the
+same parsed JSON but applies token-level ANSI color:
+
+```text
++-------------+-------------------------+
+| Token       | Color behavior          |
++-------------+-------------------------+
+| Object keys | one uniform key color   |
+| Strings     | one uniform value color |
+| Numbers     | one uniform number color|
+| true/false  | one keyword color       |
+| null        | one keyword color       |
+| Punctuation | dim/neutral color       |
++-------------+-------------------------+
+```
+
+Theme selection:
+
+```text
+MRUN_MONITOR_THEME=dark   force dark-background palette
+MRUN_MONITOR_THEME=light  force light-background palette
+COLORFGBG                 auto-detect when the terminal exports it
+fallback                  dark-background palette
+```
+
+Panel clipping and padding are ANSI-aware, so token colors do not corrupt panel
+widths or borders.
+
 ## Keyboard controls
 
 ```text
@@ -578,7 +612,7 @@ does not include ANSI escape sequences or visual cursor markers.
 | Logs Up/k  | Move highlighted log line up, pause live-follow     |
 | Logs Down/j| Move highlighted log line down                      |
 | Logs g     | Jump to newest log line and resume live-follow      |
-| Logs p     | Pretty-print highlighted JSON log line              |
+| Logs p     | Pretty-print highlighted JSON with syntax colors    |
 | Logs y     | Yank highlighted raw line through OSC 52            |
 | Logs Space | Pause or resume log streaming                       |
 | s          | Cycle refresh interval: 1s -> 5s -> 10s -> 1s       |
@@ -690,6 +724,7 @@ without terminating the monitor.
 | FM-MON-PERF-001  | user   | fast cursor redraws               | 95ea616 | Implemented |
 | FM-MON-RENDER-001| user   | cached disk metrics NameError fix | b095c9b | Implemented |
 | FM-MON-KEY-001   | user   | arrow keys use fd-level reads     | 5ca41d5 | Implemented |
+| FM-MON-PRETTY-001| user   | syntax-colored Pretty JSON view   | 0a6d5de | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -712,6 +747,7 @@ without terminating the monitor.
 | 95ea616 | Redraw cursor moves from cached samples        | FM-MON-PERF-001   | monitor.py, tests, docs       |
 | b095c9b | Fix cached disk metrics render NameError       | FM-MON-RENDER-001 | monitor.py, tests, report     |
 | 5ca41d5 | Read arrow escape sequences from tty fd        | FM-MON-KEY-001    | monitor.py, test_monitor.py   |
+| 0a6d5de | Colorize Pretty JSON log view                  | FM-MON-PRETTY-001 | monitor.py, test_monitor.py   |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -721,7 +757,7 @@ Reading order for reviewers:
 1. Start with 6dd5ff2 to understand the dashboard shape.
 2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
 3. Review f354587 and 52a8234 for pane focus and CPU thread view.
-4. Review fbd7996 through 5ca41d5 for live-testing follow-up fixes.
+4. Review fbd7996 through 0a6d5de for live-testing follow-up fixes.
 ```
 
 ## Testing added by the branch
@@ -748,6 +784,8 @@ The focused monitor test module covers:
 - cursor movement and live-follow.
 - `g` jump-to-latest behavior.
 - `p` pretty JSON behavior.
+- Pretty JSON syntax coloring and theme selection.
+- ANSI-aware panel clipping for colored Pretty JSON.
 - `y` yank behavior.
 - severity color detection and rendering.
 - selected/yanked color priority.
@@ -802,7 +840,8 @@ Use this list for manual review:
 [ ] If detailed thread timing is denied, CPU thread view shows THREAD COUNT.
 [ ] Up/down in logs and CPU process-list mode feels immediate.
 [ ] Log pane j/k or arrows move the highlighted log row.
-[ ] p toggles pretty JSON view.
+[ ] p toggles syntax-colored Pretty JSON view.
+[ ] MRUN_MONITOR_THEME=dark and MRUN_MONITOR_THEME=light select different palettes.
 [ ] Space pauses and resumes log streaming.
 [ ] g jumps back to the newest log line.
 [ ] q and Ctrl+C exit cleanly.

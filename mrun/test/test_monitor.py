@@ -484,7 +484,7 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "z zoom logs or focused pane" in flat_output
     assert "t toggles thread view" in flat_output
     assert "g latest log line" in flat_output
-    assert "p prettify highlighted log line as JSON" in flat_output
+    assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
     assert "space pause/resume log streaming" in flat_output
     assert "s cycle refresh 1s/5s/10s" in flat_output

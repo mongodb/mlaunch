@@ -78,8 +78,9 @@ Monitor
    -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
       line.
    -  ``g`` jumps to the newest log line and resumes live-follow.
-   -  ``p`` prettifies the highlighted line as JSON, pauses live-follow, and
-      expands the log view. Press ``p`` again to return to the raw log line.
+   -  ``p`` prettifies the highlighted line as syntax-colored JSON, pauses
+      live-follow, and expands the log view. Press ``p`` again to return to
+      the raw log line.
    -  ``y`` yanks the highlighted log line to the terminal clipboard when
       supported.
    -  Space pauses or resumes log streaming. While paused, the current log
@@ -91,6 +92,10 @@ Monitor
       the severity color. After yanking, that line is highlighted green.
    -  Moving away from the newest log line pauses live-follow. Moving back to
       the newest line resumes live-follow.
+
+   Pretty JSON colors are selected from the terminal background when
+   ``COLORFGBG`` is available. Use ``MRUN_MONITOR_THEME=dark`` or
+   ``MRUN_MONITOR_THEME=light`` to override automatic theme detection.
 
 Verbosity
 ---------

@@ -240,7 +240,7 @@ class MRunTool(BaseCmdLineTool):
                                           'logs pane j/k or arrows move, '
                                           'g latest log line, '
                                           'p prettify highlighted log line '
-                                          'as JSON, '
+                                          'as syntax-colored JSON, '
                                           'y yank highlighted log line, '
                                           'space pause/resume log streaming, '
                                           's cycle refresh 1s/5s/10s.'))

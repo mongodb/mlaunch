@@ -78,6 +78,7 @@ mrun/monitor.py
 |   +-- fatal/error/warning/info/debug log rows receive severity colors
 |   +-- selected log row uses inverse video over severity color
 |   +-- yanked log row uses green inverse video
+|   +-- pretty JSON view uses token-level syntax colors
 |   +-- DashboardSnapshot caches sampled data for fast cursor-only redraws
 |
 +-- keyboard control
@@ -255,9 +256,18 @@ line and resumes live-follow.
 
 In the logs pane, `p` parses the highlighted raw log line as JSON. If parsing
 succeeds, the monitor pauses live-follow, expands the log panel, and renders
-indented JSON. Pressing `p` again returns to the raw log-line view. If the line
-is not valid JSON, the status footer reports the parse failure and keeps the raw
-view.
+indented syntax-colored JSON. Pressing `p` again returns to the raw log-line
+view. If the line is not valid JSON, the status footer reports the parse failure
+and keeps the raw view.
+
+Pretty JSON colors are applied to object keys, string values, numbers,
+booleans/null, and punctuation. The monitor chooses a dark or light palette from
+`COLORFGBG` when available. A user can force a palette with:
+
+```bash
+MRUN_MONITOR_THEME=dark mrun --monitor
+MRUN_MONITOR_THEME=light mrun --monitor
+```
 
 In the logs pane, the spacebar pauses or resumes log streaming. Pausing does
 not read from the selected log files, so the visible buffer remains frozen.
