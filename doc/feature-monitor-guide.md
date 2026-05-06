@@ -61,8 +61,16 @@ feature-monitor branch
 |   +-- auth and TLS metadata loading for network sampling
 |   +-- pane focus, focused-pane zoom, CPU process selection, thread sampling
 |
++-- mrun/fault_inject_collection_scans.py
+|   +-- local-only PyMongo workload for monitor troubleshooting
+|   +-- seeds a dedicated test collection and repeatedly runs COLLSCAN queries
+|   +-- optionally enables profiler slowms=0 and restores it afterward
+|
 +-- mrun/test/test_monitor.py
 |   +-- focused tests for monitor behavior and rendering helpers
+|
++-- mrun/test/test_fault_inject_collection_scans.py
+|   +-- focused tests for injector safety and profiler restoration
 |
 +-- doc/mrun.rst
 |   +-- user-facing command documentation
@@ -593,6 +601,126 @@ fallback                  dark-background palette
 Panel clipping and padding are ANSI-aware, so token colors do not corrupt panel
 widths or borders.
 
+## Collection-scan fault injection
+
+The branch includes a local workload helper for exercising `mrun --monitor`
+against a running replica set:
+
+```bash
+uv run python mrun/fault_inject_collection_scans.py
+```
+
+The default target is:
+
+```text
+mongodb://localhost:27017/?replicaSet=rs0
+database:   mrun_fault_injection
+collection: collection_scans
+comment:    mrun-monitor-fault-scan
+```
+
+The helper is intentionally not wired into the `mrun` command surface. It is a
+test utility for reviewers and troubleshooting sessions. It uses PyMongo, which
+is already a mongorun dependency, and adds no external library.
+
+Safety behavior:
+
+```text
++----------------------+----------------------------------------------+
+| Guard                | Behavior                                     |
++----------------------+----------------------------------------------+
+| Local URI default    | localhost replica set only                   |
+| Non-local URI        | rejected unless --allow-nonlocal is supplied |
+| Data target          | dedicated mrun_fault_injection collection    |
+| Cleanup              | collection drop only when --cleanup is used  |
+| Profiling            | restored in a finally block after the run    |
++----------------------+----------------------------------------------+
+```
+
+Runtime flow:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Monitor as mrun --monitor
+    participant Injector as fault injector
+    participant Mongo as local replica set
+
+    User->>Monitor: start monitor and select logs
+    User->>Injector: uv run python mrun/fault_inject_collection_scans.py --profile
+    Injector->>Mongo: ping
+    Injector->>Mongo: seed dedicated collection if needed
+    Injector->>Mongo: profile 2 slowms 0
+    Injector->>Mongo: repeated unindexed find(...).comment(...)
+    Mongo-->>Monitor: COMMAND slow query log lines
+    Monitor-->>User: colored live tail and metric changes
+    Injector->>Mongo: restore previous profiler setting
+    Injector->>Mongo: optional drop collection with --cleanup
+```
+
+Data path:
+
+```text
+seed documents
+    |
+    +-- fields intentionally have no index except MongoDB's _id
+        |
+        v
+worker threads
+    |
+    +-- find({"scan_probe": "missing-worker-N-iteration-M"})
+    |   |
+    |   +-- no scan_probe index exists
+    |   +-- query includes comment "mrun-monitor-fault-scan ..."
+    v
+mongod
+    |
+    +-- logs slow COMMAND entries when --profile sets slowms=0
+    v
+mrun --monitor log pane
+```
+
+Useful commands:
+
+```bash
+uv run python mrun/fault_inject_collection_scans.py --dry-run
+
+uv run python mrun/fault_inject_collection_scans.py \
+  --profile \
+  --duration 120 \
+  --workers 3 \
+  --docs 10000 \
+  --payload-bytes 2048
+
+uv run python mrun/fault_inject_collection_scans.py \
+  --uri "mongodb://monitoruser:monitorpass@localhost:27017/?authSource=admin&replicaSet=rs0" \
+  --profile \
+  --duration 60
+```
+
+Use `--cleanup` when the test collection should be dropped after the workload.
+The cleanup path only drops the configured collection, not the database or any
+other user collection.
+
+Manual monitor test flow:
+
+```text
+1. Start or reuse a local mongorun replica set.
+2. In terminal A, run uv run mrun --monitor.
+3. Select all MongoDB logs when prompted.
+4. In terminal B, run the injector with --dry-run and confirm the target.
+5. Run the injector with --profile for 60-120 seconds.
+6. In the monitor, verify CPU/network activity rises on the target port.
+7. Verify log rows include mrun-monitor-fault-scan.
+8. Press p on a structured log row and verify syntax-colored Pretty JSON.
+9. Press Space to pause/resume, g to jump latest, and y to yank a line.
+10. After the injector exits, verify the profiler restore message was printed.
+```
+
+If logs do not show the injected operations, first confirm that `--profile` was
+used, the monitor selected the correct log files, and the URI points at the
+same local replica set that `mrun --monitor` is tailing.
+
 ## Keyboard controls
 
 ```text
@@ -725,6 +853,7 @@ without terminating the monitor.
 | FM-MON-RENDER-001| user   | cached disk metrics NameError fix | b095c9b | Implemented |
 | FM-MON-KEY-001   | user   | arrow keys use fd-level reads     | 5ca41d5 | Implemented |
 | FM-MON-PRETTY-001| user   | syntax-colored Pretty JSON view   | 0a6d5de | Implemented |
+| FM-MON-FAULT-001 | user   | collection-scan fault injector    | a626f03 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -748,6 +877,7 @@ without terminating the monitor.
 | b095c9b | Fix cached disk metrics render NameError       | FM-MON-RENDER-001 | monitor.py, tests, report     |
 | 5ca41d5 | Read arrow escape sequences from tty fd        | FM-MON-KEY-001    | monitor.py, test_monitor.py   |
 | 0a6d5de | Colorize Pretty JSON log view                  | FM-MON-PRETTY-001 | monitor.py, test_monitor.py   |
+| a626f03 | Add collection-scan fault injector             | FM-MON-FAULT-001  | fault injector, tests         |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -758,6 +888,7 @@ Reading order for reviewers:
 2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
 3. Review f354587 and 52a8234 for pane focus and CPU thread view.
 4. Review fbd7996 through 0a6d5de for live-testing follow-up fixes.
+5. Review a626f03 for the optional local workload helper.
 ```
 
 ## Testing added by the branch
@@ -786,6 +917,10 @@ The focused monitor test module covers:
 - `p` pretty JSON behavior.
 - Pretty JSON syntax coloring and theme selection.
 - ANSI-aware panel clipping for colored Pretty JSON.
+- collection-scan injector CLI parsing and dry-run behavior.
+- collection-scan injector localhost safety guard.
+- collection-scan injector query comments and unindexed filters.
+- collection-scan injector profiler restore and cleanup behavior.
 - `y` yank behavior.
 - severity color detection and rendering.
 - selected/yanked color priority.
@@ -804,7 +939,9 @@ The verification commands used for this branch are:
 
 ```bash
 python3 -m py_compile mrun/monitor.py mrun/mrun.py mrun/test/test_monitor.py
+python3 -m py_compile mrun/fault_inject_collection_scans.py mrun/test/test_fault_inject_collection_scans.py
 uv run --with pytest pytest mrun/test/test_monitor.py
+uv run --with pytest pytest mrun/test/test_fault_inject_collection_scans.py
 uv run --with pytest pytest
 ```
 
@@ -844,5 +981,9 @@ Use this list for manual review:
 [ ] MRUN_MONITOR_THEME=dark and MRUN_MONITOR_THEME=light select different palettes.
 [ ] Space pauses and resumes log streaming.
 [ ] g jumps back to the newest log line.
+[ ] fault injector --dry-run prints the local target without connecting.
+[ ] fault injector --profile emits mrun-monitor-fault-scan log entries.
+[ ] fault injector restores the previous profiler setting after exit.
+[ ] fault injector --cleanup drops only the configured test collection.
 [ ] q and Ctrl+C exit cleanly.
 ```

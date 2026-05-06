@@ -306,3 +306,23 @@ Start MongoDB nodes first, then run: mrun --monitor
 
 If a process exists but MongoDB does not answer `serverStatus`, the network
 panel marks that port as unavailable and keeps the monitor running.
+
+## Fault-injection test helper
+
+The branch also provides a local PyMongo workload helper for monitor testing:
+
+```bash
+uv run python mrun/fault_inject_collection_scans.py --dry-run
+uv run python mrun/fault_inject_collection_scans.py --profile --duration 60
+```
+
+It targets `mongodb://localhost:27017/?replicaSet=rs0` by default, seeds the
+dedicated `mrun_fault_injection.collection_scans` collection, and repeatedly
+runs unindexed `find()` operations with the comment prefix
+`mrun-monitor-fault-scan`. With `--profile`, it temporarily sets the test
+database profiler to level 2 with `slowms=0`, then restores the previous
+profiler setting before exiting.
+
+Use it in a second terminal while `mrun --monitor` tails the local replica set
+logs. The expected monitor signals are higher CPU/network rates on the target
+port and live log rows containing `mrun-monitor-fault-scan`.
