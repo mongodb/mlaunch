@@ -36,6 +36,7 @@ from mrun.monitor import (
     NO_PROCESSES_MESSAGE,
     ProcessDiscoveryError,
     ProcessMetrics,
+    ProcessSampler,
     read_disk_metrics,
     discover_mongo_processes,
     move_log_cursor,
@@ -86,6 +87,28 @@ class FakeThreadProcess:
 
     def threads(self):
         return list(self._threads)
+
+
+class FakeMemoryInfo:
+    def __init__(self, rss):
+        self.rss = rss
+
+
+class FakeCpuProcess:
+    def __init__(self, cpu_values):
+        self.cpu_values = list(cpu_values)
+        self.cpu_calls = 0
+
+    def cpu_percent(self, interval=None):
+        value = self.cpu_values[min(self.cpu_calls, len(self.cpu_values) - 1)]
+        self.cpu_calls += 1
+        return value
+
+    def memory_info(self):
+        return FakeMemoryInfo(4096)
+
+    def status(self):
+        return "running"
 
 
 class FakeDeniedThreadProcess:
@@ -713,6 +736,46 @@ def test_thread_sampler_falls_back_to_thread_count_when_details_denied():
     assert snapshot.metrics == []
     assert snapshot.error == "thread details unavailable"
     assert snapshot.thread_count == 113
+
+
+def test_process_sampler_reuses_process_objects_for_cpu_deltas():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+    created = []
+
+    def process_factory(pid):
+        assert pid == 10
+        fake_process = FakeCpuProcess([0.0, 37.5])
+        created.append(fake_process)
+        return fake_process
+
+    sampler = ProcessSampler(process_factory=process_factory)
+
+    first_metrics = sampler.sample([process])
+    second_metrics = sampler.sample([process])
+
+    assert len(created) == 1
+    assert first_metrics[10].cpu_percent == 0.0
+    assert second_metrics[10].cpu_percent == 37.5
+    assert second_metrics[10].memory_rss == 4096
+    assert second_metrics[10].status == "running"
+
+
+def test_process_sampler_prime_uses_cached_process_for_first_dashboard_sample():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+    created = []
+
+    def process_factory(pid):
+        fake_process = FakeCpuProcess([0.0, 22.0])
+        created.append(fake_process)
+        return fake_process
+
+    sampler = ProcessSampler(process_factory=process_factory)
+
+    sampler.prime([process])
+    metrics = sampler.sample([process])
+
+    assert len(created) == 1
+    assert metrics[10].cpu_percent == 22.0
 
 
 def test_render_dashboard_contains_four_quadrants():

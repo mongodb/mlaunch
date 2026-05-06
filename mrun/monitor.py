@@ -551,6 +551,55 @@ class ThreadSampler:
         return process.num_threads()
 
 
+class ProcessSampler:
+    """Sample process metrics while preserving psutil CPU history."""
+
+    def __init__(self, process_factory=None):
+        self.process_factory = process_factory or psutil.Process
+        self.processes = {}
+
+    def prime(self, processes):
+        for process_info in processes:
+            try:
+                process = self._process(process_info.pid)
+                process.cpu_percent(interval=None)
+            except (psutil.AccessDenied, psutil.NoSuchProcess,
+                    psutil.ZombieProcess):
+                self.processes.pop(process_info.pid, None)
+
+    def sample(self, processes):
+        metrics = {}
+        live_pids = set()
+        for process_info in processes:
+            live_pids.add(process_info.pid)
+            metrics[process_info.pid] = self.sample_one(process_info)
+
+        for pid in list(self.processes):
+            if pid not in live_pids:
+                del self.processes[pid]
+        return metrics
+
+    def sample_one(self, process_info):
+        try:
+            process = self._process(process_info.pid)
+            memory_rss = process.memory_info().rss
+            cpu_percent = process.cpu_percent(interval=None)
+            status = process.status()
+        except (psutil.AccessDenied, psutil.NoSuchProcess,
+                psutil.ZombieProcess):
+            self.processes.pop(process_info.pid, None)
+            return ProcessMetrics(0.0, 0, "unavailable")
+
+        return ProcessMetrics(cpu_percent, memory_rss, status)
+
+    def _process(self, pid):
+        process = self.processes.get(pid)
+        if process is None:
+            process = self.process_factory(pid)
+            self.processes[pid] = process
+        return process
+
+
 def calculate_path_size(path):
     """Calculate path size using only the standard library."""
     if not path:
@@ -1673,6 +1722,7 @@ class Monitor:
             auth_required=self.auth_config.requires_credentials(),
         )
         self.thread_sampler = ThreadSampler()
+        self.process_sampler = ProcessSampler()
         self.log_cursor = None
         self.follow_tail = True
         self.zoom_logs = False
@@ -1785,10 +1835,7 @@ class Monitor:
             self.stdout.flush()
             return None
 
-        process_metrics = {
-            process.pid: read_process_metrics(process)
-            for process in processes
-        }
+        process_metrics = self.process_sampler.sample(processes)
         self.cpu_cursor = clamp_process_cursor(processes, self.cpu_cursor)
         selected_cpu = selected_process(processes, self.cpu_cursor)
         thread_metrics = []
@@ -1825,11 +1872,7 @@ class Monitor:
             processes = self._discover_processes()
         except ProcessDiscoveryError:
             return
-        for process in processes:
-            try:
-                psutil.Process(process.pid).cpu_percent(interval=None)
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
-                continue
+        self.process_sampler.prime(processes)
 
     def _discover_processes_or_report(self, clear_screen=False):
         try:
