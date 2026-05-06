@@ -81,6 +81,7 @@ mrun/monitor.py
 |   +-- selected log row uses inverse video over severity color
 |   +-- yanked log row uses green inverse video
 |   +-- pretty JSON view uses token-level syntax colors
+|   +-- pretty JSON view keeps a separate scroll offset
 |   +-- DashboardSnapshot caches sampled data for fast cursor-only redraws
 |
 +-- keyboard control
@@ -93,6 +94,7 @@ mrun/monitor.py
     +-- CPU focus: j/k or arrows select a MongoDB process
     +-- CPU focus: t toggles process-list and selected-process thread views
     +-- logs focus: j/k or arrows move the highlighted log row
+    +-- Pretty JSON focus: j/k or arrows scroll expanded JSON
     +-- logs focus: g jumps to the newest log row and resumes live-follow
     +-- logs focus: p prettifies the highlighted row as JSON
     +-- logs focus: y yanks the highlighted raw log line with OSC 52
@@ -261,6 +263,11 @@ succeeds, the monitor pauses live-follow, expands the log panel, and renders
 indented syntax-colored JSON. Pressing `p` again returns to the raw log-line
 view. If the line is not valid JSON, the status footer reports the parse failure
 and keeps the raw view.
+
+Pretty JSON keeps the existing default of opening in the zoomed log pane. While
+it is active, `j`/Down and `k`/Up scroll the expanded JSON instead of moving
+the selected raw log line. `p` returns to the same selected raw line, and `y`
+still copies the original raw log entry.
 
 Pretty JSON colors are applied to object keys, string values, numbers,
 booleans/null, and punctuation. The monitor chooses a dark or light palette from

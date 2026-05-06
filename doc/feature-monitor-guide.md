@@ -36,7 +36,7 @@ The monitor shows:
 - Selectable CPU process rows.
 - Optional CPU thread view for the selected process.
 - Zoomed log view.
-- Syntax-colored Pretty JSON view for a highlighted log line.
+- Scrollable syntax-colored Pretty JSON view for a highlighted log line.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
 No new terminal UI dependency is introduced. Rendering and keyboard input use
@@ -302,6 +302,11 @@ Pretty JSON mode also uses the full log view:
 In the real terminal view, Pretty JSON mode colors object keys, string values,
 numbers, booleans/null, and punctuation independently. This is separate from
 raw log severity coloring.
+
+`p` keeps the existing behavior of opening Pretty JSON in the zoomed log pane.
+While Pretty JSON is active, `j`/`k` and the up/down arrows scroll the expanded
+JSON body. They do not move the selected raw log line until `p` returns to raw
+log view.
 
 ## Process discovery
 
@@ -586,7 +591,8 @@ does not include ANSI escape sequences or visual cursor markers.
 ## Pretty JSON syntax colors
 
 Pretty JSON mode is entered from the logs pane with `p`. The monitor keeps the
-same parsed JSON but applies token-level ANSI color:
+current default behavior and expands the selected log line into the zoomed log
+pane. The same parsed JSON receives token-level ANSI color:
 
 ```text
 +-------------+-------------------------+
@@ -612,6 +618,11 @@ fallback                  dark-background palette
 
 Panel clipping and padding are ANSI-aware, so token colors do not corrupt panel
 widths or borders.
+
+Pretty JSON is scrollable. The monitor tracks a separate pretty-scroll offset,
+so `j`/Down and `k`/Up move through long slow-operation JSON without changing
+the highlighted raw log line underneath. `p` exits back to the same raw line,
+and `y` still copies the original raw log entry.
 
 ## Collection-scan fault injection
 
@@ -755,6 +766,8 @@ same local replica set that `mrun --monitor` is tailing.
 | Logs p     | Pretty-print highlighted JSON with syntax colors    |
 | Logs y     | Yank highlighted raw line through OSC 52            |
 | Logs Space | Pause or resume log streaming                       |
+| Pretty Up/k| Scroll expanded Pretty JSON up                      |
+| Pretty Dn/j| Scroll expanded Pretty JSON down                    |
 | s          | Cycle refresh interval: 1s -> 5s -> 10s -> 1s       |
 +------------+-----------------------------------------------------+
 ```
@@ -788,6 +801,7 @@ stateDiagram-v2
     StreamPaused --> PausedFollow: logs Space and follow_tail false
     Following --> PrettyJSON: logs p on JSON line
     PausedFollow --> PrettyJSON: logs p on JSON line
+    PrettyJSON --> PrettyJSON: logs j/k/arrows scroll JSON
     PrettyJSON --> PausedFollow: logs p again
     Following --> Zoomed: logs focused and z
     PausedFollow --> Zoomed: logs focused and z
@@ -867,6 +881,7 @@ without terminating the monitor.
 | FM-MON-PRETTY-001| user   | syntax-colored Pretty JSON view   | 0a6d5de | Implemented |
 | FM-MON-FAULT-001 | user   | collection-scan fault injector    | a626f03 | Implemented |
 | FM-MON-CPU-003   | user   | CPU sampler preserves psutil state| ba7f8e3 | Implemented |
+| FM-MON-PRETTY-002| user   | scrollable Pretty JSON log view   | f42c9ec | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -892,6 +907,7 @@ without terminating the monitor.
 | 0a6d5de | Colorize Pretty JSON log view                  | FM-MON-PRETTY-001 | monitor.py, test_monitor.py   |
 | a626f03 | Add collection-scan fault injector             | FM-MON-FAULT-001  | fault injector, tests         |
 | ba7f8e3 | Preserve psutil Process objects for CPU rates  | FM-MON-CPU-003    | monitor.py, test_monitor.py   |
+| f42c9ec | Scroll zoomed Pretty JSON log view             | FM-MON-PRETTY-002 | monitor.py, test_monitor.py   |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -901,7 +917,7 @@ Reading order for reviewers:
 1. Start with 6dd5ff2 to understand the dashboard shape.
 2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
 3. Review f354587 and 52a8234 for pane focus and CPU thread view.
-4. Review fbd7996 through ba7f8e3 for live-testing follow-up fixes.
+4. Review fbd7996 through f42c9ec for live-testing follow-up fixes.
 5. Review a626f03 for the optional local workload helper.
 ```
 
@@ -931,6 +947,7 @@ The focused monitor test module covers:
 - `g` jump-to-latest behavior.
 - `p` pretty JSON behavior.
 - Pretty JSON syntax coloring and theme selection.
+- Pretty JSON scroll offset and j/k navigation.
 - ANSI-aware panel clipping for colored Pretty JSON.
 - collection-scan injector CLI parsing and dry-run behavior.
 - collection-scan injector localhost safety guard.
@@ -994,6 +1011,9 @@ Use this list for manual review:
 [ ] Up/down in logs and CPU process-list mode feels immediate.
 [ ] Log pane j/k or arrows move the highlighted log row.
 [ ] p toggles syntax-colored Pretty JSON view.
+[ ] Pretty JSON opens in zoomed logs as before.
+[ ] Pretty JSON j/k or arrows scroll long slow-operation JSON.
+[ ] Pretty JSON p returns to the selected raw log line.
 [ ] MRUN_MONITOR_THEME=dark and MRUN_MONITOR_THEME=light select different palettes.
 [ ] Space pauses and resumes log streaming.
 [ ] g jumps back to the newest log line.
