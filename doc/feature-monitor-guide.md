@@ -594,6 +594,12 @@ Modified arrows:    ESC [ 1 ; 2 A / ESC [ 1 ; 5 B
 Shift+Tab:          ESC [ Z
 ```
 
+On POSIX terminals, the monitor reads key bytes with `os.read()` from the tty
+file descriptor. This avoids Python text-buffering behavior where the first ESC
+byte of an arrow sequence can be read while the remaining `[A` or `[B` bytes are
+left in the text wrapper buffer. Without fd-level reads, arrow keys can feel
+slower or fail while single-byte `j` and `k` still work.
+
 ## Log interaction states
 
 ```mermaid
@@ -683,6 +689,7 @@ without terminating the monitor.
 | FM-MON-THREAD-001| user   | denied thread details show count  | fbd7996 | Implemented |
 | FM-MON-PERF-001  | user   | fast cursor redraws               | 95ea616 | Implemented |
 | FM-MON-RENDER-001| user   | cached disk metrics NameError fix | b095c9b | Implemented |
+| FM-MON-KEY-001   | user   | arrow keys use fd-level reads     | 5ca41d5 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -704,6 +711,7 @@ without terminating the monitor.
 | fbd7996 | Fall back to thread count when details denied  | FM-MON-THREAD-001 | monitor.py, tests, docs       |
 | 95ea616 | Redraw cursor moves from cached samples        | FM-MON-PERF-001   | monitor.py, tests, docs       |
 | b095c9b | Fix cached disk metrics render NameError       | FM-MON-RENDER-001 | monitor.py, tests, report     |
+| 5ca41d5 | Read arrow escape sequences from tty fd        | FM-MON-KEY-001    | monitor.py, test_monitor.py   |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -713,7 +721,7 @@ Reading order for reviewers:
 1. Start with 6dd5ff2 to understand the dashboard shape.
 2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
 3. Review f354587 and 52a8234 for pane focus and CPU thread view.
-4. Review fbd7996, 95ea616, and b095c9b for live-testing follow-up fixes.
+4. Review fbd7996 through 5ca41d5 for live-testing follow-up fixes.
 ```
 
 ## Testing added by the branch
