@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import re
 import select
 import shlex
 import shutil
@@ -47,6 +48,17 @@ ANSI_RED = "\033[31m"
 ANSI_TEAL = "\033[38;5;44m"
 ANSI_DIM = "\033[2m"
 ANSI_INVERSE = "\033[7m"
+ANSI_DEFAULT = "\033[39m"
+ANSI_PRETTY_KEY_DARK = "\033[38;5;81m"
+ANSI_PRETTY_STRING_DARK = "\033[38;5;114m"
+ANSI_PRETTY_NUMBER_DARK = "\033[38;5;215m"
+ANSI_PRETTY_KEYWORD_DARK = "\033[38;5;141m"
+ANSI_PRETTY_PUNCT_DARK = "\033[38;5;245m"
+ANSI_PRETTY_KEY_LIGHT = "\033[38;5;25m"
+ANSI_PRETTY_STRING_LIGHT = "\033[38;5;28m"
+ANSI_PRETTY_NUMBER_LIGHT = "\033[38;5;130m"
+ANSI_PRETTY_KEYWORD_LIGHT = "\033[38;5;90m"
+ANSI_PRETTY_PUNCT_LIGHT = "\033[38;5;240m"
 STYLE_SELECTED = "\x00selected\x00"
 STYLE_YANKED = "\x00yanked\x00"
 STYLE_SEVERITY_FATAL = "\x00severity:fatal\x00"
@@ -74,6 +86,8 @@ STYLE_MARKERS = (
     STYLE_SEVERITY_INFO,
     STYLE_SEVERITY_DEBUG,
 )
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 
 
 class ProcessDiscoveryError(RuntimeError):
@@ -789,6 +803,16 @@ def network_status_label(network):
     return "unavailable"
 
 
+def strip_ansi(text):
+    """Remove terminal ANSI style sequences from text."""
+    return ANSI_ESCAPE_RE.sub("", str(text))
+
+
+def visible_width(text):
+    """Return display width for ASCII text that may contain ANSI styles."""
+    return len(strip_ansi(text))
+
+
 def _truncate(text, width):
     text = str(text)
     if len(text) <= width:
@@ -796,6 +820,43 @@ def _truncate(text, width):
     if width <= 1:
         return text[:width]
     return text[:width - 1] + "~"
+
+
+def _truncate_ansi(text, width):
+    """Truncate text by visible width while preserving ANSI sequences."""
+    text = str(text)
+    if visible_width(text) <= width:
+        return text
+    if width <= 0:
+        return ""
+    if width == 1:
+        return "~"
+
+    limit = width - 1
+    output = []
+    visible = 0
+    index = 0
+    while index < len(text) and visible < limit:
+        match = ANSI_ESCAPE_RE.match(text, index)
+        if match is not None:
+            output.append(match.group(0))
+            index = match.end()
+            continue
+        output.append(text[index])
+        index += 1
+        visible += 1
+
+    truncated = "".join(output) + "~"
+    if "\033[" in truncated and not truncated.endswith(ANSI_RESET):
+        truncated += ANSI_RESET
+    return truncated
+
+
+def _pad_ansi(text, width, fillchar=" "):
+    """Right-pad text by visible width while preserving ANSI sequences."""
+    text = str(text)
+    padding = max(width - visible_width(text), 0)
+    return text + fillchar * padding
 
 
 def _styled_line(styles, text):
@@ -1045,11 +1106,122 @@ def prettify_log_line(line):
     return None
 
 
-def format_pretty_log_lines(pretty_lines, height):
+def detect_terminal_theme(environ=None):
+    """Return dark or light based on monitor env overrides and COLORFGBG."""
+    environ = environ if environ is not None else os.environ
+    override = str(environ.get("MRUN_MONITOR_THEME", "")).strip().lower()
+    if override in ("dark", "light"):
+        return override
+
+    colorfgbg = str(environ.get("COLORFGBG", "")).strip()
+    if colorfgbg:
+        try:
+            background = int(colorfgbg.split(";")[-1])
+        except (TypeError, ValueError):
+            background = None
+        if background is not None:
+            if background in (0, 1, 2, 3, 4, 5, 6, 8):
+                return "dark"
+            return "light"
+
+    return "dark"
+
+
+def pretty_json_palette(theme=None, environ=None):
+    """Return ANSI styles for pretty JSON tokens."""
+    theme = theme or detect_terminal_theme(environ)
+    if theme == "light":
+        return {
+            "key": ANSI_PRETTY_KEY_LIGHT,
+            "string": ANSI_PRETTY_STRING_LIGHT,
+            "number": ANSI_PRETTY_NUMBER_LIGHT,
+            "keyword": ANSI_PRETTY_KEYWORD_LIGHT,
+            "punctuation": ANSI_PRETTY_PUNCT_LIGHT,
+        }
+    return {
+        "key": ANSI_PRETTY_KEY_DARK,
+        "string": ANSI_PRETTY_STRING_DARK,
+        "number": ANSI_PRETTY_NUMBER_DARK,
+        "keyword": ANSI_PRETTY_KEYWORD_DARK,
+        "punctuation": ANSI_PRETTY_PUNCT_DARK,
+    }
+
+
+def _ansi_wrap(style, text):
+    return style + text + ANSI_RESET + ANSI_DEFAULT
+
+
+def _style_json_value(value, palette):
+    if JSON_STRING_RE.fullmatch(value):
+        return _ansi_wrap(palette["string"], value)
+    if value in ("true", "false", "null"):
+        return _ansi_wrap(palette["keyword"], value)
+    return _ansi_wrap(palette["number"], value)
+
+
+def colorize_pretty_json_line(line, palette=None):
+    """Apply token-level ANSI syntax highlighting to one pretty JSON line."""
+    palette = palette or pretty_json_palette()
+    line = str(line)
+    output = []
+    index = 0
+    while index < len(line):
+        match = JSON_STRING_RE.search(line, index)
+        if match is None:
+            output.append(_colorize_json_scalars(
+                line[index:], palette))
+            break
+
+        prefix = line[index:match.start()]
+        output.append(_colorize_json_scalars(prefix, palette))
+        token = match.group(0)
+        after = line[match.end():]
+        if after.lstrip().startswith(":"):
+            output.append(_ansi_wrap(palette["key"], token))
+        else:
+            output.append(_ansi_wrap(palette["string"], token))
+        index = match.end()
+
+    return "".join(output)
+
+
+def _colorize_json_scalars(text, palette):
+    output = []
+    index = 0
+    scalar_re = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null")
+    while index < len(text):
+        match = scalar_re.search(text, index)
+        if match is None:
+            output.append(_colorize_json_punctuation(text[index:], palette))
+            break
+        output.append(_colorize_json_punctuation(
+            text[index:match.start()], palette))
+        output.append(_style_json_value(match.group(0), palette))
+        index = match.end()
+    return "".join(output)
+
+
+def _colorize_json_punctuation(text, palette):
+    output = []
+    punctuation = set("{}[]:,")
+    for char in text:
+        if char in punctuation:
+            output.append(_ansi_wrap(palette["punctuation"], char))
+        else:
+            output.append(char)
+    return "".join(output)
+
+
+def format_pretty_log_lines(pretty_lines, height, colorize=True, theme=None,
+                            environ=None):
     """Format a fixed pretty JSON view for the log panel."""
     if not pretty_lines:
         return []
-    return list(pretty_lines[:max(height, 1)])
+    lines = list(pretty_lines[:max(height, 1)])
+    if not colorize:
+        return lines
+    palette = pretty_json_palette(theme, environ)
+    return [colorize_pretty_json_line(line, palette) for line in lines]
 
 
 def build_osc52_sequence(text):
@@ -1079,7 +1251,7 @@ def make_panel(title, lines, width, height, focused=False):
     for index in range(inner_height):
         text = lines[index] if index < len(lines) else ""
         styles, text = _split_style(text)
-        row_text = _truncate(text, inner_width).ljust(inner_width)
+        row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
         ansi = _style_ansi(styles)
         if ansi:
             rows.append(ansi + "|" + row_text + "|" + ANSI_RESET)

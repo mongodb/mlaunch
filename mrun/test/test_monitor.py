@@ -16,9 +16,12 @@ from mrun.monitor import (
     AUTH_REQUIRED_STATUS,
     build_monitor_tls_kwargs,
     build_osc52_sequence,
+    colorize_pretty_json_line,
     dashboard_snapshot_due,
+    detect_terminal_theme,
     detect_log_severity,
     DiskMetrics,
+    format_pretty_log_lines,
     format_log_lines,
     filter_mrun_processes,
     LogTailer,
@@ -42,14 +45,17 @@ from mrun.monitor import (
     network_status_label,
     parse_escape_sequence,
     parse_log_selection,
+    pretty_json_palette,
     process_to_info,
     prettify_log_line,
     read_log_stream,
     render_dashboard,
     selected_process,
+    strip_ansi,
     ThreadMetrics,
     ThreadSampler,
     TerminalController,
+    visible_width,
 )
 from mrun.mrun import MRunTool
 
@@ -902,9 +908,66 @@ def test_render_dashboard_pretty_json_mode_replaces_raw_log_tail():
     )
 
     assert "Log Tail: 27017 (Pretty JSON)" in rendered
-    assert '  "msg": "hello"' in rendered
+    assert '  "msg": "hello"' in strip_ansi(rendered)
+    assert "\033[" in rendered
     assert "> 27017" not in rendered
     assert "p raw" in rendered
+
+
+def test_pretty_json_colorizes_keys_strings_numbers_and_keywords():
+    palette = pretty_json_palette("dark")
+
+    rendered = colorize_pretty_json_line(
+        '  "msg": "hello", "n": 12, "ok": true, "missing": null',
+        palette,
+    )
+
+    assert palette["key"] + '"msg"' in rendered
+    assert palette["string"] + '"hello"' in rendered
+    assert palette["number"] + "12" in rendered
+    assert palette["keyword"] + "true" in rendered
+    assert palette["keyword"] + "null" in rendered
+    assert strip_ansi(rendered) == (
+        '  "msg": "hello", "n": 12, "ok": true, "missing": null')
+
+
+def test_pretty_json_theme_detection_and_override():
+    assert detect_terminal_theme({"MRUN_MONITOR_THEME": "light"}) == "light"
+    assert detect_terminal_theme({"MRUN_MONITOR_THEME": "dark"}) == "dark"
+    assert detect_terminal_theme({"COLORFGBG": "0;15"}) == "light"
+    assert detect_terminal_theme({"COLORFGBG": "15;0"}) == "dark"
+    assert pretty_json_palette("light")["number"] != pretty_json_palette("dark")["number"]
+
+
+def test_format_pretty_log_lines_can_disable_color():
+    lines = format_pretty_log_lines(['  "n": 12'], 1, colorize=False)
+
+    assert lines == ['  "n": 12']
+
+
+def test_pretty_json_panel_uses_ansi_aware_widths():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ['27017 | {"msg":"hello"}'],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((50, 10)),
+        log_cursor=0,
+        zoom_logs=True,
+        pretty_lines=[
+            "{",
+            '  "message": "this is a long string value for truncation",',
+            '  "count": 12345,',
+            '  "ok": true',
+            "}",
+        ],
+    )
+
+    panel_lines = rendered.splitlines()[:-1]
+    assert panel_lines
+    assert all(visible_width(line) == 50 for line in panel_lines)
 
 
 def test_render_dashboard_marks_yanked_log_line_green():
