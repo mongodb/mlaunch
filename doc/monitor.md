@@ -52,6 +52,7 @@ mrun/monitor.py
 |   +-- ThreadSampler
 |   +-- samples psutil Process.threads() only when CPU thread view is toggled
 |   +-- computes per-thread CPU from user/system time deltas
+|   +-- falls back to Process.num_threads() when thread details are denied
 |
 +-- network metrics
 |   +-- NetworkSampler
@@ -213,6 +214,16 @@ CPU thread view is intentionally not the default. When the CPU pane is focused,
 `j`/`k` or the up/down arrows select a MongoDB process row. Pressing `t`
 toggles the CPU pane from the process CPU list to threads for the selected
 process. Pressing `t` again returns to the process CPU list.
+
+On macOS, detailed per-thread timing can be denied by the OS `task_for_pid`
+security path even when the monitor is launched with `sudo`. In that case, the
+thread pane falls back to the available thread count:
+
+```text
+PROCESS port 27017 pid 86094 mongod
+THREAD COUNT 113
+thread details unavailable
+```
 
 ```mermaid
 stateDiagram-v2

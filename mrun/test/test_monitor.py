@@ -3,6 +3,7 @@ import json
 import os
 import time
 
+import psutil
 import pytest
 
 from mrun.monitor import (
@@ -77,6 +78,14 @@ class FakeThreadProcess:
 
     def threads(self):
         return list(self._threads)
+
+
+class FakeDeniedThreadProcess:
+    def threads(self):
+        raise psutil.AccessDenied(pid=10, name="mongod")
+
+    def num_threads(self):
+        return 113
 
 
 def test_process_to_info_extracts_port_logpath_and_dbpath():
@@ -673,16 +682,29 @@ def test_thread_sampler_computes_thread_cpu_from_time_deltas():
         clock=lambda: times.pop(0),
     )
 
-    first_threads, first_error = sampler.sample(process)
-    second_threads, second_error = sampler.sample(process)
+    first_snapshot = sampler.sample(process)
+    second_snapshot = sampler.sample(process)
 
-    assert first_error == ""
-    assert second_error == ""
-    assert [thread.cpu_percent for thread in first_threads] == [0.0, 0.0]
-    assert [(thread.thread_id, thread.cpu_percent) for thread in second_threads] == [
+    assert first_snapshot.error == ""
+    assert second_snapshot.error == ""
+    assert first_snapshot.thread_count is None
+    assert [thread.cpu_percent for thread in first_snapshot.metrics] == [0.0, 0.0]
+    assert [(thread.thread_id, thread.cpu_percent) for thread in second_snapshot.metrics] == [
         (101, 50.0),
         (102, 25.0),
     ]
+
+
+def test_thread_sampler_falls_back_to_thread_count_when_details_denied():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    sampler = ThreadSampler(process_factory=lambda pid: FakeDeniedThreadProcess())
+
+    snapshot = sampler.sample(process)
+
+    assert snapshot.metrics == []
+    assert snapshot.error == "thread details unavailable"
+    assert snapshot.thread_count == 113
 
 
 def test_render_dashboard_contains_four_quadrants():
@@ -761,6 +783,27 @@ def test_render_dashboard_thread_view_is_toggle_only_not_default():
     assert "TID        CPU%" in thread_rendered
     assert "101" in thread_rendered
     assert "t process list" in thread_rendered
+
+
+def test_render_dashboard_thread_view_shows_count_when_details_denied():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((100, 24)),
+        focused_pane="cpu",
+        cpu_cursor=0,
+        cpu_thread_view=True,
+        thread_error="thread details unavailable",
+        thread_count=113,
+    )
+
+    assert "THREAD COUNT 113" in rendered
+    assert "thread details unavailable" in rendered
+    assert "TID        CPU%" not in rendered
 
 
 def test_render_dashboard_cpu_zoom_uses_current_cpu_mode():

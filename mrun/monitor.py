@@ -165,6 +165,15 @@ class ThreadMetrics:
 
 
 @dataclass
+class ThreadSnapshot:
+    """Thread samples and fallback metadata for one MongoDB server process."""
+
+    metrics: list
+    error: str = ""
+    thread_count: int = None
+
+
+@dataclass
 class NetworkMetrics:
     """MongoDB serverStatus network rates."""
 
@@ -448,9 +457,17 @@ class ThreadSampler:
     def sample(self, process_info):
         now = self.clock()
         try:
-            threads = self.process_factory(process_info.pid).threads()
-        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
-            return [], "threads unavailable"
+            process = self.process_factory(process_info.pid)
+            thread_count = self._read_thread_count(process)
+            threads = process.threads()
+        except psutil.AccessDenied:
+            return ThreadSnapshot(
+                [],
+                "thread details unavailable",
+                self._read_thread_count_by_pid(process_info.pid),
+            )
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            return ThreadSnapshot([], "process no longer available")
 
         metrics = []
         live_keys = set()
@@ -484,7 +501,23 @@ class ThreadSampler:
         for key in stale_keys:
             del self.previous[key]
 
-        return sorted(metrics, key=lambda item: (-item.cpu_percent, item.thread_id)), ""
+        return ThreadSnapshot(
+            sorted(metrics, key=lambda item: (-item.cpu_percent, item.thread_id)),
+            "",
+            thread_count,
+        )
+
+    def _read_thread_count_by_pid(self, pid):
+        try:
+            return self._read_thread_count(self.process_factory(pid))
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+            return None
+
+    @staticmethod
+    def _read_thread_count(process):
+        if not hasattr(process, "num_threads"):
+            return None
+        return process.num_threads()
 
 
 def calculate_path_size(path):
@@ -1123,7 +1156,8 @@ def format_disk_lines(processes, disk_metrics):
     return lines
 
 
-def format_thread_lines(process, thread_metrics, thread_error=""):
+def format_thread_lines(process, thread_metrics, thread_error="",
+                        thread_count=None):
     """Format per-thread timing rows for the selected process."""
     if process is None:
         return ["No MongoDB process selected."]
@@ -1131,11 +1165,14 @@ def format_thread_lines(process, thread_metrics, thread_error=""):
     lines = [
         "PROCESS port %s pid %s %s" % (
             process.port, process.pid, process.name),
-        "TID        CPU%    USER     SYSTEM   TOTAL",
     ]
+    if thread_count is not None:
+        lines.append("THREAD COUNT %s" % thread_count)
     if thread_error:
         lines.append(thread_error)
         return lines
+
+    lines.append("TID        CPU%    USER     SYSTEM   TOTAL")
     if not thread_metrics:
         lines.append("No thread samples available yet.")
         return lines
@@ -1195,7 +1232,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      stream_paused=False, disk_metrics=None,
                      process_scope="mrun", focused_pane="logs",
                      zoom_pane=None, cpu_cursor=None, cpu_thread_view=False,
-                     thread_metrics=None, thread_error=""):
+                     thread_metrics=None, thread_error="",
+                     thread_count=None):
     """Render the full four-quadrant monitor frame as a string."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -1231,7 +1269,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
             cpu_title += ": port %s pid %s" % (
                 selected_cpu.port, selected_cpu.pid)
         cpu_lines = format_thread_lines(
-            selected_cpu, thread_metrics, thread_error)
+            selected_cpu, thread_metrics, thread_error, thread_count)
     else:
         cpu_title = "CPU Usage"
         cpu_lines = format_cpu_lines(
@@ -1506,9 +1544,12 @@ class Monitor:
                     selected_cpu = selected_process(processes, self.cpu_cursor)
                     thread_metrics = []
                     thread_error = ""
+                    thread_count = None
                     if self.cpu_thread_view and selected_cpu is not None:
-                        thread_metrics, thread_error = (
-                            self.thread_sampler.sample(selected_cpu))
+                        thread_snapshot = self.thread_sampler.sample(selected_cpu)
+                        thread_metrics = thread_snapshot.metrics
+                        thread_error = thread_snapshot.error
+                        thread_count = thread_snapshot.thread_count
                     network_metrics = self.network_sampler.sample(processes)
                     disk_metrics = read_disk_metrics(processes)
                     log_lines = read_log_stream(tailer, self.stream_paused)
@@ -1539,6 +1580,7 @@ class Monitor:
                         cpu_thread_view=self.cpu_thread_view,
                         thread_metrics=thread_metrics,
                         thread_error=thread_error,
+                        thread_count=thread_count,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()

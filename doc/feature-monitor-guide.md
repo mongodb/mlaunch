@@ -396,7 +396,8 @@ traversal: `os.walk()` and `os.path.getsize()`.
 Thread metrics are sampled only when the CPU pane is in thread view. The
 monitor reads `psutil.Process(pid).threads()` for the selected process and
 computes per-thread CPU percentage from user/system time deltas between
-refreshes.
+refreshes. If the operating system denies detailed thread timing, the monitor
+falls back to `psutil.Process(pid).num_threads()` and shows the thread count.
 
 ## Pane focus and CPU thread view
 
@@ -434,6 +435,16 @@ default CPU pane
 Thread view is not rendered by default. It is a pane-local toggle, so log
 tailing, memory, network, and disk views do not change unless their pane is
 focused or zoomed.
+
+macOS may deny detailed per-thread timing through `task_for_pid`, even when the
+monitor is launched with `sudo`. In that case the CPU thread pane displays the
+available thread count and a short unavailable message:
+
+```text
+PROCESS port 27017 pid 86094 mongod
+THREAD COUNT 113
+thread details unavailable
+```
 
 ## Log tailing
 
@@ -668,6 +679,7 @@ The focused monitor test module covers:
 - CPU process cursor movement.
 - CPU thread view is off by default.
 - CPU thread view toggle.
+- thread-count fallback when detailed thread timing is denied.
 - CPU focused-pane zoom.
 - log controls remain pane-specific.
 - documentation sanity checks.
@@ -709,6 +721,7 @@ Use this list for manual review:
 [ ] CPU pane j/k or arrows select a MongoDB process row.
 [ ] CPU pane t toggles thread view for the selected process.
 [ ] CPU thread view is not shown by default.
+[ ] If detailed thread timing is denied, CPU thread view shows THREAD COUNT.
 [ ] Log pane j/k or arrows move the highlighted log row.
 [ ] p toggles pretty JSON view.
 [ ] Space pauses and resumes log streaming.

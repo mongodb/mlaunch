@@ -18,6 +18,7 @@ Feature area
 |   +-- j/k and arrows select a MongoDB process only when CPU is focused
 |   +-- t toggles thread view for the selected process
 |   +-- z zooms the CPU pane in process-list or thread mode
+|   +-- denied thread details fall back to thread count
 |
 +-- logs pane
 |   +-- existing log cursor, pretty JSON, yank, pause, and latest controls
@@ -42,10 +43,10 @@ python3 -m py_compile mrun/monitor.py mrun/mrun.py mrun/test/test_monitor.py
 Result: passed
 
 uv run --with pytest pytest mrun/test/test_monitor.py
-Result: 66 passed
+Result: 68 passed
 
 uv run --with pytest pytest
-Result: 85 passed, 1 xfailed, 1 warning
+Result: 87 passed, 1 xfailed, 1 warning
 ```
 
 The xfail is pre-existing expected behavior in the wider suite. The warning is
@@ -68,6 +69,7 @@ because it has a __init__ constructor
 | A3 | none     | CPU t toggles thread view only under CPU focus.| Closed |
 | A4 | none     | Logs controls remain scoped to logs focus.     | Closed |
 | A5 | low      | Existing pytest collection warning remains.    | Known  |
+| A6 | none     | Access-denied threads show thread count.       | Closed |
 +----+----------+------------------------------------------------+--------+
 ```
 
@@ -82,6 +84,7 @@ No new anomalies were detected by automated tests.
 [ ] Press Tab until CPU is focused.
 [ ] Press Up/Down or j/k and confirm the highlighted CPU process row moves.
 [ ] Press t and confirm CPU thread view appears for the selected process.
+[ ] On macOS access-denied thread detail, confirm THREAD COUNT is shown.
 [ ] Press t again and confirm the CPU pane returns to the process CPU list.
 [ ] Press z while CPU is focused and confirm CPU zoom opens.
 [ ] Press z again and confirm the quadrant layout returns.
