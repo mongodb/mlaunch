@@ -60,6 +60,7 @@ feature-monitor branch
 |   +-- process discovery, metrics sampling, log tailing, rendering, key input
 |   +-- auth and TLS metadata loading for network sampling
 |   +-- pane focus, focused-pane zoom, CPU process selection, thread sampling
+|   +-- ProcessSampler preserves psutil CPU state across refreshes
 |
 +-- mrun/fault_inject_collection_scans.py
 |   +-- local-only PyMongo workload for monitor troubleshooting
@@ -361,6 +362,12 @@ ProcessMetrics
 +-- memory_rss
 +-- status
 
+ProcessSampler
+|
++-- cached psutil.Process by pid
++-- prime()
++-- sample()
+
 ThreadMetrics
 |
 +-- thread_id
@@ -405,9 +412,14 @@ DashboardSnapshot
 +-- sampled_at
 ```
 
-CPU and memory come from `psutil.Process`. Network rates are computed by
-sampling MongoDB `serverStatus().network` counters and calculating deltas
-between refreshes. For authenticated deployments, monitor mode loads stored
+CPU and memory come from `psutil.Process`. CPU percent is read through a
+long-lived `ProcessSampler` that keeps one `psutil.Process` object per pid, so
+`cpu_percent(interval=None)` has a previous sample to compare against on later
+refreshes. This matters because recreating a `psutil.Process` for every
+dashboard tick can repeatedly return an initial zero sample instead of the live
+CPU rate. Network rates are computed by sampling MongoDB
+`serverStatus().network` counters and calculating deltas between refreshes. For
+authenticated deployments, monitor mode loads stored
 credentials from `.mrun_startup` and passes them to the network sampler. If
 `--monitor-username`, `--monitor-password`, or `--monitor-auth-db` are provided,
 those values override stored credentials for monitor network sampling only.
@@ -854,6 +866,7 @@ without terminating the monitor.
 | FM-MON-KEY-001   | user   | arrow keys use fd-level reads     | 5ca41d5 | Implemented |
 | FM-MON-PRETTY-001| user   | syntax-colored Pretty JSON view   | 0a6d5de | Implemented |
 | FM-MON-FAULT-001 | user   | collection-scan fault injector    | a626f03 | Implemented |
+| FM-MON-CPU-003   | user   | CPU sampler preserves psutil state| ba7f8e3 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -878,6 +891,7 @@ without terminating the monitor.
 | 5ca41d5 | Read arrow escape sequences from tty fd        | FM-MON-KEY-001    | monitor.py, test_monitor.py   |
 | 0a6d5de | Colorize Pretty JSON log view                  | FM-MON-PRETTY-001 | monitor.py, test_monitor.py   |
 | a626f03 | Add collection-scan fault injector             | FM-MON-FAULT-001  | fault injector, tests         |
+| ba7f8e3 | Preserve psutil Process objects for CPU rates  | FM-MON-CPU-003    | monitor.py, test_monitor.py   |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -887,7 +901,7 @@ Reading order for reviewers:
 1. Start with 6dd5ff2 to understand the dashboard shape.
 2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
 3. Review f354587 and 52a8234 for pane focus and CPU thread view.
-4. Review fbd7996 through 0a6d5de for live-testing follow-up fixes.
+4. Review fbd7996 through ba7f8e3 for live-testing follow-up fixes.
 5. Review a626f03 for the optional local workload helper.
 ```
 
@@ -905,6 +919,7 @@ The focused monitor test module covers:
 - all-process discovery.
 - process-list permission failures.
 - CPU/memory metric helpers.
+- CPU process sampler preserving psutil CPU history across refreshes.
 - network counter deltas.
 - auth metadata loading and auth-required status.
 - auth/TLS client kwargs passed to network sampling.
@@ -960,6 +975,7 @@ Use this list for manual review:
 [ ] --monitor-username/--monitor-password/--monitor-auth-db override stored credentials.
 [ ] a toggles process scope and prompts for log selection again.
 [ ] CPU and memory panels show the expected ports and pids.
+[ ] CPU percentages update during the fault injector or another CPU stress workload.
 [ ] Network panel reports rates or unavailable status.
 [ ] Disk panel reports dbpath and log file size.
 [ ] Log tail prefixes each line with the MongoDB port.

@@ -48,7 +48,9 @@ mrun/monitor.py
 |
 +-- process metrics
 |   +-- read_process_metrics()
+|   +-- ProcessSampler
 |   +-- reads CPU percent, RSS memory, and process status from psutil
+|   +-- preserves psutil.Process objects by pid so CPU percent has history
 |   +-- ThreadSampler
 |   +-- samples psutil Process.threads() only when CPU thread view is toggled
 |   +-- computes per-thread CPU from user/system time deltas
