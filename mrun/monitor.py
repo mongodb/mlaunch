@@ -976,6 +976,19 @@ def move_log_cursor(log_lines, cursor, delta):
     return max(0, min(cursor + delta, len(log_lines) - 1))
 
 
+def clamp_pretty_scroll(pretty_lines, offset, height):
+    """Return a valid top-line offset for a pretty JSON viewport."""
+    if not pretty_lines:
+        return 0
+    height = max(int(height or 1), 1)
+    max_offset = max(0, len(pretty_lines) - height)
+    try:
+        offset = int(offset or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    return max(0, min(offset, max_offset))
+
+
 def normalize_pane(pane):
     """Return a valid monitor pane name."""
     return pane if pane in PANE_ORDER else "logs"
@@ -1261,12 +1274,14 @@ def _colorize_json_punctuation(text, palette):
     return "".join(output)
 
 
-def format_pretty_log_lines(pretty_lines, height, colorize=True, theme=None,
-                            environ=None):
+def format_pretty_log_lines(pretty_lines, height, offset=0, colorize=True,
+                            theme=None, environ=None):
     """Format a fixed pretty JSON view for the log panel."""
     if not pretty_lines:
         return []
-    lines = list(pretty_lines[:max(height, 1)])
+    height = max(height, 1)
+    offset = clamp_pretty_scroll(pretty_lines, offset, height)
+    lines = list(pretty_lines[offset:offset + height])
     if not colorize:
         return lines
     palette = pretty_json_palette(theme, environ)
@@ -1455,13 +1470,21 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
         controls.append("t %s threads" % (
             "process list" if cpu_thread_view else "thread view"))
     elif focused_pane == "logs":
-        controls.extend([
-            "logs j/k arrows move",
-            "g latest",
-            "p %s" % ("raw" if pretty_active else "pretty JSON"),
-            "y yank",
-            stream_control,
-        ])
+        if pretty_active:
+            controls.extend([
+                "pretty j/k arrows scroll",
+                "p raw",
+                "y yank raw",
+                stream_control,
+            ])
+        else:
+            controls.extend([
+                "logs j/k arrows move",
+                "g latest",
+                "p pretty JSON",
+                "y yank",
+                stream_control,
+            ])
     else:
         controls.append("%s pane" % focused_pane)
 
@@ -1476,7 +1499,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      process_scope="mrun", focused_pane="logs",
                      zoom_pane=None, cpu_cursor=None, cpu_thread_view=False,
                      thread_metrics=None, thread_error="",
-                     thread_count=None):
+                     thread_count=None, pretty_scroll=0):
     """Render the full four-quadrant monitor frame as a string."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -1527,7 +1550,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     full_log_height = rows - 2
     if pretty_active:
         log_lines_rendered = format_pretty_log_lines(
-            pretty_lines, full_log_height)
+            pretty_lines, full_log_height, offset=pretty_scroll)
     else:
         log_lines_rendered = (
             format_log_lines(log_lines, log_cursor, full_log_height,
@@ -1566,7 +1589,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
 
     log_content_height = max(bottom_height - 2, 1)
     if pretty_active:
-        log_content = format_pretty_log_lines(pretty_lines, log_content_height)
+        log_content = format_pretty_log_lines(
+            pretty_lines, log_content_height, offset=pretty_scroll)
     else:
         log_content = (
             format_log_lines(log_lines, log_cursor, log_content_height,
@@ -1733,6 +1757,7 @@ class Monitor:
         self.status_message = ""
         self.yanked_cursor = None
         self.pretty_lines = None
+        self.pretty_scroll = 0
         self.pretty_previous_zoom = None
         self.stream_paused = False
 
@@ -1799,6 +1824,7 @@ class Monitor:
                         yanked_cursor=self.yanked_cursor,
                         refresh_interval=self.refresh_interval,
                         pretty_lines=self.pretty_lines,
+                        pretty_scroll=self.pretty_scroll,
                         stream_paused=self.stream_paused,
                         disk_metrics=snapshot.disk_metrics,
                         process_scope=self.process_scope,
@@ -1903,6 +1929,7 @@ class Monitor:
             if key in ("q", "ctrl-c", "\x03"):
                 return "quit"
             if key == "r":
+                self._clear_pretty_log_line(restore_zoom=False)
                 return "reselect"
             if key == "a":
                 self._toggle_process_scope()
@@ -1936,12 +1963,21 @@ class Monitor:
                     return "resample"
             elif self.focused_pane == "logs":
                 if key in ("up", "k"):
+                    if self.pretty_lines is not None:
+                        self._move_pretty_scroll(-1)
+                        return "redraw"
                     self._move_log_cursor(log_lines, -1)
                     return "redraw"
                 if key in ("down", "j"):
+                    if self.pretty_lines is not None:
+                        self._move_pretty_scroll(1)
+                        return "redraw"
                     self._move_log_cursor(log_lines, 1)
                     return "redraw"
                 if key == "g":
+                    if self.pretty_lines is not None:
+                        self.status_message = "press p before jumping latest"
+                        return "redraw"
                     self._jump_to_latest(log_lines)
                     return "redraw"
                 if key in ("p", "P"):
@@ -2021,6 +2057,36 @@ class Monitor:
             self.follow_tail = False
             self.status_message = "highlighted log line %i" % (self.log_cursor + 1)
 
+    def _move_pretty_scroll(self, delta):
+        if self.pretty_lines is None:
+            return
+
+        height = self._pretty_view_height()
+        previous = clamp_pretty_scroll(
+            self.pretty_lines, self.pretty_scroll, height)
+        self.pretty_scroll = clamp_pretty_scroll(
+            self.pretty_lines, previous + delta, height)
+        if self.pretty_scroll == previous and delta < 0:
+            self.status_message = "top of pretty JSON"
+        elif self.pretty_scroll == previous and delta > 0:
+            self.status_message = "bottom of pretty JSON"
+        else:
+            end_line = min(
+                len(self.pretty_lines),
+                self.pretty_scroll + height,
+            )
+            self.status_message = "pretty JSON lines %i-%i of %i" % (
+                self.pretty_scroll + 1,
+                end_line,
+                len(self.pretty_lines),
+            )
+
+    @staticmethod
+    def _pretty_view_height():
+        terminal_size = shutil.get_terminal_size((120, 40))
+        rows = max(terminal_size.lines - 1, 12)
+        return max(rows - 2, 1)
+
     def _cycle_refresh_interval(self):
         self.refresh_interval = next_refresh_interval(self.refresh_interval)
         self.status_message = "refresh interval %s" % format_seconds(
@@ -2080,6 +2146,7 @@ class Monitor:
             return
 
         self.pretty_lines = pretty_lines
+        self.pretty_scroll = 0
         self.pretty_previous_zoom = self.zoom_logs
         self.zoom_logs = True
         self.zoom_pane = "logs"
@@ -2088,8 +2155,10 @@ class Monitor:
 
     def _clear_pretty_log_line(self, restore_zoom=True):
         if self.pretty_lines is None:
+            self.pretty_scroll = 0
             return
         self.pretty_lines = None
+        self.pretty_scroll = 0
         if restore_zoom and self.pretty_previous_zoom is not None:
             self.zoom_logs = self.pretty_previous_zoom
             self.zoom_pane = "logs" if self.zoom_logs else None

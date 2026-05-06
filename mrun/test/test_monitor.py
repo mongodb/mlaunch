@@ -16,6 +16,7 @@ from mrun.monitor import (
     AUTH_REQUIRED_STATUS,
     build_monitor_tls_kwargs,
     build_osc52_sequence,
+    clamp_pretty_scroll,
     colorize_pretty_json_line,
     dashboard_snapshot_due,
     detect_terminal_theme,
@@ -975,6 +976,42 @@ def test_render_dashboard_pretty_json_mode_replaces_raw_log_tail():
     assert "\033[" in rendered
     assert "> 27017" not in rendered
     assert "p raw" in rendered
+    assert "pretty j/k arrows scroll" in rendered
+
+
+def test_render_dashboard_pretty_json_uses_scroll_offset():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ['27017 | {"msg":"hello"}'],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((80, 8)),
+        log_cursor=0,
+        zoom_logs=True,
+        pretty_lines=[
+            "{",
+            '  "line1": 1,',
+            '  "line2": 2,',
+            '  "line3": 3,',
+            '  "line4": 4,',
+            '  "line5": 5,',
+            '  "line6": 6,',
+            '  "line7": 7,',
+            '  "line8": 8,',
+            '  "line9": 9,',
+            '  "line10": 10,',
+            '  "line11": 11,',
+            '  "line12": 12',
+            "}",
+        ],
+        pretty_scroll=2,
+    )
+
+    stripped = strip_ansi(rendered)
+    assert '  "line2": 2,' in stripped
+    assert '  "line1": 1,' not in stripped
 
 
 def test_pretty_json_colorizes_keys_strings_numbers_and_keywords():
@@ -1006,6 +1043,21 @@ def test_format_pretty_log_lines_can_disable_color():
     lines = format_pretty_log_lines(['  "n": 12'], 1, colorize=False)
 
     assert lines == ['  "n": 12']
+
+
+def test_format_pretty_log_lines_uses_scroll_offset():
+    pretty_lines = ["{", '  "a": 1,', '  "b": 2', "}"]
+
+    lines = format_pretty_log_lines(
+        pretty_lines,
+        2,
+        offset=1,
+        colorize=False,
+    )
+
+    assert lines == ['  "a": 1,', '  "b": 2']
+    assert clamp_pretty_scroll(pretty_lines, 99, 2) == 2
+    assert clamp_pretty_scroll(pretty_lines, -99, 2) == 0
 
 
 def test_pretty_json_panel_uses_ansi_aware_widths():
@@ -1280,6 +1332,7 @@ def test_monitor_pretty_toggle_pauses_and_zoom_renders_json():
     monitor.log_cursor = 0
     monitor.follow_tail = True
     monitor.zoom_logs = False
+    monitor.pretty_scroll = 7
 
     action = monitor._wait_for_action(
         FakeTerminal("p"), time.time(), ['27017 | {"msg":"hello"}'])
@@ -1287,9 +1340,63 @@ def test_monitor_pretty_toggle_pauses_and_zoom_renders_json():
     assert action == "redraw"
     assert monitor.follow_tail is False
     assert monitor.zoom_logs is True
+    assert monitor.zoom_pane == "logs"
+    assert monitor.pretty_scroll == 0
     assert monitor.pretty_lines == ["{", '  "msg": "hello"', "}"]
     assert monitor.pretty_previous_zoom is False
     assert monitor.status_message == "prettified highlighted log line"
+
+
+def test_monitor_pretty_mode_j_k_scrolls_without_moving_log_cursor(monkeypatch):
+    monkeypatch.setattr(Monitor, "_pretty_view_height", staticmethod(lambda: 2))
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.log_cursor = 1
+    monitor.pretty_lines = ["{", '  "a": 1,', '  "b": 2', "}"]
+
+    action = monitor._wait_for_action(
+        FakeTerminal("j"), time.time(), ["first", "second", "third"])
+
+    assert action == "redraw"
+    assert monitor.pretty_scroll == 1
+    assert monitor.log_cursor == 1
+    assert monitor.pretty_lines is not None
+    assert monitor.status_message == "pretty JSON lines 2-3 of 4"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("k"), time.time(), ["first", "second", "third"])
+
+    assert action == "redraw"
+    assert monitor.pretty_scroll == 0
+    assert monitor.log_cursor == 1
+    assert monitor.status_message == "pretty JSON lines 1-2 of 4"
+
+
+def test_monitor_pretty_mode_scroll_clamps_at_bottom(monkeypatch):
+    monkeypatch.setattr(Monitor, "_pretty_view_height", staticmethod(lambda: 2))
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.pretty_lines = ["{", '  "a": 1,', '  "b": 2', "}"]
+    monitor.pretty_scroll = 2
+
+    action = monitor._wait_for_action(
+        FakeTerminal("down"), time.time(), ["first"])
+
+    assert action == "redraw"
+    assert monitor.pretty_scroll == 2
+    assert monitor.status_message == "bottom of pretty JSON"
+
+
+def test_monitor_pretty_mode_g_does_not_exit_pretty_view():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.log_cursor = 0
+    monitor.pretty_lines = ["{", "}"]
+
+    action = monitor._wait_for_action(
+        FakeTerminal("g"), time.time(), ["first", "second"])
+
+    assert action == "redraw"
+    assert monitor.log_cursor == 0
+    assert monitor.pretty_lines == ["{", "}"]
+    assert monitor.status_message == "press p before jumping latest"
 
 
 def test_monitor_pretty_toggle_returns_to_previous_raw_view():
@@ -1298,9 +1405,11 @@ def test_monitor_pretty_toggle_returns_to_previous_raw_view():
     monitor.zoom_logs = False
 
     monitor._toggle_pretty_log_line(['27017 | {"msg":"hello"}'])
+    monitor.pretty_scroll = 1
     monitor._toggle_pretty_log_line(['27017 | {"msg":"hello"}'])
 
     assert monitor.pretty_lines is None
+    assert monitor.pretty_scroll == 0
     assert monitor.pretty_previous_zoom is None
     assert monitor.zoom_logs is False
     assert monitor.status_message == "raw log line view"
