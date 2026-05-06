@@ -44,10 +44,10 @@ python3 -m py_compile mrun/monitor.py mrun/mrun.py mrun/test/test_monitor.py
 Result: passed
 
 uv run --with pytest pytest mrun/test/test_monitor.py
-Result: 70 passed
+Result: 71 passed
 
 uv run --with pytest pytest
-Result: 89 passed, 1 xfailed, 1 warning
+Result: 90 passed, 1 xfailed, 1 warning
 ```
 
 The xfail is pre-existing expected behavior in the wider suite. The warning is
@@ -72,6 +72,7 @@ because it has a __init__ constructor
 | A5 | low      | Existing pytest collection warning remains.    | Known  |
 | A6 | none     | Access-denied threads show thread count.       | Closed |
 | A7 | none     | Cursor redraws avoid full metric resampling.   | Closed |
+| A8 | high     | Cached redraw used stale disk_metrics local.   | Closed |
 +----+----------+------------------------------------------------+--------+
 ```
 

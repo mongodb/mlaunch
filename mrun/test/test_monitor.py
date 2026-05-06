@@ -1199,6 +1199,36 @@ class FakeTerminal:
         return self.key
 
 
+class FakeTerminalContext:
+    def __init__(self, stdin=None, stdout=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read_key(self):
+        return "q"
+
+
+def test_monitor_run_dashboard_renders_cached_snapshot_disk_metrics(monkeypatch):
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.network_sampler = NetworkSampler(
+        client_factory=lambda host, **kwargs: FakeClient({"network": {}}))
+    monkeypatch.setattr("mrun.monitor.TerminalController", FakeTerminalContext)
+    monkeypatch.setattr(monitor, "_prime_cpu", lambda: None)
+    monkeypatch.setattr(
+        monitor,
+        "_discover_processes_or_report",
+        lambda clear_screen=False: [process],
+    )
+
+    assert monitor._run_dashboard({}) == "quit"
+
+
 def test_pane_focus_helpers_cycle_forward_and_backward():
     assert next_pane("logs", 1) == "cpu"
     assert next_pane("cpu", 1) == "memory"

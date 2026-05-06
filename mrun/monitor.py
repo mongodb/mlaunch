@@ -1571,7 +1571,7 @@ class Monitor:
                         refresh_interval=self.refresh_interval,
                         pretty_lines=self.pretty_lines,
                         stream_paused=self.stream_paused,
-                        disk_metrics=disk_metrics,
+                        disk_metrics=snapshot.disk_metrics,
                         process_scope=self.process_scope,
                         focused_pane=self.focused_pane,
                         zoom_pane=self.zoom_pane,
