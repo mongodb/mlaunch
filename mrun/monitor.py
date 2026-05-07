@@ -51,6 +51,9 @@ ANSI_DIM = "\033[2m"
 ANSI_INVERSE = "\033[7m"
 ANSI_BOLD = "\033[1m"
 ANSI_DEFAULT = "\033[39m"
+ANSI_ROLE_PRIMARY = "\033[38;5;71m"
+ANSI_ROLE_SECONDARY = "\033[38;5;179m"
+ANSI_ROLE_WARNING = "\033[38;5;203m"
 PANE_HEADER_COLORS = {
     "cpu": ANSI_TEAL,
     "memory": ANSI_GREEN,
@@ -250,6 +253,16 @@ class NetworkMetrics:
     bytes_out_per_sec: float = 0.0
     requests_per_sec: float = 0.0
     error: str = ""
+
+
+@dataclass
+class TableColumn:
+    """Column definition for ANSI-aware monitor tables."""
+
+    key: str
+    header: str
+    min_width: int = 0
+    align: str = "left"
 
 
 @dataclass
@@ -1242,6 +1255,36 @@ def current_op_raw_json(raw):
     return json.dumps(json_safe_value(raw or {}))
 
 
+def current_op_pretty_json_lines(raw):
+    """Render a db.currentOp-style document as pretty JSON lines."""
+    return json.dumps(json_safe_value(raw or {}), indent=2).splitlines()
+
+
+def selected_current_op_entry(snapshot, cursor):
+    """Return the selected currentOp entry, or None when no row is selected."""
+    if not snapshot or not snapshot.entries:
+        return None
+    cursor = clamp_current_op_cursor(snapshot, cursor)
+    if cursor is None:
+        return None
+    return snapshot.entries[cursor]
+
+
+def current_op_summary_text(entry):
+    """Return the compact formatted text for a currentOp row."""
+    if entry is None:
+        return ""
+    return "%s %s %.1f %s %s %s %s" % (
+        entry.port,
+        entry.role or "unknown",
+        entry.secs_running,
+        entry.op,
+        entry.ns or "-",
+        entry.client or "-",
+        entry.desc or entry.opid or "-",
+    )
+
+
 class LogTailer:
     """Tail selected log files and retain a bounded in-memory buffer."""
 
@@ -1550,9 +1593,11 @@ def colorize_role(role):
     text = str(role or "unknown")
     style = role_style(text)
     if style == STYLE_ROLE_PRIMARY:
-        return ANSI_GREEN + text + ANSI_DEFAULT
-    if style in (STYLE_ROLE_SECONDARY, STYLE_ROLE_WARNING):
-        return ANSI_YELLOW + text + ANSI_DEFAULT
+        return ANSI_ROLE_PRIMARY + text + ANSI_DEFAULT
+    if style == STYLE_ROLE_SECONDARY:
+        return ANSI_ROLE_SECONDARY + text + ANSI_DEFAULT
+    if style == STYLE_ROLE_WARNING:
+        return ANSI_ROLE_WARNING + text + ANSI_DEFAULT
     if style == STYLE_ROLE_DIM:
         return ANSI_DIM + text + ANSI_RESET
     return text
@@ -2033,6 +2078,14 @@ def clamp_current_op_cursor(snapshot, cursor):
     return max(0, min(cursor, len(entries) - 1))
 
 
+def clamp_optional_current_op_cursor(snapshot, cursor):
+    """Clamp an optional currentOp row index without selecting by default."""
+    entries = snapshot.entries if snapshot and snapshot.entries else []
+    if not entries or cursor is None:
+        return None
+    return max(0, min(cursor, len(entries) - 1))
+
+
 def move_current_op_cursor(snapshot, cursor, delta):
     """Move the highlighted currentOp index by delta."""
     cursor = clamp_current_op_cursor(snapshot, cursor)
@@ -2428,52 +2481,161 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
     return rows
 
 
-def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
-                     role_metrics=None):
-    """Format CPU process rows, optionally marking the selected process."""
-    role_metrics = role_metrics or {}
-    lines = [_table_header(
-        "  PORT   PID      ROLE              PROCESS  CPU%   STATUS")]
-    selected_index = clamp_process_cursor(processes, cursor)
-    if not processes:
-        lines.append("  No MongoDB processes found.")
-        return lines
+def _align_ansi(text, width, align="left"):
+    """Pad and truncate one table cell by visible display width."""
+    width = max(int(width or 0), 0)
+    text = _truncate_ansi(str(text), width)
+    padding = max(width - visible_width(text), 0)
+    if align == "right":
+        return " " * padding + text
+    return text + " " * padding
 
-    for index, process in enumerate(processes):
-        metrics = process_metrics.get(
-            process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        role = format_role(role_metrics.get(process.port))
-        marker = ">" if show_cursor and index == selected_index else " "
-        text = "%s %-6s %-8s %s %-8s %5.1f  %s" % (
-            marker,
-            process.port,
-            process.pid,
-            role,
-            process.name,
-            metrics.cpu_percent,
-            metrics.status,
-        )
-        if show_cursor and index == selected_index:
-            text = _styled_line(STYLE_SELECTED, text)
+
+def _table_column_widths(columns, rows, max_width=None,
+                         indent_width=0, prefix_width=0, gap="  "):
+    """Return preferred column widths, shrinking wide cells when needed."""
+    widths = []
+    for column in columns:
+        preferred = max(int(column.min_width or 0), visible_width(column.header))
+        for row in rows:
+            preferred = max(preferred, visible_width(row.get(column.key, "")))
+        widths.append(preferred)
+
+    if max_width is None:
+        return widths
+
+    gap_width = len(gap) * max(len(columns) - 1, 0)
+    prefix_gap = 1 if prefix_width else 0
+    available = max(int(max_width or 0) - indent_width - prefix_width -
+                    prefix_gap - gap_width, 1)
+    total = sum(widths)
+    minimums = [
+        min(width, max(1, int(column.min_width or 1),
+                       visible_width(column.header)))
+        for width, column in zip(widths, columns)
+    ]
+    index = len(widths) - 1
+    while total > available and index >= 0:
+        shrink = min(total - available, widths[index] - minimums[index])
+        if shrink > 0:
+            widths[index] -= shrink
+            total -= shrink
+        index -= 1
+        if index < 0 and total > available:
+            index = len(widths) - 1
+            if all(width <= minimum for width, minimum in zip(widths, minimums)):
+                break
+    return widths
+
+
+def format_table_lines(columns, rows, indent="  ", row_prefixes=None,
+                       row_styles=None, max_width=None):
+    """Format an ANSI-aware table with stable column alignment."""
+    rows = list(rows or [])
+    columns = list(columns or [])
+    row_prefixes = list(row_prefixes) if row_prefixes is not None else None
+    row_styles = list(row_styles or [])
+    gap = "  "
+    prefix_width = (
+        max([visible_width(prefix) for prefix in row_prefixes] or [0])
+        if row_prefixes is not None else 0
+    )
+    widths = _table_column_widths(
+        columns,
+        rows,
+        max_width=max_width,
+        indent_width=visible_width(indent),
+        prefix_width=prefix_width,
+        gap=gap,
+    )
+
+    def build(cells, prefix=""):
+        rendered = [
+            _align_ansi(cells.get(column.key, ""), width, column.align)
+            for column, width in zip(columns, widths)
+        ]
+        table = gap.join(rendered)
+        if row_prefixes is None:
+            return indent + table
+        prefix = _align_ansi(prefix, prefix_width)
+        return indent + prefix + " " + table
+
+    header_cells = {
+        column.key: column.header
+        for column in columns
+    }
+    lines = [_table_header(build(header_cells, " " * prefix_width))]
+    for index, row in enumerate(rows):
+        prefix = row_prefixes[index] if row_prefixes is not None else ""
+        text = build(row, prefix)
+        styles = row_styles[index] if index < len(row_styles) else []
+        if styles:
+            text = _styled_line(styles, text)
         lines.append(text)
     return lines
 
 
-def format_current_op_lines(snapshot, cursor=None, height=None, raw=False):
+def _row_selection_styles(index, cursor=None, yanked_cursor=None):
+    """Return row styles for selected/yanked rows with yank priority."""
+    if yanked_cursor is not None and index == yanked_cursor:
+        return [STYLE_YANKED]
+    if cursor is not None and index == cursor:
+        return [STYLE_SELECTED]
+    return []
+
+
+def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
+                     role_metrics=None, width=None):
+    """Format CPU process rows, optionally marking the selected process."""
+    role_metrics = role_metrics or {}
+    selected_index = clamp_process_cursor(processes, cursor)
+    if not processes:
+        return [_table_header("  PORT   PID      ROLE              PROCESS  CPU%   STATUS"),
+                "  No MongoDB processes found."]
+
+    columns = [
+        TableColumn("port", "PORT", 6),
+        TableColumn("pid", "PID", 8),
+        TableColumn("role", "ROLE", 17),
+        TableColumn("process", "PROCESS", 8),
+        TableColumn("cpu", "CPU%", 5, "right"),
+        TableColumn("status", "STATUS", 8),
+    ]
+    rows = []
+    prefixes = []
+    styles = []
+    for index, process in enumerate(processes):
+        metrics = process_metrics.get(
+            process.pid, ProcessMetrics(0.0, 0, "unavailable"))
+        rows.append({
+            "port": str(process.port),
+            "pid": str(process.pid),
+            "role": colorize_role(role_display(role_metrics.get(process.port))),
+            "process": process.name,
+            "cpu": "%.1f" % metrics.cpu_percent,
+            "status": metrics.status,
+        })
+        selected = show_cursor and index == selected_index
+        prefixes.append(">" if selected else " ")
+        styles.append([STYLE_SELECTED] if selected else [])
+    return format_table_lines(
+        columns, rows, indent="", row_prefixes=prefixes,
+        row_styles=styles, max_width=width)
+
+
+def format_current_op_lines(snapshot, cursor=None, height=None, raw=False,
+                            yanked_cursor=None, width=None):
     """Format the top active currentOp entries for the CPU pane."""
-    header = "RAW CURRENTOP DOCUMENTS" if raw else (
-        "PORT   ROLE              SECS    OP        NS                 CLIENT        DESC")
-    lines = [_table_header(header)]
     if snapshot is None:
-        lines.append("currentOp not sampled yet.")
-        return lines
+        return [_table_header("RAW CURRENTOP DOCUMENTS" if raw else "PORT"),
+                "currentOp not sampled yet."]
     if not snapshot.available:
-        lines.append("currentOp unavailable: %s" % (
-            snapshot.error or "unavailable"))
-        return lines
+        return [_table_header("RAW CURRENTOP DOCUMENTS" if raw else "PORT"),
+                "currentOp unavailable: %s" % (
+                    snapshot.error or "unavailable")]
     if not snapshot.entries:
-        lines.append("no active currentOp entries")
-        return lines
+        return [_table_header("RAW CURRENTOP DOCUMENTS" if raw else "PORT"),
+                "no active currentOp entries"]
 
     entries = snapshot.entries
     cursor = clamp_current_op_cursor(snapshot, cursor)
@@ -2486,104 +2648,149 @@ def format_current_op_lines(snapshot, cursor=None, height=None, raw=False):
         ))
         entries = entries[start:start + content_height]
 
+    if raw:
+        columns = [
+            TableColumn("port", "PORT", 5),
+            TableColumn("role", "ROLE", 9),
+            TableColumn("document", "RAW CURRENTOP DOCUMENT", 12),
+        ]
+    else:
+        columns = [
+            TableColumn("port", "PORT", 5),
+            TableColumn("role", "ROLE", 9),
+            TableColumn("secs", "SECS", 4, "right"),
+            TableColumn("op", "OP", 4),
+            TableColumn("ns", "NS", 9),
+            TableColumn("client", "CLIENT", 6),
+            TableColumn("desc", "DESC", 4),
+        ]
+    rows = []
+    prefixes = []
+    styles = []
     for offset, entry in enumerate(entries):
         index = start + offset
-        marker = ">" if index == cursor else " "
         if raw:
-            raw_text = current_op_raw_json(entry.raw)
-            text = "%s %-6s %s %s" % (
-                marker, entry.port, format_role(RoleMetrics(True, entry.role)),
-                raw_text)
+            rows.append({
+                "port": str(entry.port),
+                "role": colorize_role(entry.role or "unknown"),
+                "document": current_op_raw_json(entry.raw),
+            })
         else:
-            text = "%s %-6s %s %7.1f %-9s %-18s %-13s %s" % (
-                marker,
-                entry.port,
-                format_role(RoleMetrics(True, entry.role)),
-                entry.secs_running,
-                entry.op,
-                entry.ns or "-",
-                entry.client or "-",
-                entry.desc or entry.opid or "-",
-            )
-        if index == cursor:
-            text = _styled_line(STYLE_SELECTED, text)
-        lines.append(text)
-    return lines
+            rows.append({
+                "port": str(entry.port),
+                "role": colorize_role(entry.role or "unknown"),
+                "secs": "%.1f" % entry.secs_running,
+                "op": entry.op,
+                "ns": entry.ns or "-",
+                "client": entry.client or "-",
+                "desc": entry.desc or entry.opid or "-",
+            })
+        prefixes.append(">" if index == cursor else " ")
+        styles.append(_row_selection_styles(index, cursor, yanked_cursor))
+    return format_table_lines(
+        columns, rows, indent="", row_prefixes=prefixes,
+        row_styles=styles, max_width=width)
 
 
-def format_memory_lines(processes, process_metrics, role_metrics=None):
+def format_memory_lines(processes, process_metrics, role_metrics=None,
+                        width=None):
     """Format memory rows for process RSS usage."""
     role_metrics = role_metrics or {}
-    lines = [_table_header("  PORT   ROLE              PID      PROCESS  RSS")]
     if not processes:
-        lines.append("  No MongoDB processes found.")
-        return lines
+        return [_table_header("  PORT    ROLE              PID       PROCESS   RSS"),
+                "  No MongoDB processes found."]
 
+    columns = [
+        TableColumn("port", "PORT", 6),
+        TableColumn("role", "ROLE", 17),
+        TableColumn("pid", "PID", 8),
+        TableColumn("process", "PROCESS", 8),
+        TableColumn("rss", "RSS", 8, "right"),
+    ]
+    rows = []
     for process in processes:
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        lines.append("  %-6s %s %-8s %-8s %s" % (
-            process.port,
-            format_role(role_metrics.get(process.port)),
-            process.pid,
-            process.name,
-            format_bytes(metrics.memory_rss)))
-    return lines
+        rows.append({
+            "port": str(process.port),
+            "role": colorize_role(role_display(role_metrics.get(process.port))),
+            "pid": str(process.pid),
+            "process": process.name,
+            "rss": format_bytes(metrics.memory_rss),
+        })
+    return format_table_lines(columns, rows, max_width=width)
 
 
-def format_network_lines(processes, network_metrics, role_metrics=None):
+def format_network_lines(processes, network_metrics, role_metrics=None,
+                         width=None):
     """Format MongoDB network counter rates."""
     role_metrics = role_metrics or {}
-    lines = [_table_header(
-        "  PORT   ROLE              IN       OUT      REQ/s   STATUS")]
     if not processes:
-        lines.append("  No MongoDB processes found.")
-        return lines
+        return [_table_header("  PORT    ROLE              IN        OUT       REQ/s   STATUS"),
+                "  No MongoDB processes found."]
 
+    columns = [
+        TableColumn("port", "PORT", 6),
+        TableColumn("role", "ROLE", 17),
+        TableColumn("in", "IN", 8, "right"),
+        TableColumn("out", "OUT", 8, "right"),
+        TableColumn("req", "REQ/s", 7, "right"),
+        TableColumn("status", "STATUS", 8),
+    ]
+    rows = []
     for process in processes:
         network = network_metrics.get(process.port, NetworkMetrics(False))
         if network.available:
-            lines.append("  %-6s %s %-8s %-8s %-7.1f ok" % (
-                process.port,
-                format_role(role_metrics.get(process.port)),
-                format_rate(network.bytes_in_per_sec),
-                format_rate(network.bytes_out_per_sec),
-                network.requests_per_sec,
-            ))
+            row = {
+                "in": format_rate(network.bytes_in_per_sec),
+                "out": format_rate(network.bytes_out_per_sec),
+                "req": "%.1f" % network.requests_per_sec,
+                "status": "ok",
+            }
         else:
-            lines.append("  %-6s %s %-8s %-8s %-7s %s" % (
-                process.port,
-                format_role(role_metrics.get(process.port)),
-                "-", "-", "-", network_status_label(network)))
-    return lines
+            row = {
+                "in": "-",
+                "out": "-",
+                "req": "-",
+                "status": network_status_label(network),
+            }
+        row.update({
+            "port": str(process.port),
+            "role": colorize_role(role_display(role_metrics.get(process.port))),
+        })
+        rows.append(row)
+    return format_table_lines(columns, rows, max_width=width)
 
 
-def format_disk_lines(processes, disk_metrics, role_metrics=None):
+def format_disk_lines(processes, disk_metrics, role_metrics=None, width=None):
     """Format dbpath and logpath disk consumption."""
     role_metrics = role_metrics or {}
-    lines = [_table_header(
-        "  PORT   ROLE              DB SIZE   LOG SIZE  STATUS")]
     if not processes:
-        lines.append("  No MongoDB processes found.")
-        return lines
+        return [_table_header("  PORT    ROLE              DB SIZE   LOG SIZE  STATUS"),
+                "  No MongoDB processes found."]
 
+    columns = [
+        TableColumn("port", "PORT", 6),
+        TableColumn("role", "ROLE", 17),
+        TableColumn("db_size", "DB SIZE", 9, "right"),
+        TableColumn("log_size", "LOG SIZE", 9, "right"),
+        TableColumn("status", "STATUS", 8),
+    ]
+    rows = []
     for process in processes:
         disk = disk_metrics.get(process.port, DiskMetrics(False))
         if disk.available:
-            lines.append("  %-6s %s %-9s %-9s ok" % (
-                process.port,
-                format_role(role_metrics.get(process.port)),
-                format_bytes(disk.db_size),
-                format_bytes(disk.log_size),
-            ))
+            status = "ok"
         else:
-            lines.append("  %-6s %s %-9s %-9s unavailable" % (
-                process.port,
-                format_role(role_metrics.get(process.port)),
-                format_bytes(disk.db_size),
-                format_bytes(disk.log_size),
-            ))
-    return lines
+            status = "unavailable"
+        rows.append({
+            "port": str(process.port),
+            "role": colorize_role(role_display(role_metrics.get(process.port))),
+            "db_size": format_bytes(disk.db_size),
+            "log_size": format_bytes(disk.log_size),
+            "status": status,
+        })
+    return format_table_lines(columns, rows, max_width=width)
 
 
 def _ascii_bar(value, total, width=10):
@@ -2762,7 +2969,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      log_filter_prompt=False, log_filter_input="",
                      log_filter_match_count=None, log_filter_total=None,
                      current_op_view=False, current_op_raw=False,
-                     current_op_namespace=""):
+                     current_op_namespace="",
+                     current_op_pretty_active=False):
     focused_pane = normalize_pane(focused_pane)
     stream_control = "space resume" if stream_paused else "space pause"
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
@@ -2794,9 +3002,11 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
     elif focused_pane == "logs":
         if current_op_view:
             controls.extend([
-                "op j/k",
+                "op pretty j/k" if current_op_pretty_active else "op j/k",
                 "o logs",
                 "O %s" % ("formatted" if current_op_raw else "raw"),
+                "p %s" % ("list" if current_op_pretty_active else "pretty"),
+                "y",
                 "n ns",
             ])
             if current_op_namespace:
@@ -2909,7 +3119,10 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      log_filter_input="", role_metrics=None,
                      current_op_view=False, current_ops=None,
                      current_op_raw=False, current_op_cursor=None,
-                     log_view_start=0, current_op_namespace=""):
+                     log_view_start=0, current_op_namespace="",
+                     current_op_pretty_lines=None,
+                     current_op_pretty_scroll=0,
+                     current_op_yanked_cursor=None):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -2921,6 +3134,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     filter_active = _log_filter_active(log_filter_query)
     filter_match_count = len(log_filter_view.lines) if filter_active else None
     filter_total = len(log_lines or []) if filter_active else None
+    current_op_pretty_active = (
+        current_op_view and current_op_pretty_lines is not None)
 
     controls = _footer_controls(
         focused_pane,
@@ -2939,6 +3154,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_view=current_op_view,
         current_op_raw=current_op_raw,
         current_op_namespace=current_op_namespace,
+        current_op_pretty_active=current_op_pretty_active,
     )
 
     if server_status_active:
@@ -2982,13 +3198,18 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
             selected_cpu, thread_metrics, thread_error, thread_count)
     else:
         cpu_title = "CPU Usage"
+        metric_width = max((columns // 2) - 3, 1)
         cpu_lines = format_cpu_lines(
             processes, process_metrics, cpu_cursor, show_cpu_cursor,
-            role_metrics)
+            role_metrics, width=metric_width)
 
-    mem_lines = format_memory_lines(processes, process_metrics, role_metrics)
-    net_lines = format_network_lines(processes, network_metrics, role_metrics)
-    disk_lines = format_disk_lines(processes, disk_metrics, role_metrics)
+    metric_width = max((columns // 2) - 3, 1)
+    mem_lines = format_memory_lines(
+        processes, process_metrics, role_metrics, width=metric_width)
+    net_lines = format_network_lines(
+        processes, network_metrics, role_metrics, width=metric_width)
+    disk_lines = format_disk_lines(
+        processes, disk_metrics, role_metrics, width=metric_width)
 
     log_cursor = clamp_filtered_log_cursor(
         log_lines, log_cursor, follow_tail=False, query=log_filter_query)
@@ -3037,20 +3258,31 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_view=current_op_view,
         current_op_raw=current_op_raw,
         current_op_namespace=current_op_namespace,
+        current_op_pretty_active=current_op_pretty_active,
     )
 
     if zoom_pane:
         if zoom_pane == "logs" and current_op_view:
-            state = "Raw" if current_op_raw else "Formatted"
+            state = (
+                "Pretty" if current_op_pretty_active
+                else ("Raw" if current_op_raw else "Formatted"))
             zoom_title = "Current Ops (%s)" % state
             if current_op_namespace:
                 zoom_title += " ns %s" % current_op_namespace
-            zoom_lines = format_current_op_lines(
-                current_ops,
-                cursor=current_op_cursor,
-                height=max(rows - 2, 1),
-                raw=current_op_raw,
-            )
+            if current_op_pretty_active:
+                zoom_lines = format_pretty_log_lines(
+                    current_op_pretty_lines,
+                    max(rows - 2, 1),
+                    offset=current_op_pretty_scroll)
+            else:
+                zoom_lines = format_current_op_lines(
+                    current_ops,
+                    cursor=current_op_cursor,
+                    height=max(rows - 2, 1),
+                    raw=current_op_raw,
+                    yanked_cursor=current_op_yanked_cursor,
+                    width=max(columns - 3, 1),
+                )
         else:
             zoom_title, zoom_lines = panels[zoom_pane]
         frame = make_panel(
@@ -3065,16 +3297,26 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
 
     activity_content_height = max(rows - 2, 1)
     if current_op_view:
-        state = "Raw" if current_op_raw else "Formatted"
+        state = (
+            "Pretty" if current_op_pretty_active
+            else ("Raw" if current_op_raw else "Formatted"))
         activity_title = "Current Ops (%s)" % state
         if current_op_namespace:
             activity_title += " ns %s" % current_op_namespace
-        log_content = format_current_op_lines(
-            current_ops,
-            cursor=current_op_cursor,
-            height=activity_content_height,
-            raw=current_op_raw,
-        )
+        if current_op_pretty_active:
+            log_content = format_pretty_log_lines(
+                current_op_pretty_lines,
+                activity_content_height,
+                offset=current_op_pretty_scroll)
+        else:
+            log_content = format_current_op_lines(
+                current_ops,
+                cursor=current_op_cursor,
+                height=activity_content_height,
+                raw=current_op_raw,
+                yanked_cursor=current_op_yanked_cursor,
+                width=max(right_width - 3, 1),
+            )
     elif pretty_active:
         activity_title = log_title
         log_content = format_pretty_log_lines(
@@ -3268,6 +3510,9 @@ class Monitor:
         self.current_op_cursor = None
         self.current_op_raw = False
         self.current_op_namespace = ""
+        self.current_op_pretty_lines = None
+        self.current_op_pretty_scroll = 0
+        self.current_op_yanked_cursor = None
         self.status_message = ""
         self.yanked_cursor = None
         self.log_view_start = 0
@@ -3368,6 +3613,9 @@ class Monitor:
                         current_op_raw=self.current_op_raw,
                         current_op_cursor=self.current_op_cursor,
                         current_op_namespace=self.current_op_namespace,
+                        current_op_pretty_lines=self.current_op_pretty_lines,
+                        current_op_pretty_scroll=self.current_op_pretty_scroll,
+                        current_op_yanked_cursor=self.current_op_yanked_cursor,
                         log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
@@ -3418,6 +3666,14 @@ class Monitor:
                 namespace=self.current_op_namespace)
             self.current_op_cursor = clamp_current_op_cursor(
                 current_ops, self.current_op_cursor)
+            self.current_op_yanked_cursor = clamp_optional_current_op_cursor(
+                current_ops, self.current_op_yanked_cursor)
+            if self.current_op_pretty_lines is not None:
+                self.current_op_pretty_scroll = clamp_pretty_scroll(
+                    self.current_op_pretty_lines,
+                    self.current_op_pretty_scroll,
+                    self._activity_view_height(),
+                )
         disk_metrics = read_disk_metrics(processes)
         log_lines = read_log_stream(tailer, self.stream_paused)
         self.log_cursor = clamp_filtered_log_cursor(
@@ -3509,6 +3765,7 @@ class Monitor:
                 return "quit"
             if key == "r":
                 self._clear_pretty_log_line(restore_zoom=False)
+                self._clear_current_op_pretty()
                 return "reselect"
             if key == "a":
                 self._toggle_process_scope()
@@ -3562,6 +3819,9 @@ class Monitor:
             elif self.focused_pane == "logs":
                 if key in ("up", "k"):
                     if self.cpu_current_op_view:
+                        if self.current_op_pretty_lines is not None:
+                            self._move_current_op_pretty_scroll(-1)
+                            return "redraw"
                         self._move_current_op_cursor(current_ops, -1)
                         return "redraw"
                     if self.pretty_lines is not None:
@@ -3571,6 +3831,9 @@ class Monitor:
                     return "redraw"
                 if key in ("down", "j"):
                     if self.cpu_current_op_view:
+                        if self.current_op_pretty_lines is not None:
+                            self._move_current_op_pretty_scroll(1)
+                            return "redraw"
                         self._move_current_op_cursor(current_ops, 1)
                         return "redraw"
                     if self.pretty_lines is not None:
@@ -3580,6 +3843,10 @@ class Monitor:
                     return "redraw"
                 if key == "g":
                     if self.cpu_current_op_view:
+                        if self.current_op_pretty_lines is not None:
+                            self.status_message = (
+                                "press p before selecting currentOp rows")
+                            return "redraw"
                         self.current_op_cursor = 0
                         self.status_message = "highlighted top currentOp"
                         return "redraw"
@@ -3589,7 +3856,13 @@ class Monitor:
                     self._jump_to_latest(log_lines)
                     return "redraw"
                 if self.cpu_current_op_view:
-                    if key in ("p", "P", "y", " ", "/", "c"):
+                    if key in ("p", "P"):
+                        self._toggle_pretty_current_op(current_ops)
+                        return "redraw"
+                    if key == "y":
+                        self._yank_current_op(current_ops)
+                        return "redraw"
+                    if key in (" ", "/"):
                         self.status_message = "press o to return to logs"
                         return "redraw"
                 if key in ("p", "P"):
@@ -3678,18 +3951,21 @@ class Monitor:
             self.current_op_cursor = None
             self.status_message = "currentOp top 10 view"
         else:
+            self._clear_current_op_pretty()
             self.status_message = "CPU process list"
 
     def _toggle_current_op_raw(self):
         if not self.cpu_current_op_view:
             self.status_message = "press o before toggling currentOp raw"
             return
+        self._clear_current_op_pretty()
         self.current_op_raw = not self.current_op_raw
         self.status_message = (
             "currentOp raw view" if self.current_op_raw
             else "currentOp formatted view")
 
     def _move_current_op_cursor(self, current_ops, delta):
+        self._clear_current_op_pretty()
         self.current_op_cursor = move_current_op_cursor(
             current_ops, self.current_op_cursor, delta)
         if self.current_op_cursor is None:
@@ -3699,6 +3975,7 @@ class Monitor:
             self.current_op_cursor + 1)
 
     def _select_current_op_namespace(self):
+        self._clear_current_op_pretty()
         namespaces = []
         try:
             processes = self._discover_processes()
@@ -3725,6 +4002,7 @@ class Monitor:
 
         self.current_op_namespace = namespace
         self.current_op_cursor = None
+        self.current_op_yanked_cursor = None
         self.cpu_current_op_view = True
         self.focused_pane = "logs"
         if namespace:
@@ -3738,6 +4016,8 @@ class Monitor:
             return
         self.current_op_namespace = ""
         self.current_op_cursor = None
+        self.current_op_yanked_cursor = None
+        self._clear_current_op_pretty()
         self.status_message = "currentOp namespace filter cleared"
 
     def _start_log_filter_prompt(self):
@@ -3861,6 +4141,32 @@ class Monitor:
                 len(self.pretty_lines),
             )
 
+    def _move_current_op_pretty_scroll(self, delta):
+        if self.current_op_pretty_lines is None:
+            return
+
+        height = self._activity_view_height()
+        previous = clamp_pretty_scroll(
+            self.current_op_pretty_lines,
+            self.current_op_pretty_scroll,
+            height)
+        self.current_op_pretty_scroll = clamp_pretty_scroll(
+            self.current_op_pretty_lines, previous + delta, height)
+        if self.current_op_pretty_scroll == previous and delta < 0:
+            self.status_message = "top of currentOp JSON"
+        elif self.current_op_pretty_scroll == previous and delta > 0:
+            self.status_message = "bottom of currentOp JSON"
+        else:
+            end_line = min(
+                len(self.current_op_pretty_lines),
+                self.current_op_pretty_scroll + height,
+            )
+            self.status_message = "currentOp JSON lines %i-%i of %i" % (
+                self.current_op_pretty_scroll + 1,
+                end_line,
+                len(self.current_op_pretty_lines),
+            )
+
     @staticmethod
     def _pretty_view_height():
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -3898,11 +4204,13 @@ class Monitor:
         self.current_op_cursor = None
         self.current_op_raw = False
         self.current_op_namespace = ""
+        self.current_op_yanked_cursor = None
         self.zoom_pane = None
         self.zoom_logs = False
         self.follow_tail = True
         self.stream_paused = False
         self._clear_pretty_log_line(restore_zoom=False)
+        self._clear_current_op_pretty()
         self.status_message = (
             "showing all MongoDB processes" if self.process_scope == "all"
             else "showing mongorun-managed processes")
@@ -3961,6 +4269,28 @@ class Monitor:
             self.zoom_pane = "logs" if self.zoom_logs else None
         self.pretty_previous_zoom = None
 
+    def _toggle_pretty_current_op(self, current_ops):
+        if self.current_op_pretty_lines is not None:
+            self._clear_current_op_pretty()
+            self.status_message = "currentOp list view"
+            return
+
+        entry = selected_current_op_entry(current_ops, self.current_op_cursor)
+        if entry is None:
+            self.status_message = "no currentOp entry selected"
+            return
+
+        self.current_op_cursor = clamp_current_op_cursor(
+            current_ops, self.current_op_cursor)
+        self.current_op_pretty_lines = current_op_pretty_json_lines(entry.raw)
+        self.current_op_pretty_scroll = 0
+        self.focused_pane = "logs"
+        self.status_message = "prettified highlighted currentOp"
+
+    def _clear_current_op_pretty(self):
+        self.current_op_pretty_lines = None
+        self.current_op_pretty_scroll = 0
+
     def _yank_log_line(self, log_lines):
         self.log_cursor = clamp_filtered_log_cursor(
             log_lines, self.log_cursor, self.follow_tail,
@@ -3975,6 +4305,25 @@ class Monitor:
         self.follow_tail = False
         self.yanked_cursor = self.log_cursor
         self.status_message = "yanked highlighted log line"
+
+    def _yank_current_op(self, current_ops):
+        entry = selected_current_op_entry(current_ops, self.current_op_cursor)
+        if entry is None:
+            self.status_message = "no currentOp entry selected"
+            return
+
+        self.current_op_cursor = clamp_current_op_cursor(
+            current_ops, self.current_op_cursor)
+        if self.current_op_pretty_lines is not None:
+            text = "\n".join(self.current_op_pretty_lines)
+        elif self.current_op_raw:
+            text = current_op_raw_json(entry.raw)
+        else:
+            text = current_op_summary_text(entry)
+        self.stdout.write(build_osc52_sequence(text))
+        self.stdout.flush()
+        self.current_op_yanked_cursor = self.current_op_cursor
+        self.status_message = "yanked highlighted currentOp"
 
     def _interactive_terminal(self):
         return (

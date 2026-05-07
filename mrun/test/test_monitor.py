@@ -12,6 +12,9 @@ from mrun.monitor import (
     ANSI_INVERSE,
     ANSI_RED,
     ANSI_DIM,
+    ANSI_ROLE_PRIMARY,
+    ANSI_ROLE_SECONDARY,
+    ANSI_ROLE_WARNING,
     ANSI_SEARCH_HIT,
     ANSI_TEAL,
     ANSI_YELLOW,
@@ -24,6 +27,7 @@ from mrun.monitor import (
     CurrentOpEntry,
     current_op_namespaces,
     current_op_raw_json,
+    current_op_pretty_json_lines,
     CurrentOpSampler,
     CurrentOpSnapshot,
     dashboard_snapshot_due,
@@ -536,6 +540,8 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "o toggles currentOp activity" in flat_output
     assert "O toggles currentOp raw/format" in flat_output
     assert "n selects currentOp namespace" in flat_output
+    assert "currentOp p pretty JSON" in flat_output
+    assert "currentOp y yank selected op" in flat_output
     assert "g latest log line" in flat_output
     assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
@@ -1103,10 +1109,11 @@ def test_format_cpu_lines_includes_replica_role_column():
 
     assert "ROLE" in strip_ansi(lines[0])
     assert "Primary" in strip_ansi(lines[1])
-    assert ANSI_GREEN in lines[1]
+    assert ANSI_ROLE_PRIMARY in lines[1]
+    assert ANSI_BOLD not in lines[1]
 
 
-def test_role_column_colors_secondary_yellow():
+def test_role_column_uses_muted_non_header_secondary_color():
     process = MongoProcessInfo(10, "mongod", 27018, "/tmp/a.log", "", [])
 
     lines = format_cpu_lines(
@@ -1116,7 +1123,8 @@ def test_role_column_colors_secondary_yellow():
     )
 
     assert "Secondary" in strip_ansi(lines[1])
-    assert ANSI_YELLOW in lines[1]
+    assert ANSI_ROLE_SECONDARY in lines[1]
+    assert ANSI_YELLOW not in lines[1]
 
 
 def test_metric_formatters_include_role_column():
@@ -1142,6 +1150,9 @@ def test_metric_formatters_pad_left_like_cpu_rows():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
     roles = {27017: RoleMetrics(True, "Primary")}
 
+    cpu = format_cpu_lines(
+        [process], {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        cursor=0, show_cursor=True, role_metrics=roles)
     memory = format_memory_lines(
         [process], {10: ProcessMetrics(12.5, 1024 * 1024, "running")}, roles)
     network = format_network_lines(
@@ -1149,12 +1160,19 @@ def test_metric_formatters_pad_left_like_cpu_rows():
     disk = format_disk_lines(
         [process], {27017: DiskMetrics(True, 2048, 512)}, roles)
 
+    assert strip_ansi(cpu[0]).startswith("  PORT")
+    assert strip_ansi(cpu[1]).startswith("> 27017")
     assert strip_ansi(memory[0]).startswith("  PORT")
     assert strip_ansi(memory[1]).startswith("  27017")
     assert strip_ansi(network[0]).startswith("  PORT")
     assert strip_ansi(network[1]).startswith("  27017")
     assert strip_ansi(disk[0]).startswith("  PORT")
     assert strip_ansi(disk[1]).startswith("  27017")
+    for lines in (cpu, memory, network, disk):
+        header = strip_ansi(lines[0])
+        row = strip_ansi(lines[1])
+        assert header.index("PORT") == row.index("27017")
+        assert header.index("ROLE") == row.index("Primary")
 
 
 def test_format_cpu_lines_shows_password_required_role():
@@ -1173,6 +1191,7 @@ def test_format_cpu_lines_shows_password_required_role():
     )
 
     assert ROLE_PASSWORD_REQUIRED in strip_ansi(lines[1])
+    assert ANSI_ROLE_WARNING in lines[1]
 
 
 def test_format_current_op_lines_shows_top_entries():
@@ -1216,6 +1235,22 @@ def test_format_current_op_lines_can_show_raw_documents():
     assert '"op": "query"' in strip_ansi(lines[1])
 
 
+def test_format_current_op_lines_marks_yanked_entry_green():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017, "Primary", 12.4, "query", "test.coll",
+                "127.0.0.1", "find coll", "op1"),
+        ],
+    )
+
+    lines = format_current_op_lines(snapshot, cursor=0, yanked_cursor=0)
+
+    assert "test.coll" in strip_ansi(lines[1])
+    assert lines[1].startswith("\x00yanked\x00")
+
+
 def test_current_op_raw_json_stringifies_bson_like_values():
     class FakeObjectId:
         def __str__(self):
@@ -1235,6 +1270,21 @@ def test_current_op_raw_json_stringifies_bson_like_values():
 
     assert "507f1f77bcf86cd799439011" in text
     assert "2026-05-07T12:00:00" in text
+
+
+def test_current_op_pretty_json_lines_stringifies_bson_like_values():
+    class FakeObjectId:
+        def __str__(self):
+            return "507f1f77bcf86cd799439011"
+
+    lines = current_op_pretty_json_lines({
+        "op": "query",
+        "objectId": FakeObjectId(),
+    })
+
+    assert '{' in lines[0]
+    assert '  "op": "query",' in lines
+    assert '  "objectId": "507f1f77bcf86cd799439011"' in lines
 
 
 def test_format_current_op_lines_raw_mode_does_not_crash_on_bson_values():
@@ -1343,6 +1393,42 @@ def test_render_dashboard_current_op_raw_view_uses_right_activity_pane():
     assert "Current Ops (Raw)" in rendered
     assert "ns test.coll" in rendered
     assert '"op": "query"' in rendered
+
+
+def test_render_dashboard_current_op_pretty_view_uses_activity_pane():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((120, 24)),
+        current_op_view=True,
+        current_ops=snapshot,
+        current_op_pretty_lines=current_op_pretty_json_lines(
+            snapshot.entries[0].raw),
+    )
+
+    assert "Current Ops (Pretty)" in rendered
+    assert '"op"' in strip_ansi(rendered)
+    assert "p list" in rendered
 
 
 def test_render_dashboard_thread_view_is_toggle_only_not_default():
@@ -2418,6 +2504,142 @@ def test_monitor_c_clears_current_op_namespace_filter():
     assert action == "resample"
     assert monitor.current_op_namespace == ""
     assert monitor.status_message == "currentOp namespace filter cleared"
+
+
+def test_monitor_p_toggles_current_op_pretty_view():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("p"), time.time(), [], current_ops=snapshot)
+
+    assert action == "redraw"
+    assert monitor.current_op_pretty_lines is not None
+    assert '  "op": "query",' in monitor.current_op_pretty_lines
+    assert monitor.status_message == "prettified highlighted currentOp"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("p"), time.time(), [], current_ops=snapshot)
+
+    assert action == "redraw"
+    assert monitor.current_op_pretty_lines is None
+    assert monitor.status_message == "currentOp list view"
+
+
+def test_monitor_yanks_current_op_to_terminal_clipboard():
+    stdout = io.StringIO()
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+    monitor = Monitor(stdout=stdout)
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("y"), time.time(), [], current_ops=snapshot)
+
+    assert action == "redraw"
+    assert build_osc52_sequence(
+        "27017 Primary 12.4 query test.coll 127.0.0.1 find coll"
+    ) in stdout.getvalue()
+    assert monitor.current_op_yanked_cursor == 0
+    assert monitor.status_message == "yanked highlighted currentOp"
+
+
+def test_monitor_yanks_current_op_pretty_json_when_active():
+    stdout = io.StringIO()
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+    monitor = Monitor(stdout=stdout)
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+    monitor.current_op_pretty_lines = current_op_pretty_json_lines(
+        snapshot.entries[0].raw)
+
+    action = monitor._wait_for_action(
+        FakeTerminal("y"), time.time(), [], current_ops=snapshot)
+
+    assert action == "redraw"
+    assert build_osc52_sequence(
+        "\n".join(monitor.current_op_pretty_lines)) in stdout.getvalue()
+    assert monitor.current_op_yanked_cursor == 0
+
+
+def test_monitor_scrolls_current_op_pretty_with_jk():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+    monitor.current_op_pretty_lines = ["{"] + [
+        '  "field%i": %i,' % (index, index)
+        for index in range(80)
+    ] + ["}"]
+
+    action = monitor._wait_for_action(
+        FakeTerminal("j"), time.time(), [], current_ops=snapshot)
+
+    assert action == "redraw"
+    assert monitor.current_op_pretty_scroll == 1
+    assert monitor.current_op_cursor is None
 
 
 def test_monitor_cpu_selection_resamples_when_thread_view_is_active():
