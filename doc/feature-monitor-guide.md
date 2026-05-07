@@ -1129,6 +1129,7 @@ without terminating the monitor.
 | FM-MON-CPU-003   | user   | CPU sampler preserves psutil state| ba7f8e3 | Implemented |
 | FM-MON-PRETTY-002| user   | scrollable Pretty JSON log view   | f42c9ec | Implemented |
 | FM-MON-STATUS-001| user   | expanded serverStatus subsystems  | c8553aa | Implemented |
+| FM-MON-FILTER-001| user   | fuzzy/structured log filtering    | b2f6f61 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -1156,6 +1157,7 @@ without terminating the monitor.
 | ba7f8e3 | Preserve psutil Process objects for CPU rates  | FM-MON-CPU-003    | monitor.py, test_monitor.py   |
 | f42c9ec | Scroll zoomed Pretty JSON log view             | FM-MON-PRETTY-002 | monitor.py, test_monitor.py   |
 | c8553aa | Expand serverStatus subsystem view             | FM-MON-STATUS-001 | monitor.py, docs, tests       |
+| b2f6f61 | Add fuzzy and structured log filtering         | FM-MON-FILTER-001 | monitor.py, docs, tests       |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -1168,6 +1170,7 @@ Reading order for reviewers:
 4. Review fbd7996 through f42c9ec for live-testing follow-up fixes.
 5. Review a626f03 for the optional local workload helper.
 6. Review c8553aa for the expanded serverStatus subsystem UI.
+7. Review b2f6f61 for fuzzy and structured log filtering.
 ```
 
 ## Testing added by the branch
