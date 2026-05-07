@@ -30,6 +30,9 @@ from mrun.monitor import (
     filter_log_lines,
     format_current_op_lines,
     format_cpu_lines,
+    format_disk_lines,
+    format_memory_lines,
+    format_network_lines,
     format_pretty_log_lines,
     format_log_lines,
     filter_mrun_processes,
@@ -41,6 +44,7 @@ from mrun.monitor import (
     MonitorAuthConfig,
     Monitor,
     MongoProcessInfo,
+    NetworkMetrics,
     NetworkSampler,
     NO_MRUN_PROCESSES_MESSAGE,
     NO_PROCESSES_MESSAGE,
@@ -957,6 +961,27 @@ def test_render_dashboard_contains_four_quadrants():
     assert "27017" in rendered
 
 
+def test_render_dashboard_fits_terminal_without_footer_wrap():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    terminal_size = os.terminal_size((80, 18))
+
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        selected_ports=[27017],
+        terminal_size=terminal_size,
+        focused_pane="logs",
+    )
+
+    lines = rendered.splitlines()
+    assert len(lines) <= terminal_size.lines
+    assert all(visible_width(line) <= terminal_size.columns for line in lines)
+    assert "CPU Usage" in rendered
+    assert "Log Tail: 27017" in rendered
+
+
 def test_render_dashboard_marks_focused_cpu_process_selection():
     processes = [
         MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", []),
@@ -980,7 +1005,7 @@ def test_render_dashboard_marks_focused_cpu_process_selection():
     assert "[CPU Usage]" in rendered
     assert "> 27018" in rendered
     assert ANSI_INVERSE in rendered
-    assert "t thread view" in rendered
+    assert "t view threads" in rendered
 
 
 def test_format_cpu_lines_includes_replica_role_column():
@@ -996,6 +1021,39 @@ def test_format_cpu_lines_includes_replica_role_column():
 
     assert "ROLE" in strip_ansi(lines[0])
     assert "Primary" in strip_ansi(lines[1])
+    assert ANSI_GREEN in lines[1]
+
+
+def test_role_column_colors_secondary_yellow():
+    process = MongoProcessInfo(10, "mongod", 27018, "/tmp/a.log", "", [])
+
+    lines = format_cpu_lines(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        role_metrics={27018: RoleMetrics(True, "Secondary")},
+    )
+
+    assert "Secondary" in strip_ansi(lines[1])
+    assert ANSI_YELLOW in lines[1]
+
+
+def test_metric_formatters_include_role_column():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
+    roles = {27017: RoleMetrics(True, "Primary")}
+
+    memory = format_memory_lines(
+        [process], {10: ProcessMetrics(12.5, 1024 * 1024, "running")}, roles)
+    network = format_network_lines(
+        [process], {27017: NetworkMetrics(True, 1, 2, 3)}, roles)
+    disk = format_disk_lines(
+        [process], {27017: DiskMetrics(True, 2048, 512)}, roles)
+
+    assert "ROLE" in strip_ansi(memory[0])
+    assert "Primary" in strip_ansi(memory[1])
+    assert "ROLE" in strip_ansi(network[0])
+    assert "Primary" in strip_ansi(network[1])
+    assert "ROLE" in strip_ansi(disk[0])
+    assert "Primary" in strip_ansi(disk[1])
 
 
 def test_format_cpu_lines_shows_password_required_role():
@@ -1033,7 +1091,31 @@ def test_format_current_op_lines_shows_top_entries():
     assert "test.coll" in strip_ansi(lines[1])
 
 
-def test_render_dashboard_current_op_view_replaces_cpu_list():
+def test_format_current_op_lines_can_show_raw_documents():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+
+    lines = format_current_op_lines(snapshot, raw=True)
+
+    assert "RAW CURRENTOP" in strip_ansi(lines[0])
+    assert '"op": "query"' in strip_ansi(lines[1])
+
+
+def test_render_dashboard_current_op_view_uses_right_activity_pane():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     snapshot = CurrentOpSnapshot(
         True,
@@ -1056,10 +1138,44 @@ def test_render_dashboard_current_op_view_replaces_cpu_list():
         current_ops=snapshot,
     )
 
-    assert "[Current Ops]" in rendered
+    assert "Current Ops (Formatted)" in rendered
     assert "test.coll" in rendered
-    assert "CPU Usage" not in rendered
-    assert "o process list currentOps" in rendered
+    assert "CPU Usage" in rendered
+    assert "o logs" in rendered or "o currentOps" in rendered
+
+
+def test_render_dashboard_current_op_raw_view_uses_right_activity_pane():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "ns": "test.coll"},
+            ),
+        ],
+    )
+
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((120, 24)),
+        current_op_view=True,
+        current_op_raw=True,
+        current_ops=snapshot,
+    )
+
+    assert "Current Ops (Raw)" in rendered
+    assert '"op": "query"' in rendered
 
 
 def test_render_dashboard_thread_view_is_toggle_only_not_default():
@@ -1090,7 +1206,7 @@ def test_render_dashboard_thread_view_is_toggle_only_not_default():
     assert "CPU Threads: port 27017 pid 10" in thread_rendered
     assert "TID        CPU%" in thread_rendered
     assert "101" in thread_rendered
-    assert "t process list" in thread_rendered
+    assert "t list threads" in thread_rendered
 
 
 def test_render_dashboard_thread_view_shows_count_when_details_denied():
@@ -1121,7 +1237,7 @@ def test_render_dashboard_cpu_zoom_uses_current_cpu_mode():
         {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
         {},
         ["27017 | log line"],
-        terminal_size=os.terminal_size((80, 18)),
+        terminal_size=os.terminal_size((120, 18)),
         focused_pane="cpu",
         zoom_pane="cpu",
         cpu_cursor=0,
@@ -1132,7 +1248,7 @@ def test_render_dashboard_cpu_zoom_uses_current_cpu_mode():
     assert "[CPU Threads: port 27017 pid 10]" in rendered
     assert "Memory Usage" not in rendered
     assert "Log Tail" not in rendered
-    assert "z quadrants" in rendered
+    assert "z quad" in rendered
 
 
 def test_render_dashboard_zoom_mode_focuses_log_tail():
@@ -1143,7 +1259,7 @@ def test_render_dashboard_zoom_mode_focuses_log_tail():
         {},
         ["27017 | first", "27017 | second"],
         selected_ports=[27017],
-        terminal_size=os.terminal_size((80, 18)),
+        terminal_size=os.terminal_size((120, 18)),
         log_cursor=1,
         zoom_logs=True,
     )
@@ -1152,13 +1268,13 @@ def test_render_dashboard_zoom_mode_focuses_log_tail():
     assert "> 27017 | second" in rendered
     assert ANSI_INVERSE in rendered
     assert "CPU Usage" not in rendered
-    assert "z quadrants" in rendered
+    assert "z quad" in rendered
     assert "g latest" in rendered
-    assert "p pretty JSON" in rendered
-    assert "space pause stream" in rendered
-    assert "scope mrun" in rendered
+    assert "p pretty" in rendered
+    assert "space pause" in rendered
+    assert "mrun" in rendered
     assert "a all" in rendered
-    assert "s refresh 1s" in rendered
+    assert "s1s" in rendered
 
 
 def test_render_dashboard_paused_stream_updates_title_and_footer():
@@ -1169,13 +1285,13 @@ def test_render_dashboard_paused_stream_updates_title_and_footer():
         {},
         ["27017 | first"],
         selected_ports=[27017],
-        terminal_size=os.terminal_size((90, 18)),
+        terminal_size=os.terminal_size((160, 18)),
         log_cursor=0,
         stream_paused=True,
     )
 
     assert "Log Tail: 27017 (Paused)" in rendered
-    assert "space resume stream" in rendered
+    assert "space resume" in rendered
 
 
 def test_render_dashboard_filters_log_stream_and_shows_match_count():
@@ -1227,7 +1343,7 @@ def test_render_dashboard_shows_auth_required_network_status():
         {27017: NetworkSampler(auth_required=True).sample([process])[27017]},
         ["27017 | first"],
         selected_ports=[27017],
-        terminal_size=os.terminal_size((100, 24)),
+        terminal_size=os.terminal_size((160, 24)),
         log_cursor=0,
     )
 
@@ -1242,7 +1358,7 @@ def test_render_dashboard_pretty_json_mode_replaces_raw_log_tail():
         {},
         ['27017 | {"msg":"hello"}'],
         selected_ports=[27017],
-        terminal_size=os.terminal_size((80, 18)),
+        terminal_size=os.terminal_size((120, 18)),
         log_cursor=0,
         zoom_logs=True,
         pretty_lines=["{", '  "msg": "hello"', "}"],
@@ -1253,7 +1369,7 @@ def test_render_dashboard_pretty_json_mode_replaces_raw_log_tail():
     assert "\033[" in rendered
     assert "> 27017" not in rendered
     assert "p raw" in rendered
-    assert "pretty j/k arrows scroll" in rendered
+    assert "pretty j/k" in rendered
 
 
 def test_render_dashboard_pretty_json_uses_scroll_offset():
@@ -1362,7 +1478,7 @@ def test_pretty_json_panel_uses_ansi_aware_widths():
     assert all(visible_width(line) == 50 for line in panel_lines)
 
 
-def test_make_panel_colors_unfocused_header_boundaries():
+def test_make_panel_uses_neutral_borders_and_colored_header_text():
     panel = make_panel(
         "Network Usage",
         ["content"],
@@ -1371,9 +1487,11 @@ def test_make_panel_colors_unfocused_header_boundaries():
         header_color=ANSI_YELLOW,
     )
 
-    assert panel[0].startswith(ANSI_YELLOW + "+")
+    assert panel[0].startswith("+")
+    assert not panel[0].startswith(ANSI_YELLOW + "+")
+    assert ANSI_YELLOW in panel[0]
     assert "Network Usage" in panel[0]
-    assert panel[1].startswith(ANSI_YELLOW + "|")
+    assert panel[1].startswith("|")
     assert all(visible_width(line) == 40 for line in panel)
 
 
@@ -1501,6 +1619,48 @@ def test_log_cursor_helpers_move_and_mark_lines():
     assert formatted[0] == "  first"
     assert formatted[1].endswith("> second")
     assert formatted[2] == "  third"
+
+
+def test_log_cursor_moves_inside_visible_window_before_scrolling():
+    lines = ["first", "second", "third", "fourth", "fifth"]
+
+    first_view = format_log_lines(lines, 1, 3, view_start=0)
+    second_view = format_log_lines(lines, 2, 3, view_start=0)
+    scrolled_view = format_log_lines(lines, 3, 3, view_start=0)
+
+    assert [strip_ansi(line) for line in first_view] == [
+        "  first",
+        "> second",
+        "  third",
+    ]
+    assert [strip_ansi(line) for line in second_view] == [
+        "  first",
+        "  second",
+        "> third",
+    ]
+    assert [strip_ansi(line) for line in scrolled_view] == [
+        "  second",
+        "  third",
+        "> fourth",
+    ]
+
+
+def test_filtered_log_cursor_uses_independent_view_start():
+    lines = ["keep one", "drop", "keep two", "keep three"]
+    view = filter_log_lines(lines, "keep")
+
+    rendered = format_log_lines(
+        view.lines,
+        2,
+        2,
+        line_indexes=view.indexes,
+        view_start=0,
+    )
+
+    assert [strip_ansi(line) for line in rendered] == [
+        "  keep one",
+        "> keep two",
+    ]
 
 
 def test_log_filter_scores_exact_token_and_fuzzy_matches():
@@ -2031,7 +2191,7 @@ def test_monitor_t_toggles_cpu_thread_view_only_when_cpu_focused():
     assert monitor.status_message == "CPU process list"
 
 
-def test_monitor_o_toggles_cpu_current_op_view_only_when_cpu_focused():
+def test_monitor_o_toggles_current_op_view_globally():
     process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
     monitor = Monitor(stdout=io.StringIO())
     monitor.refresh_interval = 0.01
@@ -2039,17 +2199,10 @@ def test_monitor_o_toggles_cpu_current_op_view_only_when_cpu_focused():
     action = monitor._wait_for_action(
         FakeTerminal("o"), time.time(), [], [process])
 
-    assert action is None
-    assert monitor.cpu_current_op_view is False
-
-    monitor.focused_pane = "cpu"
-    monitor.cpu_thread_view = True
-    action = monitor._wait_for_action(
-        FakeTerminal("o"), time.time(), [], [process])
-
     assert action == "resample"
     assert monitor.cpu_current_op_view is True
     assert monitor.cpu_thread_view is False
+    assert monitor.focused_pane == "logs"
     assert monitor.status_message == "currentOp top 10 view"
 
     action = monitor._wait_for_action(
@@ -2058,6 +2211,23 @@ def test_monitor_o_toggles_cpu_current_op_view_only_when_cpu_focused():
     assert action == "resample"
     assert monitor.cpu_current_op_view is False
     assert monitor.status_message == "CPU process list"
+
+
+def test_monitor_upper_o_toggles_current_op_raw_mode():
+    monitor = Monitor(stdout=io.StringIO())
+
+    action = monitor._wait_for_action(FakeTerminal("O"), time.time(), [])
+
+    assert action == "redraw"
+    assert monitor.current_op_raw is False
+    assert monitor.status_message == "press o before toggling currentOp raw"
+
+    monitor.cpu_current_op_view = True
+    action = monitor._wait_for_action(FakeTerminal("O"), time.time(), [])
+
+    assert action == "redraw"
+    assert monitor.current_op_raw is True
+    assert monitor.status_message == "currentOp raw view"
 
 
 def test_monitor_cpu_selection_resamples_when_thread_view_is_active():

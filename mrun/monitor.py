@@ -81,6 +81,10 @@ STYLE_SEVERITY_WARNING = "\x00severity:warning\x00"
 STYLE_SEVERITY_INFO = "\x00severity:info\x00"
 STYLE_SEVERITY_DEBUG = "\x00severity:debug\x00"
 STYLE_TABLE_HEADER = "\x00table-header\x00"
+STYLE_ROLE_PRIMARY = "\x00role:primary\x00"
+STYLE_ROLE_SECONDARY = "\x00role:secondary\x00"
+STYLE_ROLE_WARNING = "\x00role:warning\x00"
+STYLE_ROLE_DIM = "\x00role:dim\x00"
 REFRESH_INTERVALS = (1.0, 5.0, 10.0)
 ESCAPE_READ_TIMEOUT = 0.03
 KEY_POLL_INTERVAL = 0.01
@@ -101,6 +105,10 @@ STYLE_MARKERS = (
     STYLE_SEVERITY_INFO,
     STYLE_SEVERITY_DEBUG,
     STYLE_TABLE_HEADER,
+    STYLE_ROLE_PRIMARY,
+    STYLE_ROLE_SECONDARY,
+    STYLE_ROLE_WARNING,
+    STYLE_ROLE_DIM,
 )
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
@@ -274,6 +282,7 @@ class CurrentOpEntry:
     client: str
     desc: str
     opid: str = ""
+    raw: dict = None
 
 
 @dataclass
@@ -1180,6 +1189,7 @@ def current_op_entry(port, role, raw):
         client=str(raw.get("client") or raw.get("client_s") or ""),
         desc=str(_current_op_summary(raw) or ""),
         opid=str(raw.get("opid") or ""),
+        raw=dict(raw or {}),
     )
 
 
@@ -1319,8 +1329,11 @@ def network_status_label(network):
 
 
 def strip_ansi(text):
-    """Remove terminal ANSI style sequences from text."""
-    return ANSI_ESCAPE_RE.sub("", str(text))
+    """Remove terminal ANSI style sequences and internal style markers."""
+    text = ANSI_ESCAPE_RE.sub("", str(text))
+    for marker in STYLE_MARKERS:
+        text = text.replace(marker, "")
+    return text
 
 
 def visible_width(text):
@@ -1431,6 +1444,39 @@ def _style_ansi(styles, header_color=None):
     if STYLE_SELECTED in styles:
         return prefix + color + ANSI_INVERSE
     return prefix + color
+
+
+def role_style(role):
+    """Return an inline style marker for a replica-set role."""
+    normalized = str(role or "").strip().lower()
+    if normalized == "primary":
+        return STYLE_ROLE_PRIMARY
+    if normalized == "secondary":
+        return STYLE_ROLE_SECONDARY
+    if normalized == ROLE_PASSWORD_REQUIRED.lower():
+        return STYLE_ROLE_WARNING
+    if normalized in ("unavailable", "unknown"):
+        return STYLE_ROLE_DIM
+    return ""
+
+
+def colorize_role(role):
+    """Colorize a role value without resetting selected-row inverse video."""
+    text = str(role or "unknown")
+    style = role_style(text)
+    if style == STYLE_ROLE_PRIMARY:
+        return ANSI_GREEN + text + ANSI_DEFAULT
+    if style in (STYLE_ROLE_SECONDARY, STYLE_ROLE_WARNING):
+        return ANSI_YELLOW + text + ANSI_DEFAULT
+    if style == STYLE_ROLE_DIM:
+        return ANSI_DIM + text + ANSI_RESET
+    return text
+
+
+def format_role(role_metrics, width=17):
+    """Format a role column with stable visible width."""
+    return _pad_ansi(_truncate_ansi(
+        colorize_role(role_display(role_metrics)), width), width)
 
 
 def clamp_log_cursor(log_lines, cursor, follow_tail):
@@ -1892,6 +1938,24 @@ def selected_process(processes, cursor):
     return processes[cursor]
 
 
+def clamp_current_op_cursor(snapshot, cursor):
+    """Return a valid highlighted currentOp index."""
+    entries = snapshot.entries if snapshot and snapshot.entries else []
+    if not entries:
+        return None
+    if cursor is None:
+        return 0
+    return max(0, min(cursor, len(entries) - 1))
+
+
+def move_current_op_cursor(snapshot, cursor, delta):
+    """Move the highlighted currentOp index by delta."""
+    cursor = clamp_current_op_cursor(snapshot, cursor)
+    if cursor is None:
+        return None
+    return max(0, min(cursor + delta, len(snapshot.entries) - 1))
+
+
 def dashboard_snapshot_due(snapshot, now, next_sample_at, force_sample=False):
     """Return True when dashboard samplers should run again."""
     return force_sample or snapshot is None or now >= next_sample_at
@@ -1913,17 +1977,47 @@ def format_seconds(seconds):
     return "%.1fs" % seconds
 
 
-def _visible_log_window(log_lines, cursor, height):
+def _visible_log_window(log_lines, cursor, height, view_start=None):
     height = max(height, 1)
     if not log_lines:
         return [], 0
 
     cursor = clamp_log_cursor(log_lines, cursor, follow_tail=False)
-    start = max(0, cursor - height + 1)
-    if cursor < start:
-        start = cursor
+    if view_start is None:
+        start = max(0, cursor - height + 1)
+    else:
+        max_start = max(0, len(log_lines) - height)
+        start = max(0, min(int(view_start or 0), max_start))
+        if cursor < start:
+            start = cursor
+        elif cursor >= start + height:
+            start = cursor - height + 1
+        start = max(0, min(start, max_start))
     end = min(len(log_lines), start + height)
     return log_lines[start:end], start
+
+
+def clamp_log_view_start(log_lines, cursor, height, query="", view_start=0,
+                         follow_tail=False):
+    """Clamp the visible log-window start while preserving cursor independence."""
+    view = filter_log_lines(log_lines, query)
+    if not view.indexes:
+        return 0
+
+    height = max(int(height or 1), 1)
+    display_cursor = _display_cursor_index(view.indexes, cursor)
+    if display_cursor is None:
+        display_cursor = len(view.indexes) - 1
+    if follow_tail:
+        return max(0, len(view.indexes) - height)
+
+    max_start = max(0, len(view.indexes) - height)
+    start = max(0, min(int(view_start or 0), max_start))
+    if display_cursor < start:
+        start = display_cursor
+    elif display_cursor >= start + height:
+        start = display_cursor - height + 1
+    return max(0, min(start, max_start))
 
 
 def _highlight_log_spans(line, spans, resume_ansi=""):
@@ -1956,7 +2050,7 @@ def _display_cursor_index(line_indexes, cursor):
 
 
 def format_log_lines(log_lines, cursor, height, yanked_cursor=None,
-                     line_indexes=None, match_spans=None):
+                     line_indexes=None, match_spans=None, view_start=None):
     """Format log lines with a highlighted cursor marker."""
     if line_indexes is None:
         line_indexes = list(range(len(log_lines or [])))
@@ -1966,7 +2060,8 @@ def format_log_lines(log_lines, cursor, height, yanked_cursor=None,
         display_cursor = _display_cursor_index(line_indexes, cursor)
     match_spans = match_spans or {}
 
-    visible, start = _visible_log_window(log_lines, display_cursor, height)
+    visible, start = _visible_log_window(
+        log_lines, display_cursor, height, view_start=view_start)
     formatted = []
     for offset, line in enumerate(visible):
         display_index = start + offset
@@ -2203,8 +2298,13 @@ def build_osc52_sequence(text):
     return "\033]52;c;%s\a" % payload
 
 
-def _footer(status_message, controls):
-    return "%s | %s" % (status_message, controls) if status_message else controls
+def _footer(status_message, controls, width=None):
+    text = "%s | %s" % (status_message, controls) if status_message else controls
+    text = str(text).replace("\n", " ")
+    if width is None:
+        return text
+    width = max(int(width or 0), 0)
+    return _pad_ansi(_truncate_ansi(text, width), width)
 
 
 def make_panel(title, lines, width, height, focused=False, header_color=None):
@@ -2217,58 +2317,28 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
     border_char = "=" if focused else "-"
     title_text = "[%s]" % title if focused else title
     title_text = " %s " % title_text
-    border_color = ANSI_RED if focused else header_color
-    title_color = header_color or border_color
+    title_color = header_color or ""
+    header_content = title_text
+    if title_color:
+        header_content = ANSI_BOLD + title_color + title_text + ANSI_RESET
+    top_border_middle = _pad_ansi(
+        _truncate_ansi(header_content, inner_width),
+        inner_width,
+        fillchar=border_char,
+    )
+    rows = ["+" + top_border_middle + "+"]
 
-    if border_color:
-        header_content = title_text
-        if title_color:
-            header_content = (
-                ANSI_BOLD + title_color + title_text + ANSI_RESET +
-                border_color)
-        top_border_middle = _pad_ansi(
-            _truncate_ansi(header_content, inner_width),
-            inner_width,
-            fillchar=border_char,
-        )
-        border = border_color + "+" + top_border_middle + "+" + ANSI_RESET
-        rows = [border]
-
-        for index in range(inner_height):
-            text = lines[index] if index < len(lines) else ""
-            styles, text = _split_style(text)
-            text = _panel_content_padding(text, inner_width)
-            row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
-            ansi = _style_ansi(styles, header_color=header_color)
-
-            if ansi:
-                rows.append(
-                    border_color + "|" + ANSI_RESET +
-                    ansi + row_text + ANSI_RESET +
-                    border_color + "|" + ANSI_RESET)
-            else:
-                rows.append(
-                    border_color + "|" + ANSI_RESET +
-                    row_text +
-                    border_color + "|" + ANSI_RESET)
-
-        rows.append(
-            border_color + "+" + (border_char * inner_width) + "+" +
-            ANSI_RESET)
-    else:
-        border = "+" + _truncate(title_text, inner_width).ljust(inner_width, border_char) + "+"
-        rows = [border]
-        for index in range(inner_height):
-            text = lines[index] if index < len(lines) else ""
-            styles, text = _split_style(text)
-            text = _panel_content_padding(text, inner_width)
-            row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
-            ansi = _style_ansi(styles)
-            if ansi:
-                rows.append(ansi + "|" + row_text + "|" + ANSI_RESET)
-            else:
-                rows.append("|" + row_text + "|")
-        rows.append("+" + border_char * inner_width + "+")
+    for index in range(inner_height):
+        text = lines[index] if index < len(lines) else ""
+        styles, text = _split_style(text)
+        text = _panel_content_padding(text, inner_width)
+        row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
+        ansi = _style_ansi(styles, header_color=header_color)
+        if ansi:
+            rows.append("|" + ansi + row_text + ANSI_RESET + "|")
+        else:
+            rows.append("|" + row_text + "|")
+    rows.append("+" + border_char * inner_width + "+")
 
     return rows
 
@@ -2287,9 +2357,9 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
     for index, process in enumerate(processes):
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        role = role_display(role_metrics.get(process.port))
+        role = format_role(role_metrics.get(process.port))
         marker = ">" if show_cursor and index == selected_index else " "
-        text = "%s %-6s %-8s %-17s %-8s %5.1f  %s" % (
+        text = "%s %-6s %-8s %s %-8s %5.1f  %s" % (
             marker,
             process.port,
             process.pid,
@@ -2304,10 +2374,11 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
     return lines
 
 
-def format_current_op_lines(snapshot):
+def format_current_op_lines(snapshot, cursor=None, height=None, raw=False):
     """Format the top active currentOp entries for the CPU pane."""
-    lines = [_table_header(
-        "PORT   ROLE              SECS    OP        NS                 CLIENT        DESC")]
+    header = "RAW CURRENTOP DOCUMENTS" if raw else (
+        "PORT   ROLE              SECS    OP        NS                 CLIENT        DESC")
+    lines = [_table_header(header)]
     if snapshot is None:
         lines.append("currentOp not sampled yet.")
         return lines
@@ -2319,22 +2390,46 @@ def format_current_op_lines(snapshot):
         lines.append("no active currentOp entries")
         return lines
 
-    for entry in snapshot.entries:
-        lines.append("%-6s %-17s %7.1f %-9s %-18s %-13s %s" % (
-            entry.port,
-            entry.role,
-            entry.secs_running,
-            entry.op,
-            entry.ns or "-",
-            entry.client or "-",
-            entry.desc or entry.opid or "-",
+    entries = snapshot.entries
+    cursor = clamp_current_op_cursor(snapshot, cursor)
+    start = 0
+    if height is not None:
+        content_height = max(int(height or 1) - 1, 1)
+        start = max(0, min(
+            cursor - content_height + 1,
+            max(0, len(entries) - content_height),
         ))
+        entries = entries[start:start + content_height]
+
+    for offset, entry in enumerate(entries):
+        index = start + offset
+        marker = ">" if index == cursor else " "
+        if raw:
+            raw_text = json.dumps(entry.raw or {})
+            text = "%s %-6s %s %s" % (
+                marker, entry.port, format_role(RoleMetrics(True, entry.role)),
+                raw_text)
+        else:
+            text = "%s %-6s %s %7.1f %-9s %-18s %-13s %s" % (
+                marker,
+                entry.port,
+                format_role(RoleMetrics(True, entry.role)),
+                entry.secs_running,
+                entry.op,
+                entry.ns or "-",
+                entry.client or "-",
+                entry.desc or entry.opid or "-",
+            )
+        if index == cursor:
+            text = _styled_line(STYLE_SELECTED, text)
+        lines.append(text)
     return lines
 
 
-def format_memory_lines(processes, process_metrics):
+def format_memory_lines(processes, process_metrics, role_metrics=None):
     """Format memory rows for process RSS usage."""
-    lines = [_table_header("PORT   PID      PROCESS  RSS")]
+    role_metrics = role_metrics or {}
+    lines = [_table_header("PORT   ROLE              PID      PROCESS  RSS")]
     if not processes:
         lines.append("No MongoDB processes found.")
         return lines
@@ -2342,15 +2437,19 @@ def format_memory_lines(processes, process_metrics):
     for process in processes:
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        lines.append("%-6s %-8s %-8s %s" % (
-            process.port, process.pid, process.name,
+        lines.append("%-6s %s %-8s %-8s %s" % (
+            process.port,
+            format_role(role_metrics.get(process.port)),
+            process.pid,
+            process.name,
             format_bytes(metrics.memory_rss)))
     return lines
 
 
-def format_network_lines(processes, network_metrics):
+def format_network_lines(processes, network_metrics, role_metrics=None):
     """Format MongoDB network counter rates."""
-    lines = [_table_header("PORT   IN       OUT      REQ/s   STATUS")]
+    role_metrics = role_metrics or {}
+    lines = [_table_header("PORT   ROLE              IN       OUT      REQ/s   STATUS")]
     if not processes:
         lines.append("No MongoDB processes found.")
         return lines
@@ -2358,21 +2457,25 @@ def format_network_lines(processes, network_metrics):
     for process in processes:
         network = network_metrics.get(process.port, NetworkMetrics(False))
         if network.available:
-            lines.append("%-6s %-8s %-8s %-7.1f ok" % (
+            lines.append("%-6s %s %-8s %-8s %-7.1f ok" % (
                 process.port,
+                format_role(role_metrics.get(process.port)),
                 format_rate(network.bytes_in_per_sec),
                 format_rate(network.bytes_out_per_sec),
                 network.requests_per_sec,
             ))
         else:
-            lines.append("%-6s %-8s %-8s %-7s %s" % (
-                process.port, "-", "-", "-", network_status_label(network)))
+            lines.append("%-6s %s %-8s %-8s %-7s %s" % (
+                process.port,
+                format_role(role_metrics.get(process.port)),
+                "-", "-", "-", network_status_label(network)))
     return lines
 
 
-def format_disk_lines(processes, disk_metrics):
+def format_disk_lines(processes, disk_metrics, role_metrics=None):
     """Format dbpath and logpath disk consumption."""
-    lines = [_table_header("PORT   DB SIZE   LOG SIZE  STATUS")]
+    role_metrics = role_metrics or {}
+    lines = [_table_header("PORT   ROLE              DB SIZE   LOG SIZE  STATUS")]
     if not processes:
         lines.append("No MongoDB processes found.")
         return lines
@@ -2380,14 +2483,16 @@ def format_disk_lines(processes, disk_metrics):
     for process in processes:
         disk = disk_metrics.get(process.port, DiskMetrics(False))
         if disk.available:
-            lines.append("%-6s %-9s %-9s ok" % (
+            lines.append("%-6s %s %-9s %-9s ok" % (
                 process.port,
+                format_role(role_metrics.get(process.port)),
                 format_bytes(disk.db_size),
                 format_bytes(disk.log_size),
             ))
         else:
-            lines.append("%-6s %-9s %-9s unavailable" % (
+            lines.append("%-6s %s %-9s %-9s unavailable" % (
                 process.port,
+                format_role(role_metrics.get(process.port)),
                 format_bytes(disk.db_size),
                 format_bytes(disk.log_size),
             ))
@@ -2569,40 +2674,44 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      server_status_active=False, log_filter_query="",
                      log_filter_prompt=False, log_filter_input="",
                      log_filter_match_count=None, log_filter_total=None,
-                     current_op_view=False):
+                     current_op_view=False, current_op_raw=False):
     focused_pane = normalize_pane(focused_pane)
-    stream_control = (
-        "space resume stream" if stream_paused else "space pause stream")
-    scope_label = "scope %s" % process_scope
+    stream_control = "space resume" if stream_paused else "space pause"
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
-    zoom_control = "z quadrants" if zoom_pane else "z zoom focus"
 
     if server_status_active:
         return " | ".join([
-            "q/Ctrl+C quit",
-            "E exit status view",
-            "s refresh %s" % format_seconds(refresh_interval),
+            "q/Ctrl+C",
+            "E exit",
+            "s %s" % format_seconds(refresh_interval),
         ])
 
     controls = [
-        "q/Ctrl+C quit",
-        "Tab pane",
-        zoom_control,
-        "r reselect",
-        "E server status",
-        scope_label,
+        "q",
+        "Tab",
+        "z quad" if zoom_pane else "z zoom",
+        "r",
+        "E",
+        process_scope,
         scope_toggle,
-        "s refresh %s" % format_seconds(refresh_interval),
+        "s%s" % format_seconds(refresh_interval),
     ]
 
     if focused_pane == "cpu":
-        controls.append("cpu j/k arrows select")
+        controls.append("cpu j/k")
         controls.append("t %s threads" % (
-            "process list" if cpu_thread_view else "thread view"))
-        controls.append("o %s currentOps" % (
-            "process list" if current_op_view else "currentOps"))
+            "list" if cpu_thread_view else "view"))
+        controls.append("o %s" % (
+            "logs" if current_op_view else "currentOps"))
     elif focused_pane == "logs":
-        if log_filter_prompt:
+        if current_op_view:
+            controls.extend([
+                "op j/k",
+                "o logs",
+                "O %s" % ("formatted" if current_op_raw else "raw"),
+            ])
+            return " | ".join(controls)
+        elif log_filter_prompt:
             controls.extend([
                 "filter: %s_" % log_filter_input,
                 "Enter apply",
@@ -2610,30 +2719,31 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
             ])
             return " | ".join(controls)
 
-        if pretty_active:
-            controls.extend([
-                "pretty j/k arrows scroll",
-                "p raw",
-                "y yank raw",
-                stream_control,
-            ])
-        else:
-            controls.extend([
-                "logs j/k arrows move",
-                "g latest",
-                "p pretty JSON",
-                "y yank",
-                stream_control,
-                "/ filter",
-            ])
         if _log_filter_active(log_filter_query):
-            controls.append("c clear filter")
             if log_filter_match_count is not None and log_filter_total is not None:
                 controls.append(
                     "%i/%i matches" % (
                         log_filter_match_count,
                         log_filter_total,
                     ))
+            controls.append("c clear")
+
+        if pretty_active:
+            controls.extend([
+                "pretty j/k",
+                "p raw",
+                "y",
+                stream_control,
+            ])
+        else:
+            controls.extend([
+                "logs j/k",
+                "g latest",
+                "p pretty",
+                "y",
+                stream_control,
+                "/ filter",
+            ])
     else:
         controls.append("%s pane" % focused_pane)
 
@@ -2680,8 +2790,17 @@ def render_server_status_view(snapshot, columns, rows, status_message, controls)
     for left, right in zip(storage_panel, subsystem_panel):
         frame.append(left + right)
 
-    frame.append(_footer(status_message, controls))
+    frame.append(_footer(status_message, controls, columns))
     return "\n".join(frame)
+
+
+def _split_heights(total, count):
+    """Split a vertical region into stable pane heights."""
+    total = max(int(total or 0), 0)
+    count = max(int(count or 1), 1)
+    base = total // count
+    remainder = total % count
+    return [base + (1 if index < remainder else 0) for index in range(count)]
 
 
 def render_dashboard(processes, process_metrics, network_metrics, log_lines,
@@ -2696,13 +2815,15 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      server_status_active=False, status_snapshot=None,
                      log_filter_query="", log_filter_prompt=False,
                      log_filter_input="", role_metrics=None,
-                     current_op_view=False, current_ops=None):
+                     current_op_view=False, current_ops=None,
+                     current_op_raw=False, current_op_cursor=None,
+                     log_view_start=0):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
 
-    columns = max(terminal_size.columns, 40)
-    rows = max(terminal_size.lines - 1, 12)
+    columns = max(int(terminal_size.columns or 0), 4)
+    rows = max(int(terminal_size.lines or 0) - 1, 1)
     focused_pane = normalize_pane(focused_pane)
     log_filter_view = filter_log_lines(log_lines, log_filter_query)
     filter_active = _log_filter_active(log_filter_query)
@@ -2724,6 +2845,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_filter_match_count=filter_match_count,
         log_filter_total=filter_total,
         current_op_view=current_op_view,
+        current_op_raw=current_op_raw,
     )
 
     if server_status_active:
@@ -2765,18 +2887,15 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                 selected_cpu.port, selected_cpu.pid)
         cpu_lines = format_thread_lines(
             selected_cpu, thread_metrics, thread_error, thread_count)
-    elif current_op_view:
-        cpu_title = "Current Ops"
-        cpu_lines = format_current_op_lines(current_ops)
     else:
         cpu_title = "CPU Usage"
         cpu_lines = format_cpu_lines(
             processes, process_metrics, cpu_cursor, show_cpu_cursor,
             role_metrics)
 
-    mem_lines = format_memory_lines(processes, process_metrics)
-    net_lines = format_network_lines(processes, network_metrics)
-    disk_lines = format_disk_lines(processes, disk_metrics)
+    mem_lines = format_memory_lines(processes, process_metrics, role_metrics)
+    net_lines = format_network_lines(processes, network_metrics, role_metrics)
+    disk_lines = format_disk_lines(processes, disk_metrics, role_metrics)
 
     log_cursor = clamp_filtered_log_cursor(
         log_lines, log_cursor, follow_tail=False, query=log_filter_query)
@@ -2797,6 +2916,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                 yanked_cursor,
                 line_indexes=log_filter_view.indexes,
                 match_spans=log_filter_view.spans_by_index,
+                view_start=log_view_start,
             )
         else:
             log_lines_rendered = ["No log selected."]
@@ -2822,6 +2942,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_filter_match_count=filter_match_count,
         log_filter_total=filter_total,
         current_op_view=current_op_view,
+        current_op_raw=current_op_raw,
     )
 
     if zoom_pane:
@@ -2829,19 +2950,32 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         frame = make_panel(
             zoom_title, zoom_lines, columns, rows, focused=True,
             header_color=PANE_HEADER_COLORS.get(zoom_pane))
-        frame.append(_footer(status_message, controls))
+        frame.append(_footer(status_message, controls, columns))
         return "\n".join(frame)
 
     left_width = columns // 2
     right_width = columns - left_width
-    top_height = rows // 2
-    bottom_height = rows - top_height
+    cpu_height, mem_height, net_height, disk_height = _split_heights(rows, 4)
 
-    log_content_height = max(bottom_height - 2, 1)
-    if pretty_active:
+    activity_content_height = max(rows - 2, 1)
+    if current_op_view:
+        activity_title = "Current Ops"
+        if current_op_raw:
+            activity_title += " (Raw)"
+        else:
+            activity_title += " (Formatted)"
+        log_content = format_current_op_lines(
+            current_ops,
+            cursor=current_op_cursor,
+            height=activity_content_height,
+            raw=current_op_raw,
+        )
+    elif pretty_active:
+        activity_title = log_title
         log_content = format_pretty_log_lines(
-            pretty_lines, log_content_height, offset=pretty_scroll)
+            pretty_lines, activity_content_height, offset=pretty_scroll)
     else:
+        activity_title = log_title
         if filter_active and not log_filter_view.lines:
             log_content = [
                 "No log lines match filter: %s" % log_filter_query]
@@ -2849,26 +2983,23 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
             log_content = format_log_lines(
                 log_filter_view.lines,
                 log_cursor,
-                log_content_height,
+                activity_content_height,
                 yanked_cursor,
                 line_indexes=log_filter_view.indexes,
                 match_spans=log_filter_view.spans_by_index,
+                view_start=log_view_start,
             )
         else:
             log_content = ["No log selected."]
 
     cpu_panel = make_panel(
-        cpu_title, cpu_lines, left_width, top_height,
+        cpu_title, cpu_lines, left_width, cpu_height,
         focused=focused_pane == "cpu",
         header_color=PANE_HEADER_COLORS.get("cpu"))
     mem_panel = make_panel(
-        "Memory Usage", mem_lines, right_width, top_height,
+        "Memory Usage", mem_lines, left_width, mem_height,
         focused=focused_pane == "memory",
         header_color=PANE_HEADER_COLORS.get("memory"))
-    net_height = max(bottom_height // 2, 3)
-    disk_height = max(bottom_height - net_height, 3)
-    if net_height + disk_height > bottom_height:
-        disk_height = max(bottom_height - net_height, 0)
     net_panel = make_panel(
         "Network Usage", net_lines, left_width, net_height,
         focused=focused_pane == "network",
@@ -2877,16 +3008,15 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         "Disk Usage", disk_lines, left_width, disk_height,
         focused=focused_pane == "disk",
         header_color=PANE_HEADER_COLORS.get("disk"))
-    lower_left_panel = net_panel + disk_panel
+    left_panel = cpu_panel + mem_panel + net_panel + disk_panel
     log_panel = make_panel(
-        log_title, log_content, right_width, bottom_height,
+        activity_title, log_content, right_width, rows,
         focused=focused_pane == "logs",
         header_color=PANE_HEADER_COLORS.get("logs"))
 
     frame = []
-    frame.extend(left + right for left, right in zip(cpu_panel, mem_panel))
-    frame.extend(left + right for left, right in zip(lower_left_panel, log_panel))
-    frame.append(_footer(status_message, controls))
+    frame.extend(left + right for left, right in zip(left_panel, log_panel))
+    frame.append(_footer(status_message, controls, columns))
     return "\n".join(frame)
 
 
@@ -3030,8 +3160,11 @@ class Monitor:
         self.cpu_cursor = 0
         self.cpu_thread_view = False
         self.cpu_current_op_view = False
+        self.current_op_cursor = None
+        self.current_op_raw = False
         self.status_message = ""
         self.yanked_cursor = None
+        self.log_view_start = 0
         self.pretty_lines = None
         self.pretty_scroll = 0
         self.pretty_previous_zoom = None
@@ -3123,6 +3256,9 @@ class Monitor:
                         role_metrics=snapshot.role_metrics,
                         current_op_view=self.cpu_current_op_view,
                         current_ops=snapshot.current_ops,
+                        current_op_raw=self.current_op_raw,
+                        current_op_cursor=self.current_op_cursor,
+                        log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()
@@ -3131,7 +3267,8 @@ class Monitor:
                     wait_timeout = max(0.0, next_sample_at - wait_start)
                     action = self._wait_for_action(
                         terminal, wait_start, snapshot.log_lines,
-                        snapshot.processes, timeout=wait_timeout)
+                        snapshot.processes, current_ops=snapshot.current_ops,
+                        timeout=wait_timeout)
                     if action in ("quit", "reselect"):
                         return action
                     if action == "resample":
@@ -3166,6 +3303,8 @@ class Monitor:
         if self.cpu_current_op_view:
             current_ops = self.current_op_sampler.sample(
                 processes, role_metrics)
+            self.current_op_cursor = clamp_current_op_cursor(
+                current_ops, self.current_op_cursor)
         disk_metrics = read_disk_metrics(processes)
         log_lines = read_log_stream(tailer, self.stream_paused)
         self.log_cursor = clamp_filtered_log_cursor(
@@ -3173,6 +3312,14 @@ class Monitor:
             self.log_cursor,
             self.follow_tail,
             self.log_filter_query,
+        )
+        self.log_view_start = clamp_log_view_start(
+            log_lines,
+            self.log_cursor,
+            self._activity_view_height(),
+            self.log_filter_query,
+            self.log_view_start,
+            self.follow_tail,
         )
         self.yanked_cursor = clamp_optional_log_cursor(
             log_lines, self.yanked_cursor)
@@ -3230,7 +3377,7 @@ class Monitor:
         return NO_MRUN_PROCESSES_MESSAGE
 
     def _wait_for_action(self, terminal, start, log_lines, processes=None,
-                         timeout=None):
+                         current_ops=None, timeout=None):
         processes = processes or []
         if timeout is None:
             timeout = self.refresh_interval
@@ -3265,6 +3412,12 @@ class Monitor:
             if key == "s":
                 self._cycle_refresh_interval()
                 return "redraw"
+            if key == "o":
+                self._toggle_cpu_current_op_view()
+                return "resample"
+            if key == "O":
+                self._toggle_current_op_raw()
+                return "redraw"
 
             if key in ("e", "E"):
                 self._toggle_server_status_view()
@@ -3288,28 +3441,39 @@ class Monitor:
                 if key in ("t", "T"):
                     self._toggle_cpu_thread_view(processes)
                     return "resample"
-                if key in ("o", "O"):
-                    self._toggle_cpu_current_op_view()
-                    return "resample"
             elif self.focused_pane == "logs":
                 if key in ("up", "k"):
+                    if self.cpu_current_op_view:
+                        self._move_current_op_cursor(current_ops, -1)
+                        return "redraw"
                     if self.pretty_lines is not None:
                         self._move_pretty_scroll(-1)
                         return "redraw"
                     self._move_log_cursor(log_lines, -1)
                     return "redraw"
                 if key in ("down", "j"):
+                    if self.cpu_current_op_view:
+                        self._move_current_op_cursor(current_ops, 1)
+                        return "redraw"
                     if self.pretty_lines is not None:
                         self._move_pretty_scroll(1)
                         return "redraw"
                     self._move_log_cursor(log_lines, 1)
                     return "redraw"
                 if key == "g":
+                    if self.cpu_current_op_view:
+                        self.current_op_cursor = 0
+                        self.status_message = "highlighted top currentOp"
+                        return "redraw"
                     if self.pretty_lines is not None:
                         self.status_message = "press p before jumping latest"
                         return "redraw"
                     self._jump_to_latest(log_lines)
                     return "redraw"
+                if self.cpu_current_op_view:
+                    if key in ("p", "P", "y", " ", "/", "c"):
+                        self.status_message = "press o to return to logs"
+                        return "redraw"
                 if key in ("p", "P"):
                     self._toggle_pretty_log_line(log_lines)
                     return "redraw"
@@ -3392,9 +3556,29 @@ class Monitor:
         self.cpu_current_op_view = not self.cpu_current_op_view
         if self.cpu_current_op_view:
             self.cpu_thread_view = False
+            self.focused_pane = "logs"
+            self.current_op_cursor = None
             self.status_message = "currentOp top 10 view"
         else:
             self.status_message = "CPU process list"
+
+    def _toggle_current_op_raw(self):
+        if not self.cpu_current_op_view:
+            self.status_message = "press o before toggling currentOp raw"
+            return
+        self.current_op_raw = not self.current_op_raw
+        self.status_message = (
+            "currentOp raw view" if self.current_op_raw
+            else "currentOp formatted view")
+
+    def _move_current_op_cursor(self, current_ops, delta):
+        self.current_op_cursor = move_current_op_cursor(
+            current_ops, self.current_op_cursor, delta)
+        if self.current_op_cursor is None:
+            self.status_message = "no currentOp entry selected"
+            return
+        self.status_message = "highlighted currentOp entry %i" % (
+            self.current_op_cursor + 1)
 
     def _start_log_filter_prompt(self):
         if self.pretty_lines is not None:
@@ -3442,6 +3626,9 @@ class Monitor:
         self.follow_tail = True
         self.log_cursor = clamp_filtered_log_cursor(
             log_lines, self.log_cursor, True, self.log_filter_query)
+        self.log_view_start = clamp_log_view_start(
+            log_lines, self.log_cursor, self._activity_view_height(),
+            self.log_filter_query, self.log_view_start, True)
         view = filter_log_lines(log_lines, self.log_filter_query)
         if self.log_cursor is None:
             self.status_message = "filter %s matched 0 log lines" % query
@@ -3461,12 +3648,18 @@ class Monitor:
         self.log_filter_input = ""
         self.log_cursor = clamp_log_cursor(
             log_lines, self.log_cursor, self.follow_tail)
+        self.log_view_start = clamp_log_view_start(
+            log_lines, self.log_cursor, self._activity_view_height(),
+            self.log_filter_query, self.log_view_start, self.follow_tail)
         self.status_message = "log filter cleared"
 
     def _move_log_cursor(self, log_lines, delta):
         self._clear_pretty_log_line()
         self.log_cursor = move_filtered_log_cursor(
             log_lines, self.log_cursor, delta, self.log_filter_query)
+        self.log_view_start = clamp_log_view_start(
+            log_lines, self.log_cursor, self._activity_view_height(),
+            self.log_filter_query, self.log_view_start, False)
         view = filter_log_lines(log_lines, self.log_filter_query)
         latest_cursor = view.indexes[-1] if view.indexes else None
         if self.log_cursor is None:
@@ -3514,6 +3707,12 @@ class Monitor:
         rows = max(terminal_size.lines - 1, 12)
         return max(rows - 2, 1)
 
+    @staticmethod
+    def _activity_view_height():
+        terminal_size = shutil.get_terminal_size((120, 40))
+        rows = max(int(terminal_size.lines or 0) - 1, 1)
+        return max(rows - 2, 1)
+
     def _cycle_refresh_interval(self):
         self.refresh_interval = next_refresh_interval(self.refresh_interval)
         self.status_message = "refresh interval %s" % format_seconds(
@@ -3529,12 +3728,15 @@ class Monitor:
     def _toggle_process_scope(self):
         self.process_scope = "all" if self.process_scope == "mrun" else "mrun"
         self.log_cursor = None
+        self.log_view_start = 0
         self.yanked_cursor = None
         self.log_filter_prompt = False
         self.log_filter_input = ""
         self.cpu_cursor = 0
         self.cpu_thread_view = False
         self.cpu_current_op_view = False
+        self.current_op_cursor = None
+        self.current_op_raw = False
         self.zoom_pane = None
         self.zoom_logs = False
         self.follow_tail = True
@@ -3548,6 +3750,9 @@ class Monitor:
         self._clear_pretty_log_line(restore_zoom=False)
         self.log_cursor = clamp_filtered_log_cursor(
             log_lines, self.log_cursor, True, self.log_filter_query)
+        self.log_view_start = clamp_log_view_start(
+            log_lines, self.log_cursor, self._activity_view_height(),
+            self.log_filter_query, self.log_view_start, True)
         if self.log_cursor is None:
             self.follow_tail = False
             self.status_message = "no log line selected"
