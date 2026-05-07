@@ -93,6 +93,10 @@ Monitor
       derived from ``db.currentOp()`` output.
    -  ``L`` opens a currentOp top-N prompt while currentOp is active. Values
       lower than 1 are rejected, and large values are capped at 500 entries.
+   -  ``r`` opens a currentOp source selector while currentOp is active. The
+      selector accepts process indexes, ports, ``primary``, ``secondary``,
+      ``all``, or Enter for all visible processes. Selecting ``primary`` makes
+      currentOp sampling run only against the primary node.
    -  ``n`` opens a currentOp namespace selector while currentOp is active.
       The selector lists active namespaces and also accepts a typed namespace.
    -  ``c`` clears the currentOp namespace filter while currentOp is active,
@@ -118,8 +122,10 @@ Monitor
       the raw log line.
    -  ``y`` yanks the highlighted log line to the terminal clipboard when
       supported.
-   -  Space pauses or resumes log streaming. While paused, the current log
-      buffer stays frozen; resuming catches up from the same file offset.
+   -  Space pauses or resumes log streaming in the log tail. While paused, the
+      current log buffer stays frozen; resuming catches up from the same file
+      offset. While currentOp is active, Space pauses or resumes currentOp
+      sampling and keeps the last sampled currentOp rows visible.
    -  ``s`` cycles the refresh interval through 1, 5, and 10 seconds.
    -  ``M`` launches an interactive ``mongosh`` administration shell, when the
       executable is available. The monitor offers primary, selected-node,

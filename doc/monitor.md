@@ -67,6 +67,8 @@ mrun/monitor.py
 |   +-- passes an optional namespace filter into currentOp
 |   +-- sorts active ops by secs_running and keeps the configured top-N limit
 |   +-- default currentOp limit is 10, selectable with L, capped at 500
+|   +-- r selects currentOp source nodes by index, port, primary, secondary, or all
+|   +-- space pauses/resumes currentOp sampling and reuses the cached snapshot
 |
 +-- mongosh shell handoff
 |   +-- builds target choices from primary, selected process, seed list, first process, and custom URI
@@ -112,7 +114,7 @@ mrun/monitor.py
 +-- keyboard control
     +-- TerminalController
     +-- q or Ctrl+C quits
-    +-- r reselects logs
+    +-- r reselects logs, or currentOp sources while currentOp is active
     +-- a toggles mrun-managed/all process scope
     +-- Tab and Shift+Tab cycle focused panes
     +-- z zooms the focused pane
@@ -125,13 +127,15 @@ mrun/monitor.py
     +-- currentOp c clears the active currentOp namespace filter
     +-- currentOp p toggles Pretty JSON for the highlighted operation
     +-- currentOp y yanks the highlighted operation
+    +-- currentOp r opens source selection by role, port, or index
+    +-- currentOp space pauses or resumes currentOp sampling
     +-- logs focus: j/k or arrows move the highlighted log row
     +-- currentOp activity focus: j/k or arrows move the highlighted currentOp row
     +-- Pretty JSON focus: j/k or arrows scroll expanded JSON
     +-- logs focus: g jumps to the newest log row and resumes live-follow
     +-- logs focus: p prettifies the highlighted row as JSON
     +-- logs focus: y yanks the highlighted raw log line with OSC 52
-    +-- logs focus: space pauses or resumes log streaming
+    +-- logs focus: space pauses/resumes log streaming or currentOp sampling
     +-- M launches an interactive mongosh administration shell
     +-- s cycles refresh through 1s, 5s, and 10s
 ```
@@ -180,12 +184,14 @@ flowchart TD
     Q -- currentOp c --> V6[Clear currentOp namespace]
     Q -- currentOp p --> V7[Toggle currentOp Pretty JSON]
     Q -- currentOp y --> V8[Yank highlighted currentOp]
+    Q -- currentOp r --> V9[Select currentOp source nodes]
+    Q -- currentOp space --> V10[Pause or resume currentOp sampling]
     Q -- logs j/k/arrows --> W[Move highlighted row]
     Q -- currentOp j/k/arrows --> W2[Move highlighted currentOp row]
     Q -- logs g --> X[Jump to newest row and follow]
     Q -- logs p --> Y[Toggle pretty JSON view]
     Q -- logs y --> Z[Yank raw highlighted line]
-    Q -- logs space --> AA[Pause or resume log streaming]
+    Q -- logs space --> AA[Pause/resume logs or currentOp sampling]
     Q -- s --> AB[Cycle refresh interval]
     Q -- M --> AC[Launch mongosh shell and return]
     S --> L
@@ -199,6 +205,8 @@ flowchart TD
     V6 --> L
     V7 --> L
     V8 --> L
+    V9 --> L
+    V10 --> L
     W --> L
     W2 --> L
     X --> L
@@ -331,8 +339,14 @@ list. Pressing `y` yanks the highlighted currentOp as the active formatted row,
 raw JSON, or Pretty JSON document. Pressing `n` while currentOp is active opens
 a namespace selector built from active currentOp namespaces, and typed
 namespaces are also accepted. Pressing `c` while currentOp is active clears
-that namespace filter. Pressing `o` again returns the activity pane to the log
-tail.
+that namespace filter. Pressing `r` while currentOp is active opens a source
+selector that accepts process indexes, ports, `primary`, `secondary`, `all`, or
+Enter for all visible processes. Selecting `primary` makes currentOp sampling
+run only against the primary node; unselected nodes are not queried for
+currentOp until the source filter changes. Pressing Space while currentOp is
+active pauses currentOp sampling and keeps the last sampled rows visible;
+pressing Space again resumes sampling. Pressing `o` again returns the activity
+pane to the log tail.
 
 Pressing `M` launches a `mongosh` administration shell. The monitor offers
 target choices for the detected primary, the selected process, a replica-set
@@ -372,7 +386,12 @@ stateDiagram-v2
     CurrentOpView --> RawCurrentOpView: O
     RawCurrentOpView --> CurrentOpView: O
     CurrentOpView --> CurrentOpView: currentOp j/k/arrows select row
+    CurrentOpView --> CurrentOpView: currentOp r select source nodes
+    CurrentOpView --> PausedCurrentOp: currentOp Space
+    PausedCurrentOp --> CurrentOpView: currentOp Space
     RawCurrentOpView --> RawCurrentOpView: currentOp j/k/arrows select row
+    RawCurrentOpView --> RawCurrentOpView: currentOp r select source nodes
+    RawCurrentOpView --> PausedCurrentOp: currentOp Space
     CurrentOpView --> CurrentOpPretty: p
     RawCurrentOpView --> CurrentOpPretty: p
     CurrentOpPretty --> CurrentOpPretty: currentOp j/k/arrows scroll JSON
@@ -423,6 +442,10 @@ In the logs pane, the spacebar pauses or resumes log streaming. Pausing does
 not read from the selected log files, so the visible buffer remains frozen.
 Resuming polls from the same file offsets and catches up with lines that were
 written while paused.
+
+In currentOp mode, the same Space key pauses currentOp sampling instead of log
+tailing. The monitor keeps rendering the cached currentOp snapshot, so the
+highlighted row and Pretty JSON view remain stable while sampling is paused.
 
 The `s` key cycles the refresh interval:
 
