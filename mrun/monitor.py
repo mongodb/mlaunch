@@ -3531,6 +3531,11 @@ class Monitor:
             if key == "O":
                 self._toggle_current_op_raw()
                 return "redraw"
+            if self.cpu_current_op_view and key == "n":
+                return "select-currentop-namespace"
+            if self.cpu_current_op_view and key == "c":
+                self._clear_current_op_namespace()
+                return "resample"
 
             if key in ("e", "E"):
                 self._toggle_server_status_view()
@@ -3584,11 +3589,6 @@ class Monitor:
                     self._jump_to_latest(log_lines)
                     return "redraw"
                 if self.cpu_current_op_view:
-                    if key == "n":
-                        return "select-currentop-namespace"
-                    if key == "c":
-                        self._clear_current_op_namespace()
-                        return "resample"
                     if key in ("p", "P", "y", " ", "/", "c"):
                         self.status_message = "press o to return to logs"
                         return "redraw"
