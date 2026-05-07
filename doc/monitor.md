@@ -47,18 +47,18 @@ mrun/monitor.py
 |   +-- default scope is ports loaded from datadir/.mrun_startup
 |
 +-- process metrics
-|   +-- read_process_metrics()
 |   +-- ProcessSampler
 |   +-- reads CPU percent, RSS memory, and process status from psutil
 |   +-- preserves psutil.Process objects by pid so CPU percent has history
 |   +-- RoleSampler
 |   +-- reads serverStatus().repl role data for Primary/Secondary labels
+|   +-- roles are rendered in CPU, memory, network, disk, and currentOp rows
 |   +-- ThreadSampler
 |   +-- samples psutil Process.threads() only when CPU thread view is toggled
 |   +-- computes per-thread CPU from user/system time deltas
 |   +-- falls back to Process.num_threads() when thread details are denied
 |   +-- CurrentOpSampler
-|   +-- samples active currentOp entries only while the CPU currentOp view is active
+|   +-- samples active currentOp entries only while the activity pane shows currentOp
 |   +-- sorts active ops by secs_running and keeps the top 10
 |
 +-- network metrics
@@ -80,9 +80,11 @@ mrun/monitor.py
 +-- rendering
 |   +-- render_dashboard()
 |   +-- make_panel()
-|   +-- bold pane titles, pane-colored table headers, and left-padded rows
+|   +-- left metric stack plus right log/currentOp activity pane
+|   +-- neutral borders, bold pane titles, pane-colored table headers, and left-padded rows
 |   +-- ANSI-aware truncation and padding so colors do not shift borders
 |   +-- format_log_lines()
+|   +-- log cursor has an independent viewport start and scrolls only at edges
 |   +-- detect_log_severity()
 |   +-- fatal/error/warning/info/debug log rows receive severity colors
 |   +-- selected log row uses inverse video over severity color
@@ -100,8 +102,10 @@ mrun/monitor.py
     +-- z zooms the focused pane
     +-- CPU focus: j/k or arrows select a MongoDB process
     +-- CPU focus: t toggles process-list and selected-process thread views
-    +-- CPU focus: o toggles process-list and top currentOp views
+    +-- o toggles the right activity pane between logs and top currentOp views
+    +-- O toggles formatted/raw currentOp documents while currentOp is active
     +-- logs focus: j/k or arrows move the highlighted log row
+    +-- currentOp activity focus: j/k or arrows move the highlighted currentOp row
     +-- Pretty JSON focus: j/k or arrows scroll expanded JSON
     +-- logs focus: g jumps to the newest log row and resumes live-follow
     +-- logs focus: p prettifies the highlighted row as JSON
@@ -131,7 +135,7 @@ flowchart TD
     L --> N[Sample serverStatus network counters]
     L --> O[Poll appended log lines]
     L --> O2[Read dbpath and log file sizes]
-    L --> O3{CPU currentOp view active?}
+    L --> O3{activity pane currentOp active?}
     O3 -- yes --> O4[Sample active currentOp entries]
     M --> P[Render dashboard]
     MR --> P
@@ -147,8 +151,10 @@ flowchart TD
     Q -- z --> T[Toggle focused-pane zoom]
     Q -- CPU j/k/arrows --> U[Select MongoDB process]
     Q -- CPU t --> V[Toggle selected-process thread view]
-    Q -- CPU o --> V2[Toggle top currentOp view]
+    Q -- o --> V2[Toggle right activity currentOp view]
+    Q -- O --> V3[Toggle formatted/raw currentOp]
     Q -- logs j/k/arrows --> W[Move highlighted row]
+    Q -- currentOp j/k/arrows --> W2[Move highlighted currentOp row]
     Q -- logs g --> X[Jump to newest row and follow]
     Q -- logs p --> Y[Toggle pretty JSON view]
     Q -- logs y --> Z[Yank raw highlighted line]
@@ -159,7 +165,9 @@ flowchart TD
     U --> L
     V --> L
     V2 --> L
+    V3 --> L
     W --> L
+    W2 --> L
     X --> L
     Y --> L
     Z --> L
@@ -171,17 +179,18 @@ flowchart TD
 ## Rendering states
 
 ```text
-four-panel mode
+dashboard mode
 
-+ [CPU Usage] ---------++ Memory Usage --------+
-|  PORT PID ROLE PROCESS CPU|| PORT PID PROCESS RSS |
-| 27017 123 Primary mongod 4.1 || 27017 123 mongod 1GB |
-+----------------------++----------------------+
-+ Network Usage -------++ Log Tail -----------+
-| PORT IN OUT REQ/s    ||  info log line       |  muted teal text
-+ Disk Usage ----------+|  warning log line    |  yellow text
-| PORT DB SIZE LOG SIZE|| > yanked log line    |  green inverse
-+----------------------++----------------------+
++ [CPU Usage] ----------++ Log Tail -------------------------+
+|  PORT PID ROLE PROCESS ||  info log line                    |  muted teal text
+| 27017 123 Primary ...  ||  warning log line                 |  yellow text
++ Memory Usage ---------+| > selected error log line        |  red inverse
+| PORT ROLE PID RSS      ||                                  |
++ Network Usage --------+|                                  |
+| PORT ROLE IN OUT REQ/s ||                                  |
++ Disk Usage -----------+|                                  |
+| PORT ROLE DB LOG STATUS||                                  |
++-----------------------++----------------------------------+
 
 CPU thread mode, toggled with t while CPU is focused
 
@@ -191,13 +200,20 @@ CPU thread mode, toggled with t while CPU is focused
 | 456789      12.5   2.10     0.30     2.40    |
 +---------------------------------------------+
 
-CPU currentOp mode, toggled with o while CPU is focused
+activity-pane currentOp mode, toggled with o
 
-+ [Current Ops] ------------------------------+
-| PORT ROLE      SECS OP      NS        CLIENT|
-| 27017 Primary  12.5 query   app.coll  127.0 |
-| 27018 Secondary 4.0 command admin.$cmd 127.0|
-+---------------------------------------------+
++ CPU Usage -------------++ [Current Ops (Formatted)] -------+
+| PORT PID ROLE PROCESS   || PORT ROLE SECS OP NS CLIENT DESC |
+| 27017 123 Primary ...   ||>27017 Primary 12 query app 127.0 |
++ Memory/Network/Disk ----+| 27018 Secondary 4 command admin |
++-------------------------++----------------------------------+
+
+raw currentOp mode, toggled with O while currentOp is active
+
++ CPU Usage -------------++ [Current Ops (Raw)] -------------+
+| PORT PID ROLE PROCESS   || RAW CURRENTOP DOCUMENTS          |
+| 27017 123 Primary ...   ||>27017 Primary {"op":"query",...} |
++-------------------------++----------------------------------+
 
 zoom mode
 
@@ -235,6 +251,7 @@ alignment rules:
 ---------------- make_panel() ----------------+
 | top border title: bold + pane color          |
 | table header row: bold + pane color          |
+| border characters: neutral terminal color    |
 | non-empty content row: one leading cell      |
 | clipping/padding: visible width ignores ANSI |
 +----------------------------------------------+
@@ -245,6 +262,8 @@ panel is rendered. `make_panel()` removes that token, applies the pane header
 color and bold text, then clips and pads using ANSI-aware helpers. This keeps
 CPU, memory, network, disk, thread, Pretty JSON, and expanded server-status
 panes aligned even when the title, header, or body row contains color escapes.
+The role formatter colors Primary green and Secondary/Password Required yellow
+without coloring panel borders.
 
 ## Pane focus and CPU modes
 
@@ -258,16 +277,17 @@ immediately available. `Tab` and `Shift+Tab` cycle focus across:
 ```
 
 The focused pane uses an emphasized ASCII border. Pressing `z` zooms that
-focused pane; pressing `z` again returns to the quadrant layout.
+focused pane; pressing `z` again returns to the two-column dashboard layout.
 
 CPU thread view and currentOp view are intentionally not the default. When the
 CPU pane is focused, `j`/`k` or the up/down arrows select a MongoDB process row.
 Pressing `t` toggles the CPU pane from the process CPU list to threads for the
-selected process. Pressing `o` toggles the pane from the process CPU list to the
-top 10 active currentOp entries across visible processes. Pressing the same key
-again returns to the process CPU list.
+selected process. Pressing `o` from any pane toggles the right activity pane
+from log tail to the top 10 active currentOp entries across visible processes.
+Pressing `O` while currentOp is active toggles formatted rows and raw currentOp
+documents. Pressing `o` again returns the activity pane to the log tail.
 
-The process CPU list includes a `ROLE` column. The monitor reads
+All metric panes include a `ROLE` column. The monitor reads
 `serverStatus().repl.stateStr` first and falls back to
 `repl.isWritablePrimary`. If an authenticated deployment was created but the
 monitor has no usable credentials, the role column shows `Password Required`.
@@ -289,12 +309,16 @@ stateDiagram-v2
     [*] --> ProcessList
     ProcessList --> ProcessList: CPU j/k/arrows select process
     ProcessList --> ThreadView: CPU t
-    ProcessList --> CurrentOpView: CPU o
+    ProcessList --> CurrentOpView: o
     ThreadView --> ThreadView: refresh selected process threads
     ThreadView --> ThreadView: CPU j/k/arrows select another process
     ThreadView --> ProcessList: CPU t
-    CurrentOpView --> CurrentOpView: refresh top 10 currentOps
-    CurrentOpView --> ProcessList: CPU o
+    CurrentOpView --> RawCurrentOpView: O
+    RawCurrentOpView --> CurrentOpView: O
+    CurrentOpView --> CurrentOpView: currentOp j/k/arrows select row
+    RawCurrentOpView --> RawCurrentOpView: currentOp j/k/arrows select row
+    CurrentOpView --> ProcessList: o
+    RawCurrentOpView --> ProcessList: o
 ```
 
 ## Process scope
@@ -309,10 +333,11 @@ and all detected local MongoDB processes, then prompts for log selection again.
 
 The monitor starts in live-follow mode: the highlighted row stays on the newest
 log line as the log grows. When the logs pane is focused, scrolling upward with
-`k` or the up arrow freezes the viewport on the selected historical line.
-Scrolling downward with `j` or the down arrow resumes live-follow once the
-selection reaches the newest line. The `g` key jumps directly to the newest
-line and resumes live-follow.
+`k` or the up arrow freezes live-follow on the selected historical line. The
+cursor moves independently inside the visible log window; the text only scrolls
+when the cursor reaches the visible top or bottom edge. Scrolling downward with
+`j` or the down arrow resumes live-follow once the selection reaches the newest
+line. The `g` key jumps directly to the newest line and resumes live-follow.
 
 In the logs pane, `p` parses the highlighted raw log line as JSON. If parsing
 succeeds, the monitor pauses live-follow, expands the log panel, and renders
@@ -373,7 +398,7 @@ If a process exists but MongoDB does not answer `serverStatus`, the network
 panel marks that port as unavailable and keeps the monitor running.
 
 If monitor auth metadata indicates credentials are required but no usable
-monitor credentials are available, the CPU `ROLE` column shows
+monitor credentials are available, metric-pane `ROLE` columns show
 `Password Required` and the currentOp view reports:
 
 ```text

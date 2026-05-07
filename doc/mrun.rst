@@ -48,11 +48,15 @@ Monitor
    opens a live terminal monitor for running **mrun** managed ``mongod`` and
    ``mongos`` processes from the selected data directory. The monitor shows
    CPU usage, memory usage, network activity, disk consumption, and a
-   selectable live log tail with severity colors and local filtering. The CPU
-   process list includes a ``ROLE`` column for primary/secondary state and can
-   toggle to a top-10 active ``currentOp`` view. Pane titles and table headers
-   are bold and color-coded by pane, with consistent padding for CPU, memory,
-   network, disk, status, thread, currentOp, and log views. If no **mrun**
+   selectable live log tail with severity colors and local filtering. The left
+   side stacks CPU, memory, network, and disk metrics; the right side shows the
+   log tail or a top-10 active ``currentOp`` activity view. CPU, memory,
+   network, disk, and currentOp rows include a ``ROLE`` column for
+   primary/secondary state. Primary is green; secondary and password-required
+   states are yellow. Pane borders stay neutral, while pane titles and table
+   headers are bold and color-coded by pane, with consistent padding for CPU,
+   memory, network, disk, status, thread, currentOp, and log views. If no
+   **mrun**
    managed MongoDB server processes are running, **mrun** will print a message
    and exit.
 
@@ -79,10 +83,13 @@ Monitor
    -  In the CPU pane, ``t`` toggles between the default process CPU list and
       a thread view for the selected process. Thread view is never shown by
       default.
-   -  In the CPU pane, ``o`` toggles between the default process CPU list and
-      the top 10 active ``currentOp`` entries across visible MongoDB processes.
+   -  ``o`` toggles the right activity pane between the log tail and the top 10
+      active ``currentOp`` entries across visible MongoDB processes.
+   -  ``O`` toggles formatted and raw ``currentOp`` documents while the
+      currentOp activity view is active.
    -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
-      line.
+      cursor. The text stays still while the cursor moves inside the visible
+      window and scrolls only when the cursor reaches the visible edge.
    -  ``g`` jumps to the newest log line and resumes live-follow.
    -  ``/`` opens a log filter prompt. Press Enter to apply the typed filter,
       or Esc to cancel.

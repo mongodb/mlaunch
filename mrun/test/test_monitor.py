@@ -522,14 +522,15 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "--monitor-password" in output
     assert "--monitor-auth-db" in output
     assert "CPU, memory, network, disk activity, and selectable log tail" in flat_output
-    assert "Node rows include a Role column" in flat_output
+    assert "Metric rows include a Role column" in flat_output
     assert "fatal/error/warning/info/debug severity colors" in flat_output
     assert "q or Ctrl+C quit" in flat_output
     assert "a toggle mrun/all processes" in flat_output
     assert "Tab switch panes" in flat_output
     assert "z zoom logs or focused pane" in flat_output
     assert "t toggles thread view" in flat_output
-    assert "o toggles top currentOp view" in flat_output
+    assert "o toggles currentOp activity" in flat_output
+    assert "O toggles currentOp raw/format" in flat_output
     assert "g latest log line" in flat_output
     assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
@@ -940,7 +941,7 @@ def test_process_sampler_prime_uses_cached_process_for_first_dashboard_sample():
     assert metrics[10].cpu_percent == 22.0
 
 
-def test_render_dashboard_contains_four_quadrants():
+def test_render_dashboard_contains_left_metrics_and_activity_pane():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     rendered = render_dashboard(
         [process],
