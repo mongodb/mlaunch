@@ -40,6 +40,7 @@ PROCESS_DISCOVERY_ERROR_MESSAGE = (
     "mrun --monitor could not list local processes: %s"
 )
 AUTH_REQUIRED_STATUS = "auth required"
+ROLE_PASSWORD_REQUIRED = "Password Required"
 
 ANSI_RESET = "\033[0m"
 ANSI_YELLOW = "\033[33m"
@@ -210,15 +211,26 @@ class DashboardSnapshot:
 
     processes: list
     process_metrics: dict
+    role_metrics: dict
     network_metrics: dict
     disk_metrics: dict
     log_lines: list
     selected_ports: list
     thread_metrics: list
+    current_ops: "CurrentOpSnapshot" = None
     status_snapshot: "ServerStatusSnapshot" = None
     thread_error: str = ""
     thread_count: int = None
     sampled_at: float = 0.0
+
+
+@dataclass
+class RoleMetrics:
+    """Replica-set role metadata for one MongoDB server process."""
+
+    available: bool
+    role: str = ""
+    error: str = ""
 
 
 @dataclass
@@ -248,6 +260,29 @@ class LogFilterView:
     lines: list
     indexes: list
     spans_by_index: dict
+
+
+@dataclass
+class CurrentOpEntry:
+    """One active currentOp entry normalized for compact terminal display."""
+
+    port: int
+    role: str
+    secs_running: float
+    op: str
+    ns: str
+    client: str
+    desc: str
+    opid: str = ""
+
+
+@dataclass
+class CurrentOpSnapshot:
+    """Top active currentOp entries across the visible MongoDB processes."""
+
+    available: bool
+    entries: list
+    error: str = ""
 
 
 @dataclass
@@ -769,6 +804,125 @@ class NetworkSampler:
         return MongoClient(host, **kwargs)
 
 
+class RoleSampler:
+    """Sample replica-set role information from serverStatus for each process."""
+
+    def __init__(self, client_factory=None, client_kwargs=None,
+                 auth_required=False):
+        self.client_factory = client_factory or self._default_client_factory
+        self.client_kwargs = dict(client_kwargs or {})
+        self.auth_required = auth_required
+
+    def sample(self, processes):
+        metrics = {}
+        for process in processes:
+            metrics[process.port] = self.sample_one(process)
+        return metrics
+
+    def sample_one(self, process):
+        if self.auth_required:
+            return RoleMetrics(
+                False,
+                role=ROLE_PASSWORD_REQUIRED,
+                error=AUTH_REQUIRED_STATUS,
+            )
+
+        client = None
+        try:
+            client_kwargs = {
+                "directConnection": True,
+                "serverSelectionTimeoutMS": 200,
+            }
+            client_kwargs.update(self.client_kwargs)
+            client = self.client_factory(
+                "localhost:%i" % process.port,
+                **client_kwargs
+            )
+            status = client.admin.command("serverStatus")
+            return RoleMetrics(True, role=role_from_server_status(status))
+        except Exception as exc:
+            return RoleMetrics(False, role="unavailable", error=str(exc))
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
+
+    @staticmethod
+    def _default_client_factory(host, **kwargs):
+        from pymongo import MongoClient
+
+        return MongoClient(host, **kwargs)
+
+
+class CurrentOpSampler:
+    """Sample and rank active currentOp entries across visible processes."""
+
+    def __init__(self, client_factory=None, client_kwargs=None,
+                 auth_required=False):
+        self.client_factory = client_factory or self._default_client_factory
+        self.client_kwargs = dict(client_kwargs or {})
+        self.auth_required = auth_required
+
+    def sample(self, processes, role_metrics=None, limit=10):
+        if self.auth_required:
+            return CurrentOpSnapshot(
+                False,
+                [],
+                error=ROLE_PASSWORD_REQUIRED,
+            )
+
+        role_metrics = role_metrics or {}
+        entries = []
+        errors = []
+        for process in processes:
+            process_entries, error = self._read_current_ops(process, role_metrics)
+            entries.extend(process_entries)
+            if error:
+                errors.append("%s: %s" % (process.port, error))
+
+        entries.sort(key=lambda entry: entry.secs_running, reverse=True)
+        if entries:
+            return CurrentOpSnapshot(True, entries[:limit])
+        if errors:
+            return CurrentOpSnapshot(False, [], error="; ".join(errors))
+        return CurrentOpSnapshot(True, [])
+
+    def _read_current_ops(self, process, role_metrics):
+        client = None
+        try:
+            client_kwargs = {
+                "directConnection": True,
+                "serverSelectionTimeoutMS": 200,
+            }
+            client_kwargs.update(self.client_kwargs)
+            client = self.client_factory(
+                "localhost:%i" % process.port,
+                **client_kwargs
+            )
+            result = client.admin.command({
+                "currentOp": 1,
+                "$all": True,
+                "active": True,
+            })
+            role = role_display(role_metrics.get(process.port))
+            entries = [
+                current_op_entry(process.port, role, raw)
+                for raw in result.get("inprog", [])
+                if raw.get("active", True)
+            ]
+            return entries, ""
+        except Exception as exc:
+            return [], str(exc)
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
+
+    @staticmethod
+    def _default_client_factory(host, **kwargs):
+        from pymongo import MongoClient
+
+        return MongoClient(host, **kwargs)
+
+
 class StatusSampler:
     """Sample detailed MongoDB serverStatus metrics on demand."""
 
@@ -949,6 +1103,84 @@ class StatusSampler:
         from pymongo import MongoClient
 
         return MongoClient(host, **kwargs)
+
+
+def role_from_server_status(status):
+    """Extract a human-readable node role from serverStatus()."""
+    repl = status.get("repl") or {}
+    state = str(repl.get("stateStr") or "").strip()
+    if state:
+        normalized = state.upper()
+        if normalized == "PRIMARY":
+            return "Primary"
+        if normalized == "SECONDARY":
+            return "Secondary"
+        return state.title()
+
+    writable_primary = repl.get("isWritablePrimary")
+    if writable_primary is None:
+        writable_primary = status.get("isWritablePrimary")
+    if writable_primary is True:
+        return "Primary"
+    if writable_primary is False and repl:
+        return "Secondary"
+
+    if status.get("process") == "mongos":
+        return "Router"
+    if repl:
+        return "Replica Set"
+    return "Standalone"
+
+
+def role_display(role_metrics):
+    """Return the role text shown in process and currentOp rows."""
+    if role_metrics is None:
+        return "unknown"
+    if role_metrics.role:
+        return role_metrics.role
+    if role_metrics.error == AUTH_REQUIRED_STATUS:
+        return ROLE_PASSWORD_REQUIRED
+    return "unavailable"
+
+
+def _current_op_secs(raw):
+    if raw.get("secs_running") is not None:
+        try:
+            return float(raw.get("secs_running"))
+        except (TypeError, ValueError):
+            return 0.0
+    if raw.get("microsecs_running") is not None:
+        try:
+            return float(raw.get("microsecs_running")) / 1000000.0
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _current_op_summary(raw):
+    command = raw.get("command")
+    if isinstance(command, dict) and command:
+        keys = [key for key in command if not str(key).startswith("$")]
+        key = keys[0] if keys else next(iter(command))
+        value = command.get(key)
+        if isinstance(value, str) and value:
+            return "%s %s" % (key, value)
+        return str(key)
+    return raw.get("desc") or raw.get("msg") or ""
+
+
+def current_op_entry(port, role, raw):
+    """Normalize a raw currentOp document for terminal rendering."""
+    return CurrentOpEntry(
+        port=port,
+        role=role,
+        secs_running=_current_op_secs(raw),
+        op=str(raw.get("op") or raw.get("type") or "unknown"),
+        ns=str(raw.get("ns") or ""),
+        client=str(raw.get("client") or raw.get("client_s") or ""),
+        desc=str(_current_op_summary(raw) or ""),
+        opid=str(raw.get("opid") or ""),
+    )
 
 
 class LogTailer:
@@ -2041,9 +2273,12 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
     return rows
 
 
-def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False):
+def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
+                     role_metrics=None):
     """Format CPU process rows, optionally marking the selected process."""
-    lines = [_table_header("  PORT   PID      PROCESS  CPU%   STATUS")]
+    role_metrics = role_metrics or {}
+    lines = [_table_header(
+        "  PORT   PID      ROLE              PROCESS  CPU%   STATUS")]
     selected_index = clamp_process_cursor(processes, cursor)
     if not processes:
         lines.append("  No MongoDB processes found.")
@@ -2052,11 +2287,13 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False)
     for index, process in enumerate(processes):
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
+        role = role_display(role_metrics.get(process.port))
         marker = ">" if show_cursor and index == selected_index else " "
-        text = "%s %-6s %-8s %-8s %5.1f  %s" % (
+        text = "%s %-6s %-8s %-17s %-8s %5.1f  %s" % (
             marker,
             process.port,
             process.pid,
+            role,
             process.name,
             metrics.cpu_percent,
             metrics.status,
@@ -2064,6 +2301,34 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False)
         if show_cursor and index == selected_index:
             text = _styled_line(STYLE_SELECTED, text)
         lines.append(text)
+    return lines
+
+
+def format_current_op_lines(snapshot):
+    """Format the top active currentOp entries for the CPU pane."""
+    lines = [_table_header(
+        "PORT   ROLE              SECS    OP        NS                 CLIENT        DESC")]
+    if snapshot is None:
+        lines.append("currentOp not sampled yet.")
+        return lines
+    if not snapshot.available:
+        lines.append("currentOp unavailable: %s" % (
+            snapshot.error or "unavailable"))
+        return lines
+    if not snapshot.entries:
+        lines.append("no active currentOp entries")
+        return lines
+
+    for entry in snapshot.entries:
+        lines.append("%-6s %-17s %7.1f %-9s %-18s %-13s %s" % (
+            entry.port,
+            entry.role,
+            entry.secs_running,
+            entry.op,
+            entry.ns or "-",
+            entry.client or "-",
+            entry.desc or entry.opid or "-",
+        ))
     return lines
 
 
@@ -2303,7 +2568,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      stream_paused, process_scope, cpu_thread_view,
                      server_status_active=False, log_filter_query="",
                      log_filter_prompt=False, log_filter_input="",
-                     log_filter_match_count=None, log_filter_total=None):
+                     log_filter_match_count=None, log_filter_total=None,
+                     current_op_view=False):
     focused_pane = normalize_pane(focused_pane)
     stream_control = (
         "space resume stream" if stream_paused else "space pause stream")
@@ -2333,6 +2599,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
         controls.append("cpu j/k arrows select")
         controls.append("t %s threads" % (
             "process list" if cpu_thread_view else "thread view"))
+        controls.append("o %s currentOps" % (
+            "process list" if current_op_view else "currentOps"))
     elif focused_pane == "logs":
         if log_filter_prompt:
             controls.extend([
@@ -2427,7 +2695,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      thread_count=None, pretty_scroll=0,
                      server_status_active=False, status_snapshot=None,
                      log_filter_query="", log_filter_prompt=False,
-                     log_filter_input=""):
+                     log_filter_input="", role_metrics=None,
+                     current_op_view=False, current_ops=None):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -2454,6 +2723,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_filter_input=log_filter_input,
         log_filter_match_count=filter_match_count,
         log_filter_total=filter_total,
+        current_op_view=current_op_view,
     )
 
     if server_status_active:
@@ -2482,6 +2752,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_title += " (" + ", ".join(title_states) + ")"
 
     disk_metrics = disk_metrics or {}
+    role_metrics = role_metrics or {}
     thread_metrics = thread_metrics or []
     cpu_cursor = clamp_process_cursor(processes, cpu_cursor)
     selected_cpu = selected_process(processes, cpu_cursor)
@@ -2494,10 +2765,14 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                 selected_cpu.port, selected_cpu.pid)
         cpu_lines = format_thread_lines(
             selected_cpu, thread_metrics, thread_error, thread_count)
+    elif current_op_view:
+        cpu_title = "Current Ops"
+        cpu_lines = format_current_op_lines(current_ops)
     else:
         cpu_title = "CPU Usage"
         cpu_lines = format_cpu_lines(
-            processes, process_metrics, cpu_cursor, show_cpu_cursor)
+            processes, process_metrics, cpu_cursor, show_cpu_cursor,
+            role_metrics)
 
     mem_lines = format_memory_lines(processes, process_metrics)
     net_lines = format_network_lines(processes, network_metrics)
@@ -2546,6 +2821,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_filter_input=log_filter_input,
         log_filter_match_count=filter_match_count,
         log_filter_total=filter_total,
+        current_op_view=current_op_view,
     )
 
     if zoom_pane:
@@ -2728,9 +3004,20 @@ class Monitor:
         )
         network_client_kwargs = load_monitor_tls_kwargs(data_dir)
         network_client_kwargs.update(self.auth_config.client_kwargs())
+        self.monitor_client_kwargs = dict(network_client_kwargs)
         self.network_sampler = NetworkSampler(
             client_factory=client_factory,
-            client_kwargs=network_client_kwargs,
+            client_kwargs=self.monitor_client_kwargs,
+            auth_required=self.auth_config.requires_credentials(),
+        )
+        self.role_sampler = RoleSampler(
+            client_factory=client_factory,
+            client_kwargs=self.monitor_client_kwargs,
+            auth_required=self.auth_config.requires_credentials(),
+        )
+        self.current_op_sampler = CurrentOpSampler(
+            client_factory=client_factory,
+            client_kwargs=self.monitor_client_kwargs,
             auth_required=self.auth_config.requires_credentials(),
         )
         self.thread_sampler = ThreadSampler()
@@ -2742,6 +3029,7 @@ class Monitor:
         self.focused_pane = "logs"
         self.cpu_cursor = 0
         self.cpu_thread_view = False
+        self.cpu_current_op_view = False
         self.status_message = ""
         self.yanked_cursor = None
         self.pretty_lines = None
@@ -2832,6 +3120,9 @@ class Monitor:
                         log_filter_query=self.log_filter_query,
                         log_filter_prompt=self.log_filter_prompt,
                         log_filter_input=self.log_filter_input,
+                        role_metrics=snapshot.role_metrics,
+                        current_op_view=self.cpu_current_op_view,
+                        current_ops=snapshot.current_ops,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()
@@ -2859,6 +3150,7 @@ class Monitor:
             return None
 
         process_metrics = self.process_sampler.sample(processes)
+        role_metrics = self.role_sampler.sample(processes)
         self.cpu_cursor = clamp_process_cursor(processes, self.cpu_cursor)
         selected_cpu = selected_process(processes, self.cpu_cursor)
         thread_metrics = []
@@ -2870,6 +3162,10 @@ class Monitor:
             thread_error = thread_snapshot.error
             thread_count = thread_snapshot.thread_count
         network_metrics = self.network_sampler.sample(processes)
+        current_ops = None
+        if self.cpu_current_op_view:
+            current_ops = self.current_op_sampler.sample(
+                processes, role_metrics)
         disk_metrics = read_disk_metrics(processes)
         log_lines = read_log_stream(tailer, self.stream_paused)
         self.log_cursor = clamp_filtered_log_cursor(
@@ -2884,11 +3180,9 @@ class Monitor:
         status_snapshot = None
         if self.server_status_active and selected_cpu:
             if not hasattr(self, "status_sampler"):
-                network_client_kwargs = load_monitor_tls_kwargs(self.data_dir)
-                network_client_kwargs.update(self.auth_config.client_kwargs())
                 self.status_sampler = StatusSampler(
                     client_factory=self.client_factory,
-                    client_kwargs=network_client_kwargs,
+                    client_kwargs=self.monitor_client_kwargs,
                     auth_required=self.auth_config.requires_credentials(),
                 )
             status_snapshot = self.status_sampler.sample(selected_cpu)
@@ -2896,11 +3190,13 @@ class Monitor:
         return DashboardSnapshot(
             processes=processes,
             process_metrics=process_metrics,
+            role_metrics=role_metrics,
             network_metrics=network_metrics,
             disk_metrics=disk_metrics,
             log_lines=log_lines,
             selected_ports=sorted(logpaths),
             thread_metrics=thread_metrics,
+            current_ops=current_ops,
             status_snapshot=status_snapshot,
             thread_error=thread_error,
             thread_count=thread_count,
@@ -2991,6 +3287,9 @@ class Monitor:
                     return "redraw"
                 if key in ("t", "T"):
                     self._toggle_cpu_thread_view(processes)
+                    return "resample"
+                if key in ("o", "O"):
+                    self._toggle_cpu_current_op_view()
                     return "resample"
             elif self.focused_pane == "logs":
                 if key in ("up", "k"):
@@ -3083,8 +3382,17 @@ class Monitor:
 
         self.cpu_thread_view = not self.cpu_thread_view
         if self.cpu_thread_view:
+            self.cpu_current_op_view = False
             self.status_message = "thread view for port %s pid %s" % (
                 process.port, process.pid)
+        else:
+            self.status_message = "CPU process list"
+
+    def _toggle_cpu_current_op_view(self):
+        self.cpu_current_op_view = not self.cpu_current_op_view
+        if self.cpu_current_op_view:
+            self.cpu_thread_view = False
+            self.status_message = "currentOp top 10 view"
         else:
             self.status_message = "CPU process list"
 
@@ -3226,6 +3534,7 @@ class Monitor:
         self.log_filter_input = ""
         self.cpu_cursor = 0
         self.cpu_thread_view = False
+        self.cpu_current_op_view = False
         self.zoom_pane = None
         self.zoom_logs = False
         self.follow_tail = True

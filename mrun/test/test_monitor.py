@@ -20,11 +20,15 @@ from mrun.monitor import (
     build_osc52_sequence,
     clamp_pretty_scroll,
     colorize_pretty_json_line,
+    CurrentOpEntry,
+    CurrentOpSampler,
+    CurrentOpSnapshot,
     dashboard_snapshot_due,
     detect_terminal_theme,
     detect_log_severity,
     DiskMetrics,
     filter_log_lines,
+    format_current_op_lines,
     format_cpu_lines,
     format_pretty_log_lines,
     format_log_lines,
@@ -58,6 +62,10 @@ from mrun.monitor import (
     read_log_stream,
     render_dashboard,
     render_server_status_view,
+    ROLE_PASSWORD_REQUIRED,
+    role_from_server_status,
+    RoleMetrics,
+    RoleSampler,
     score_log_filter,
     selected_process,
     strip_ansi,
@@ -510,12 +518,14 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "--monitor-password" in output
     assert "--monitor-auth-db" in output
     assert "CPU, memory, network, disk activity, and selectable log tail" in flat_output
+    assert "Node rows include a Role column" in flat_output
     assert "fatal/error/warning/info/debug severity colors" in flat_output
     assert "q or Ctrl+C quit" in flat_output
     assert "a toggle mrun/all processes" in flat_output
     assert "Tab switch panes" in flat_output
     assert "z zoom logs or focused pane" in flat_output
     assert "t toggles thread view" in flat_output
+    assert "o toggles top currentOp view" in flat_output
     assert "g latest log line" in flat_output
     assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
@@ -659,6 +669,143 @@ def test_network_sampler_reports_auth_required_without_connecting():
     assert result.error == AUTH_REQUIRED_STATUS
     assert called == {}
     assert network_status_label(result) == AUTH_REQUIRED_STATUS
+
+
+def test_role_from_server_status_prefers_repl_state():
+    assert role_from_server_status({"repl": {"stateStr": "PRIMARY"}}) == "Primary"
+    assert role_from_server_status({"repl": {"stateStr": "SECONDARY"}}) == "Secondary"
+    assert role_from_server_status({"repl": {"stateStr": "RECOVERING"}}) == "Recovering"
+
+
+def test_role_from_server_status_falls_back_to_writable_primary():
+    assert role_from_server_status(
+        {"repl": {"isWritablePrimary": True}}) == "Primary"
+    assert role_from_server_status(
+        {"repl": {"isWritablePrimary": False, "hosts": ["a", "b"]}}
+    ) == "Secondary"
+    assert role_from_server_status({"process": "mongos"}) == "Router"
+
+
+def test_role_sampler_reads_roles_from_server_status():
+    responses = {
+        "localhost:27017": {"repl": {"stateStr": "PRIMARY"}},
+        "localhost:27018": {"repl": {"stateStr": "SECONDARY"}},
+    }
+
+    def client_factory(host, **kwargs):
+        return FakeClient(responses[host])
+
+    sampler = RoleSampler(client_factory=client_factory)
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+
+    result = sampler.sample(processes)
+
+    assert result[27017].role == "Primary"
+    assert result[27018].role == "Secondary"
+
+
+def test_role_sampler_reports_password_required_without_connecting():
+    called = {}
+
+    def client_factory(host, **kwargs):
+        called["client"] = True
+
+    sampler = RoleSampler(client_factory=client_factory, auth_required=True)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    result = sampler.sample([process])[27017]
+
+    assert result.available is False
+    assert result.role == ROLE_PASSWORD_REQUIRED
+    assert result.error == AUTH_REQUIRED_STATUS
+    assert called == {}
+
+
+class FakeCurrentOpClient:
+    def __init__(self, response):
+        self.response = response
+        self.admin = self
+        self.commands = []
+        self.closed = False
+
+    def command(self, command):
+        self.commands.append(command)
+        assert command == {"currentOp": 1, "$all": True, "active": True}
+        return self.response
+
+    def close(self):
+        self.closed = True
+
+
+def test_current_op_sampler_sorts_and_limits_top_entries():
+    responses = {
+        "localhost:27017": {
+            "inprog": [
+                {
+                    "active": True,
+                    "secs_running": index,
+                    "op": "query",
+                    "ns": "test.coll",
+                    "client": "127.0.0.1",
+                    "command": {"find": "coll"},
+                }
+                for index in range(7)
+            ],
+        },
+        "localhost:27018": {
+            "inprog": [
+                {
+                    "active": True,
+                    "secs_running": index,
+                    "op": "command",
+                    "ns": "admin.$cmd",
+                    "client": "127.0.0.1",
+                    "command": {"aggregate": "coll"},
+                }
+                for index in range(7, 14)
+            ],
+        },
+    }
+
+    def client_factory(host, **kwargs):
+        return FakeCurrentOpClient(responses[host])
+
+    sampler = CurrentOpSampler(client_factory=client_factory)
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+    roles = {
+        27017: RoleMetrics(True, "Primary"),
+        27018: RoleMetrics(True, "Secondary"),
+    }
+
+    snapshot = sampler.sample(processes, roles)
+
+    assert snapshot.available is True
+    assert len(snapshot.entries) == 10
+    assert snapshot.entries[0].secs_running == 13
+    assert snapshot.entries[0].role == "Secondary"
+    assert snapshot.entries[-1].secs_running == 4
+
+
+def test_current_op_sampler_reports_password_required_without_connecting():
+    called = {}
+
+    def client_factory(host, **kwargs):
+        called["client"] = True
+
+    sampler = CurrentOpSampler(client_factory=client_factory, auth_required=True)
+
+    snapshot = sampler.sample([MongoProcessInfo(10, "mongod", 27017, "", "", [])])
+
+    assert snapshot.available is False
+    assert snapshot.error == ROLE_PASSWORD_REQUIRED
+    assert snapshot.entries == []
+    assert called == {}
 
 
 def test_log_tailer_seeds_and_polls_new_lines(tmp_path):
@@ -834,6 +981,85 @@ def test_render_dashboard_marks_focused_cpu_process_selection():
     assert "> 27018" in rendered
     assert ANSI_INVERSE in rendered
     assert "t thread view" in rendered
+
+
+def test_format_cpu_lines_includes_replica_role_column():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
+
+    lines = format_cpu_lines(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        cursor=0,
+        show_cursor=True,
+        role_metrics={27017: RoleMetrics(True, "Primary")},
+    )
+
+    assert "ROLE" in strip_ansi(lines[0])
+    assert "Primary" in strip_ansi(lines[1])
+
+
+def test_format_cpu_lines_shows_password_required_role():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
+
+    lines = format_cpu_lines(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        role_metrics={
+            27017: RoleMetrics(
+                False,
+                role=ROLE_PASSWORD_REQUIRED,
+                error=AUTH_REQUIRED_STATUS,
+            )
+        },
+    )
+
+    assert ROLE_PASSWORD_REQUIRED in strip_ansi(lines[1])
+
+
+def test_format_current_op_lines_shows_top_entries():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017, "Primary", 12.4, "query", "test.coll",
+                "127.0.0.1", "find coll", "op1"),
+        ],
+    )
+
+    lines = format_current_op_lines(snapshot)
+
+    assert "ROLE" in strip_ansi(lines[0])
+    assert "Primary" in strip_ansi(lines[1])
+    assert "test.coll" in strip_ansi(lines[1])
+
+
+def test_render_dashboard_current_op_view_replaces_cpu_list():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017, "Primary", 12.4, "query", "test.coll",
+                "127.0.0.1", "find coll", "op1"),
+        ],
+    )
+
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((120, 24)),
+        focused_pane="cpu",
+        cpu_cursor=0,
+        current_op_view=True,
+        current_ops=snapshot,
+    )
+
+    assert "[Current Ops]" in rendered
+    assert "test.coll" in rendered
+    assert "CPU Usage" not in rendered
+    assert "o process list currentOps" in rendered
 
 
 def test_render_dashboard_thread_view_is_toggle_only_not_default():
@@ -1712,6 +1938,9 @@ def test_monitor_run_dashboard_renders_cached_snapshot_disk_metrics(monkeypatch)
     monitor = Monitor(stdout=io.StringIO())
     monitor.network_sampler = NetworkSampler(
         client_factory=lambda host, **kwargs: FakeClient({"network": {}}))
+    monitor.role_sampler = RoleSampler(
+        client_factory=lambda host, **kwargs: FakeClient(
+            {"repl": {"stateStr": "PRIMARY"}}))
     monkeypatch.setattr("mrun.monitor.TerminalController", FakeTerminalContext)
     monkeypatch.setattr(monitor, "_prime_cpu", lambda: None)
     monkeypatch.setattr(
@@ -1799,6 +2028,35 @@ def test_monitor_t_toggles_cpu_thread_view_only_when_cpu_focused():
 
     assert action == "resample"
     assert monitor.cpu_thread_view is False
+    assert monitor.status_message == "CPU process list"
+
+
+def test_monitor_o_toggles_cpu_current_op_view_only_when_cpu_focused():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.refresh_interval = 0.01
+
+    action = monitor._wait_for_action(
+        FakeTerminal("o"), time.time(), [], [process])
+
+    assert action is None
+    assert monitor.cpu_current_op_view is False
+
+    monitor.focused_pane = "cpu"
+    monitor.cpu_thread_view = True
+    action = monitor._wait_for_action(
+        FakeTerminal("o"), time.time(), [], [process])
+
+    assert action == "resample"
+    assert monitor.cpu_current_op_view is True
+    assert monitor.cpu_thread_view is False
+    assert monitor.status_message == "currentOp top 10 view"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("o"), time.time(), [], [process])
+
+    assert action == "resample"
+    assert monitor.cpu_current_op_view is False
     assert monitor.status_message == "CPU process list"
 
 
