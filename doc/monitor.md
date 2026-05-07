@@ -51,10 +51,15 @@ mrun/monitor.py
 |   +-- ProcessSampler
 |   +-- reads CPU percent, RSS memory, and process status from psutil
 |   +-- preserves psutil.Process objects by pid so CPU percent has history
+|   +-- RoleSampler
+|   +-- reads serverStatus().repl role data for Primary/Secondary labels
 |   +-- ThreadSampler
 |   +-- samples psutil Process.threads() only when CPU thread view is toggled
 |   +-- computes per-thread CPU from user/system time deltas
 |   +-- falls back to Process.num_threads() when thread details are denied
+|   +-- CurrentOpSampler
+|   +-- samples active currentOp entries only while the CPU currentOp view is active
+|   +-- sorts active ops by secs_running and keeps the top 10
 |
 +-- network metrics
 |   +-- NetworkSampler
@@ -95,6 +100,7 @@ mrun/monitor.py
     +-- z zooms the focused pane
     +-- CPU focus: j/k or arrows select a MongoDB process
     +-- CPU focus: t toggles process-list and selected-process thread views
+    +-- CPU focus: o toggles process-list and top currentOp views
     +-- logs focus: j/k or arrows move the highlighted log row
     +-- Pretty JSON focus: j/k or arrows scroll expanded JSON
     +-- logs focus: g jumps to the newest log row and resumes live-follow
@@ -121,13 +127,18 @@ flowchart TD
     J --> K[LogTailer seeds selected logs]
     K --> L[Terminal dashboard loop]
     L --> M[Read process metrics]
+    L --> MR[Sample serverStatus roles]
     L --> N[Sample serverStatus network counters]
     L --> O[Poll appended log lines]
     L --> O2[Read dbpath and log file sizes]
+    L --> O3{CPU currentOp view active?}
+    O3 -- yes --> O4[Sample active currentOp entries]
     M --> P[Render dashboard]
+    MR --> P
     N --> P
     O --> P
     O2 --> P
+    O4 --> P
     P --> Q{Key pressed?}
     Q -- q or Ctrl+C --> R[Exit monitor]
     Q -- r --> J
@@ -136,6 +147,7 @@ flowchart TD
     Q -- z --> T[Toggle focused-pane zoom]
     Q -- CPU j/k/arrows --> U[Select MongoDB process]
     Q -- CPU t --> V[Toggle selected-process thread view]
+    Q -- CPU o --> V2[Toggle top currentOp view]
     Q -- logs j/k/arrows --> W[Move highlighted row]
     Q -- logs g --> X[Jump to newest row and follow]
     Q -- logs p --> Y[Toggle pretty JSON view]
@@ -146,6 +158,7 @@ flowchart TD
     T --> L
     U --> L
     V --> L
+    V2 --> L
     W --> L
     X --> L
     Y --> L
@@ -161,8 +174,8 @@ flowchart TD
 four-panel mode
 
 + [CPU Usage] ---------++ Memory Usage --------+
-|  PORT PID PROCESS CPU|| PORT PID PROCESS RSS |
-| 27017 123 mongod 4.1 || 27017 123 mongod 1GB |
+|  PORT PID ROLE PROCESS CPU|| PORT PID PROCESS RSS |
+| 27017 123 Primary mongod 4.1 || 27017 123 mongod 1GB |
 +----------------------++----------------------+
 + Network Usage -------++ Log Tail -----------+
 | PORT IN OUT REQ/s    ||  info log line       |  muted teal text
@@ -176,6 +189,14 @@ CPU thread mode, toggled with t while CPU is focused
 | PROCESS port 27017 pid 12345 mongod         |
 | TID        CPU%    USER     SYSTEM   TOTAL   |
 | 456789      12.5   2.10     0.30     2.40    |
++---------------------------------------------+
+
+CPU currentOp mode, toggled with o while CPU is focused
+
++ [Current Ops] ------------------------------+
+| PORT ROLE      SECS OP      NS        CLIENT|
+| 27017 Primary  12.5 query   app.coll  127.0 |
+| 27018 Secondary 4.0 command admin.$cmd 127.0|
 +---------------------------------------------+
 
 zoom mode
@@ -225,7 +246,7 @@ color and bold text, then clips and pads using ANSI-aware helpers. This keeps
 CPU, memory, network, disk, thread, Pretty JSON, and expanded server-status
 panes aligned even when the title, header, or body row contains color escapes.
 
-## Pane focus and CPU threads
+## Pane focus and CPU modes
 
 The dashboard starts with the logs pane focused so log navigation remains
 immediately available. `Tab` and `Shift+Tab` cycle focus across:
@@ -239,10 +260,19 @@ immediately available. `Tab` and `Shift+Tab` cycle focus across:
 The focused pane uses an emphasized ASCII border. Pressing `z` zooms that
 focused pane; pressing `z` again returns to the quadrant layout.
 
-CPU thread view is intentionally not the default. When the CPU pane is focused,
-`j`/`k` or the up/down arrows select a MongoDB process row. Pressing `t`
-toggles the CPU pane from the process CPU list to threads for the selected
-process. Pressing `t` again returns to the process CPU list.
+CPU thread view and currentOp view are intentionally not the default. When the
+CPU pane is focused, `j`/`k` or the up/down arrows select a MongoDB process row.
+Pressing `t` toggles the CPU pane from the process CPU list to threads for the
+selected process. Pressing `o` toggles the pane from the process CPU list to the
+top 10 active currentOp entries across visible processes. Pressing the same key
+again returns to the process CPU list.
+
+The process CPU list includes a `ROLE` column. The monitor reads
+`serverStatus().repl.stateStr` first and falls back to
+`repl.isWritablePrimary`. If an authenticated deployment was created but the
+monitor has no usable credentials, the role column shows `Password Required`.
+Stored `.mrun_startup` credentials and explicit monitor credential overrides
+are passed to role and currentOp sampling.
 
 On macOS, detailed per-thread timing can be denied by the OS `task_for_pid`
 security path even when the monitor is launched with `sudo`. In that case, the
@@ -259,9 +289,12 @@ stateDiagram-v2
     [*] --> ProcessList
     ProcessList --> ProcessList: CPU j/k/arrows select process
     ProcessList --> ThreadView: CPU t
+    ProcessList --> CurrentOpView: CPU o
     ThreadView --> ThreadView: refresh selected process threads
     ThreadView --> ThreadView: CPU j/k/arrows select another process
     ThreadView --> ProcessList: CPU t
+    CurrentOpView --> CurrentOpView: refresh top 10 currentOps
+    CurrentOpView --> ProcessList: CPU o
 ```
 
 ## Process scope
@@ -338,6 +371,14 @@ Start MongoDB nodes first, then run: mrun --monitor
 
 If a process exists but MongoDB does not answer `serverStatus`, the network
 panel marks that port as unavailable and keeps the monitor running.
+
+If monitor auth metadata indicates credentials are required but no usable
+monitor credentials are available, the CPU `ROLE` column shows
+`Password Required` and the currentOp view reports:
+
+```text
+currentOp unavailable: Password Required
+```
 
 ## Fault-injection test helper
 

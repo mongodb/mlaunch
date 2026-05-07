@@ -48,11 +48,13 @@ Monitor
    opens a live terminal monitor for running **mrun** managed ``mongod`` and
    ``mongos`` processes from the selected data directory. The monitor shows
    CPU usage, memory usage, network activity, disk consumption, and a
-   selectable live log tail with severity colors and local filtering. Pane
-   titles and table headers are bold and color-coded by pane, with consistent
-   padding for CPU, memory, network, disk, status, thread, and log views. If
-   no **mrun** managed MongoDB server processes are running, **mrun** will
-   print a message and exit.
+   selectable live log tail with severity colors and local filtering. The CPU
+   process list includes a ``ROLE`` column for primary/secondary state and can
+   toggle to a top-10 active ``currentOp`` view. Pane titles and table headers
+   are bold and color-coded by pane, with consistent padding for CPU, memory,
+   network, disk, status, thread, currentOp, and log views. If no **mrun**
+   managed MongoDB server processes are running, **mrun** will print a message
+   and exit.
 
 ``--all``
    used with ``--monitor`` to include all local ``mongod`` and ``mongos``
@@ -77,6 +79,8 @@ Monitor
    -  In the CPU pane, ``t`` toggles between the default process CPU list and
       a thread view for the selected process. Thread view is never shown by
       default.
+   -  In the CPU pane, ``o`` toggles between the default process CPU list and
+      the top 10 active ``currentOp`` entries across visible MongoDB processes.
    -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
       line.
    -  ``g`` jumps to the newest log line and resumes live-follow.
@@ -104,6 +108,11 @@ Monitor
    Pretty JSON colors are selected from the terminal background when
    ``COLORFGBG`` is available. Use ``MRUN_MONITOR_THEME=dark`` or
    ``MRUN_MONITOR_THEME=light`` to override automatic theme detection.
+
+   When authentication metadata exists but monitor credentials are unavailable,
+   role and currentOp views show ``Password Required``. Stored credentials from
+   ``.mrun_startup`` or explicit monitor credential overrides are used when
+   available.
 
 Verbosity
 ---------
