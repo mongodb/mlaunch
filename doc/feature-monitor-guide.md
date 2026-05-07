@@ -32,13 +32,14 @@ The monitor shows:
 - MongoDB network counter rates from `serverStatus().network`.
 - Disk consumption for each process dbpath and log file.
 - Selectable live log tail with severity colors.
+- Vim-style log filtering with fuzzy matching, structured field filters, and
+  highlighted hits.
 - Focusable panes with full-pane zoom.
-- selectable CPU process rows.
-- optional CPU thread view for the selected process.
-- expanded server status view for Disk, Network, Storage, and all top-level
+- Selectable CPU process rows.
+- Optional CPU thread view for the selected process.
+- Expanded server status view for Disk, Network, Storage, and all top-level
   `serverStatus()` subsystem summaries.
-- zoomed log view.
-
+- Zoomed log view.
 - Scrollable syntax-colored Pretty JSON view for a highlighted log line.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
@@ -52,19 +53,20 @@ mongorun.
 ```text
 feature-monitor branch
 |
-+-- mrun/mrun.py (lines 208-745)
++-- mrun/mrun.py (lines 208-741)
 |   +-- adds top-level --monitor, --all, and --dir handling (lines 223-267)
 |   +-- adds --monitor-username, --monitor-password, --monitor-auth-db
 |   +-- routes monitor requests before normal command dispatch (line 684)
-|   +-- constructs Monitor with data_dir and include_all options (lines 725-736)
+|   +-- constructs Monitor with data_dir and include_all options (lines 726-741)
 |
-+-- mrun/monitor.py (lines 1-2675)
-|   +-- new interactive monitor implementation (lines 2177-2675)
-|   +-- process discovery (lines 437-479), metrics sampling (lines 583-929), log tailing (lines 931-994), rendering (lines 1512-2078), key input (lines 2088-2176)
-|   +-- auth and TLS metadata loading for network sampling (lines 347-435)
++-- mrun/monitor.py (lines 1-3286)
+|   +-- new interactive monitor implementation (lines 2684-3286)
+|   +-- process discovery (lines 475-499), metrics sampling (lines 603-949), log tailing (lines 951-1014), filtering (lines 1271-1578), rendering (lines 1960-2604), key input (lines 2614-2683)
+|   +-- auth and TLS metadata loading for network sampling (lines 367-473)
 |   +-- pane focus, focused-pane zoom, CPU process selection, thread sampling
-|   +-- ProcessSampler preserves psutil CPU state across refreshes (lines 583-670)
-|   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 749-929)
+|   +-- ProcessSampler preserves psutil CPU state across refreshes (lines 603-690)
+|   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 769-949)
+|   +-- log filter prompt, fuzzy scoring, structured filters, and hit highlighting
 |
 +-- mrun/fault_inject_collection_scans.py
 |   +-- local-only PyMongo workload for monitor troubleshooting
@@ -151,13 +153,13 @@ sequenceDiagram
     CLI->>Tool: MRunTool.run() [mrun/mrun.py:208]
     Tool->>Tool: argparse parses --monitor [mrun/mrun.py:223]
     Tool->>Tool: skip default init routing [mrun/mrun.py:684]
-    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run() [mrun/mrun.py:725]
-    Monitor->>FS: load ./data/.mrun_startup [mrun/monitor.py:320]
-    Monitor->>PS: discover local mongod/mongos [mrun/monitor.py:455]
-    Monitor->>Monitor: keep only startup ports [mrun/monitor.py:437]
-    Monitor-->>User: prompt for logs to tail [mrun/monitor.py:1020]
-    User-->>Monitor: select log indexes or ports [mrun/monitor.py:996]
-    Monitor-->>User: render dashboard until quit [mrun/monitor.py:2256]
+    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run() [mrun/mrun.py:726]
+    Monitor->>FS: load ./data/.mrun_startup [mrun/monitor.py:340]
+    Monitor->>PS: discover local mongod/mongos [mrun/monitor.py:475]
+    Monitor->>Monitor: keep only startup ports [mrun/monitor.py:457]
+    Monitor-->>User: prompt for logs to tail [mrun/monitor.py:1040]
+    User-->>Monitor: select log indexes or ports [mrun/monitor.py:1016]
+    Monitor-->>User: render dashboard until quit [mrun/monitor.py:2766]
 ```
 
 ## All-process mode sequence
@@ -170,12 +172,12 @@ sequenceDiagram
     participant PS as psutil
 
     User->>Tool: mrun --monitor --all
-    Tool->>Monitor: Monitor(include_all=true).run() [mrun/mrun.py:725]
-    Monitor->>PS: discover all local mongod/mongos [mrun/monitor.py:455]
-    Monitor-->>User: prompt for logs from all discovered processes [mrun/monitor.py:1020]
-    User-->>Monitor: press a [mrun/monitor.py:2397]
-    Monitor->>Monitor: toggle process_scope to mrun [mrun/monitor.py:2592]
-    Monitor-->>User: reselect logs using mrun-managed scope [mrun/monitor.py:2397]
+    Tool->>Monitor: Monitor(include_all=true).run() [mrun/mrun.py:726]
+    Monitor->>PS: discover all local mongod/mongos [mrun/monitor.py:475]
+    Monitor-->>User: prompt for logs from all discovered processes [mrun/monitor.py:1040]
+    User-->>Monitor: press a [mrun/monitor.py:2914]
+    Monitor->>Monitor: toggle process_scope to mrun [mrun/monitor.py:3198]
+    Monitor-->>User: reselect logs using mrun-managed scope [mrun/monitor.py:2914]
 ```
 
 ## Auth and TLS network sequence
@@ -187,14 +189,14 @@ sequenceDiagram
     participant Sampler as NetworkSampler
     participant Mongo as MongoDB
 
-    Monitor->>FS: load parsed_args [mrun/monitor.py:320]
+    Monitor->>FS: load parsed_args [mrun/monitor.py:340]
     FS-->>Monitor: auth, username, password, auth_db, TLS/SSL fields
-    Monitor->>Monitor: apply monitor credential overrides if present [mrun/monitor.py:2194]
-    Monitor->>Monitor: build PyMongo kwargs [mrun/monitor.py:360]
-    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required) [mrun/monitor.py:672]
-    Sampler->>Mongo: admin.command(serverStatus) [mrun/monitor.py:724]
+    Monitor->>Monitor: apply monitor credential overrides if present [mrun/monitor.py:2701]
+    Monitor->>Monitor: build PyMongo kwargs [mrun/monitor.py:380]
+    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required) [mrun/monitor.py:692]
+    Sampler->>Mongo: admin.command(serverStatus) [mrun/monitor.py:748]
     Mongo-->>Sampler: network counters or auth/TLS error
-    Sampler-->>Monitor: NetworkMetrics [mrun/monitor.py:702]
+    Sampler-->>Monitor: NetworkMetrics [mrun/monitor.py:722]
 ```
 
 ## Runtime dashboard loop
@@ -247,20 +249,21 @@ flowchart TD
 
 Implementation mapping for the dashboard loop:
 
-- **Loop Start**: `Monitor._run_dashboard()` [mrun/monitor.py:2256]
-- **Discover Processes**: `Monitor._discover_processes_or_report()` [mrun/monitor.py:2378]
-- **Read CPU/Memory**: `ProcessSampler.sample()` [mrun/monitor.py:599]
-- **Sample Network**: `NetworkSampler.sample()` [mrun/monitor.py:683]
-- **Read Disk Sizes**: `read_disk_metrics()` [mrun/monitor.py:656]
-- **Poll Logs**: `LogTailer.poll()` [mrun/monitor.py:958]
-- **Render Frame**: `render_dashboard()` [mrun/monitor.py:1930]
-- **Key Actions**: `Monitor._wait_for_action()` [mrun/monitor.py:2397]
-- **Pane Focus**: `Monitor._focus_next_pane()` [mrun/monitor.py:2488]
-- **Zoom Pane**: `Monitor._toggle_focused_zoom()` [mrun/monitor.py:2498]
-- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()` [mrun/monitor.py:2522]
-- **Pretty JSON**: `Monitor._toggle_pretty_log_line()` [mrun/monitor.py:2619]
-- **Yank Log**: `Monitor._yank_log_line()` [mrun/monitor.py:2657]
-- **Expanded Status**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:2481]
+- **Loop Start**: `Monitor._run_dashboard()` [mrun/monitor.py:2766]
+- **Discover Processes**: `Monitor._discover_processes_or_report()` [mrun/monitor.py:2895]
+- **Read CPU/Memory**: `ProcessSampler.sample()` [mrun/monitor.py:619]
+- **Sample Network**: `NetworkSampler.sample()` [mrun/monitor.py:703]
+- **Read Disk Sizes**: `read_disk_metrics()` [mrun/monitor.py:676]
+- **Poll Logs**: `LogTailer.poll()` [mrun/monitor.py:978]
+- **Render Frame**: `render_dashboard()` [mrun/monitor.py:2397]
+- **Key Actions**: `Monitor._wait_for_action()` [mrun/monitor.py:2914]
+- **Pane Focus**: `Monitor._focus_next_pane()` [mrun/monitor.py:3020]
+- **Zoom Pane**: `Monitor._toggle_focused_zoom()` [mrun/monitor.py:3030]
+- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()` [mrun/monitor.py:3054]
+- **Log Filter Prompt**: `Monitor._start_log_filter_prompt()` [mrun/monitor.py:3069]
+- **Pretty JSON**: `Monitor._toggle_pretty_log_line()` [mrun/monitor.py:3228]
+- **Yank Log**: `Monitor._yank_log_line()` [mrun/monitor.py:3267]
+- **Expanded Status**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:3013]
 ```
 
 ## Terminal layout
@@ -366,20 +369,20 @@ sequenceDiagram
     participant StatusSampler
     participant Mongo as MongoDB
 
-    User->>Monitor: Press 'E' [mrun/monitor.py:2397]
-    Monitor->>Monitor: Set server_status_active = True [mrun/monitor.py:2481]
+    User->>Monitor: Press 'E' [mrun/monitor.py:2914]
+    Monitor->>Monitor: Set server_status_active = True [mrun/monitor.py:3013]
     loop Refresh Loop
-        Monitor->>StatusSampler: sample(process) [mrun/monitor.py:2355]
-        StatusSampler->>Mongo: runCommand({serverStatus: 1}) [mrun/monitor.py:811]
+        Monitor->>StatusSampler: sample(process) [mrun/monitor.py:2868]
+        StatusSampler->>Mongo: runCommand({serverStatus: 1}) [mrun/monitor.py:831]
         Mongo-->>StatusSampler: Full BSON Response
-        StatusSampler->>StatusSampler: Summarize every top-level subsystem [mrun/monitor.py:902]
-        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details [mrun/monitor.py:814]
-        StatusSampler-->>Monitor: ServerStatusSnapshot [mrun/monitor.py:790]
-        Monitor->>Monitor: render_server_status_view() [mrun/monitor.py:1886]
-        Monitor-->>User: Refresh 4-panel UI [mrun/monitor.py:1886]
+        StatusSampler->>StatusSampler: Summarize every top-level subsystem [mrun/monitor.py:922]
+        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details [mrun/monitor.py:834]
+        StatusSampler-->>Monitor: ServerStatusSnapshot [mrun/monitor.py:810]
+        Monitor->>Monitor: render_server_status_view() [mrun/monitor.py:2353]
+        Monitor-->>User: Refresh 4-panel UI [mrun/monitor.py:2353]
     end
-    User->>Monitor: Press 'E' or 'Esc' [mrun/monitor.py:2397]
-    Monitor->>Monitor: Set server_status_active = False [mrun/monitor.py:2481]
+    User->>Monitor: Press 'E' or 'Esc' [mrun/monitor.py:2914]
+    Monitor->>Monitor: Set server_status_active = False [mrun/monitor.py:3013]
 ```
 
 ### ASCII Layout (Expanded View)
@@ -403,16 +406,16 @@ E exit status view | s refresh 1s | q quit
 
 Implementation mapping for expanded status view:
 
-- **Status Snapshot Model**: `ServerStatusSnapshot` [mrun/monitor.py:231]
-- **Status Sampler**: `StatusSampler.sample()` [mrun/monitor.py:790]
-- **Subsystem Summaries**: `StatusSampler._extract_subsystems()` [mrun/monitor.py:902]
-- **Disk Formatting**: `format_disk_status_lines()` [mrun/monitor.py:1678]
-- **Network Formatting**: `format_network_status_lines()` [mrun/monitor.py:1710]
-- **Storage Formatting**: `format_storage_status_lines()` [mrun/monitor.py:1738]
-- **Other Subsystems Formatting**: `format_subsystem_status_lines()` [mrun/monitor.py:1777]
-- **Four-Panel Renderer**: `render_server_status_view()` [mrun/monitor.py:1886]
-- **Boundary Color Rendering**: `make_panel()` [mrun/monitor.py:1512]
-- **Toggle Handling**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:2481]
+- **Status Snapshot Model**: `ServerStatusSnapshot` [mrun/monitor.py:251]
+- **Status Sampler**: `StatusSampler.sample()` [mrun/monitor.py:810]
+- **Subsystem Summaries**: `StatusSampler._extract_subsystems()` [mrun/monitor.py:922]
+- **Disk Formatting**: `format_disk_status_lines()` [mrun/monitor.py:2126]
+- **Network Formatting**: `format_network_status_lines()` [mrun/monitor.py:2158]
+- **Storage Formatting**: `format_storage_status_lines()` [mrun/monitor.py:2186]
+- **Other Subsystems Formatting**: `format_subsystem_status_lines()` [mrun/monitor.py:2225]
+- **Four-Panel Renderer**: `render_server_status_view()` [mrun/monitor.py:2353]
+- **Boundary Color Rendering**: `make_panel()` [mrun/monitor.py:1960]
+- **Toggle Handling**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:3013]
 
 ### Logical flow
 
@@ -527,6 +530,18 @@ DiskMetrics
 +-- db_size
 +-- log_size
 +-- error
+
+LogFilterMatch
+|
++-- matched
++-- score
++-- spans
+
+LogFilterView
+|
++-- filtered lines
++-- original raw-buffer indexes
++-- search-hit spans by raw index
 
 ServerStatusSnapshot
 |
@@ -685,6 +700,78 @@ Pausing log streaming with Space while the logs pane is focused freezes the
 visible buffer and does not advance file offsets. Resuming catches up from the
 same offsets.
 
+## Log filtering
+
+Log filtering is entered from the logs pane with `/`. The prompt behaves like a
+small vim-style search bar:
+
+```text
+/             enter filter prompt
+Enter         apply typed filter
+Esc           cancel prompt and keep the previous filter
+Backspace     edit prompt input
+Ctrl+U        clear prompt input
+c             clear the active filter from the logs pane
+```
+
+Filtering is non-destructive. The `LogTailer` buffer still keeps every raw line;
+the dashboard builds a filtered view that contains matching lines and their
+original raw-buffer indexes. This lets cursor navigation, Pretty JSON, and yank
+continue to act on the original log entry.
+
+```mermaid
+flowchart LR
+    A[Raw LogTailer buffer] --> B{Filter active?}
+    B -- no --> C[Render raw stream]
+    B -- yes --> D[Parse filter query]
+    D --> E[Structured field checks]
+    D --> F[Fuzzy text scorer]
+    E --> G[Filtered view with raw indexes]
+    F --> G
+    G --> H[ANSI hit highlighting]
+    H --> I[Render log pane]
+```
+
+Supported examples:
+
+```text
+/ slowop              show slow-operation query lines
+/ cmd:find            show command logs for find
+/ cmd:aggregate       show command logs for aggregate
+/ component:COMMAND   show COMMAND component logs
+/ severity:E          show error logs
+/ port:27017          show logs for one port
+/ msg:"Slow query"    show lines whose message matches Slow query
+```
+
+The fuzzy matcher is intentionally local and dependency-free. It checks exact
+case-insensitive substrings first, then token matches, then ordered fuzzy
+subsequences. For example, `slwop` can match "Slow query operation" because the
+characters appear in order. The filtered stream preserves chronological log
+order; the score is used for matching strength and hit positions, not sorting.
+
+When a filter is active, newly tailed log lines are filtered before display. If
+streaming is paused, the filter applies to the paused buffer only. If no lines
+match, the log pane displays:
+
+```text
+No log lines match filter: slowop
+```
+
+Implementation mapping for log filtering:
+
+- **Filter Match Result**: `LogFilterMatch` [mrun/monitor.py:233]
+- **Filtered View Model**: `LogFilterView` [mrun/monitor.py:242]
+- **Fuzzy Scorer**: `score_log_filter()` [mrun/monitor.py:1271]
+- **Structured Filter Match**: `match_log_filter()` [mrun/monitor.py:1504]
+- **View Builder**: `filter_log_lines()` [mrun/monitor.py:1538]
+- **Filtered Cursor Clamp**: `clamp_filtered_log_cursor()` [mrun/monitor.py:1557]
+- **Filtered Cursor Move**: `move_filtered_log_cursor()` [mrun/monitor.py:1575]
+- **Hit Highlight Rendering**: `format_log_lines()` [mrun/monitor.py:1708]
+- **Filter Prompt Keys**: `Monitor._handle_log_filter_prompt_key()` [mrun/monitor.py:3077]
+- **Apply Filter**: `Monitor._apply_log_filter()` [mrun/monitor.py:3102]
+- **Clear Filter**: `Monitor._clear_log_filter()` [mrun/monitor.py:3122]
+
 ## Log colors and highlight priority
 
 MongoDB structured logs use the `s` field for severity. The monitor also
@@ -716,6 +803,12 @@ selected line
     +-- inverse video over severity color
         |
         +-- keeps current row visible without losing traffic-light signal
+
+filter hit
+    |
+    +-- highlighted exact/token/fuzzy match span
+        |
+        +-- visible on normal severity-colored rows
 
 normal line
     |
@@ -872,9 +965,11 @@ Manual monitor test flow:
 5. Run the injector with --profile for 60-120 seconds.
 6. In the monitor, verify CPU/network activity rises on the target port.
 7. Verify log rows include mrun-monitor-fault-scan.
-8. Press p on a structured log row and verify syntax-colored Pretty JSON.
-9. Press Space to pause/resume, g to jump latest, and y to yank a line.
-10. After the injector exits, verify the profiler restore message was printed.
+8. Press /, enter slowop, and verify only slow-operation rows remain.
+9. Press p on a filtered structured log row and verify syntax-colored Pretty JSON.
+10. Press c to clear the filter.
+11. Press Space to pause/resume, g to jump latest, and y to yank a line.
+12. After the injector exits, verify the profiler restore message was printed.
 ```
 
 If logs do not show the injected operations, first confirm that `--profile` was
@@ -903,6 +998,10 @@ same local replica set that `mrun --monitor` is tailing.
 | Logs p     | Pretty-print highlighted JSON with syntax colors    |
 | Logs y     | Yank highlighted raw line through OSC 52            |
 | Logs Space | Pause or resume log streaming                       |
+| Logs /     | Open log filter prompt                              |
+| Logs c     | Clear active log filter                             |
+| Filter Enter| Apply typed log filter                             |
+| Filter Esc | Cancel log filter prompt                            |
 | Pretty Up/k| Scroll expanded Pretty JSON up                      |
 | Pretty Dn/j| Scroll expanded Pretty JSON down                    |
 | E          | Toggle expanded server status view                  |
@@ -937,10 +1036,19 @@ stateDiagram-v2
     PausedFollow --> StreamPaused: logs Space
     StreamPaused --> Following: logs Space and follow_tail true
     StreamPaused --> PausedFollow: logs Space and follow_tail false
+    Following --> FilterPrompt: logs /
+    PausedFollow --> FilterPrompt: logs /
+    FilterPrompt --> Filtered: Enter with query
+    FilterPrompt --> Following: Enter empty or Esc
+    Filtered --> FilterPrompt: logs /
+    Filtered --> Following: logs c
+    Filtered --> Filtered: new tailed lines are filtered live
     Following --> PrettyJSON: logs p on JSON line
     PausedFollow --> PrettyJSON: logs p on JSON line
+    Filtered --> PrettyJSON: logs p on filtered JSON line
     PrettyJSON --> PrettyJSON: logs j/k/arrows scroll JSON
-    PrettyJSON --> PausedFollow: logs p again
+    PrettyJSON --> PausedFollow: logs p again without filter
+    PrettyJSON --> Filtered: logs p again with filter
     Following --> Zoomed: logs focused and z
     PausedFollow --> Zoomed: logs focused and z
     Zoomed --> Following: z when follow_tail true
@@ -1086,6 +1194,12 @@ The focused monitor test module covers:
 - arrow escape sequence parsing.
 - cursor movement and live-follow.
 - `g` jump-to-latest behavior.
+- `/` log filter prompt behavior.
+- fuzzy log filter scoring and highlighted hit spans.
+- structured log filters for `slowop`, `cmd`, `component`, `severity`, `port`,
+  and `msg`.
+- filtered log cursor movement, yank, and Pretty JSON selection using raw
+  buffer indexes.
 - `p` pretty JSON behavior.
 - Pretty JSON syntax coloring and theme selection.
 - Pretty JSON scroll offset and j/k navigation.
@@ -1155,6 +1269,12 @@ Use this list for manual review:
 [ ] If detailed thread timing is denied, CPU thread view shows THREAD COUNT.
 [ ] Up/down in logs and CPU process-list mode feels immediate.
 [ ] Log pane j/k or arrows move the highlighted log row.
+[ ] Logs pane / opens a filter prompt.
+[ ] slowop filter shows only slow-operation query log rows.
+[ ] cmd:find and cmd:aggregate filters isolate matching command logs.
+[ ] component:COMMAND, severity:E, port:27017, and msg:"Slow query" filters work.
+[ ] Search/filter hits are highlighted on non-selected rows.
+[ ] c clears the active log filter.
 [ ] p toggles syntax-colored Pretty JSON view.
 [ ] Pretty JSON opens in zoomed logs as before.
 [ ] Pretty JSON j/k or arrows scroll long slow-operation JSON.

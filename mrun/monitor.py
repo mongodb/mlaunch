@@ -70,6 +70,7 @@ ANSI_PRETTY_STRING_LIGHT = "\033[38;5;28m"
 ANSI_PRETTY_NUMBER_LIGHT = "\033[38;5;130m"
 ANSI_PRETTY_KEYWORD_LIGHT = "\033[38;5;90m"
 ANSI_PRETTY_PUNCT_LIGHT = "\033[38;5;240m"
+ANSI_SEARCH_HIT = "\033[33m\033[7m"
 STYLE_SELECTED = "\x00selected\x00"
 STYLE_YANKED = "\x00yanked\x00"
 STYLE_SEVERITY_FATAL = "\x00severity:fatal\x00"
@@ -99,6 +100,7 @@ STYLE_MARKERS = (
 )
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+FILTER_VALUE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*:.+")
 
 
 class ProcessDiscoveryError(RuntimeError):
@@ -225,6 +227,24 @@ class NetworkMetrics:
     bytes_out_per_sec: float = 0.0
     requests_per_sec: float = 0.0
     error: str = ""
+
+
+@dataclass
+class LogFilterMatch:
+    """Result of applying a filter query to a single log line."""
+
+    matched: bool
+    score: float = 0.0
+    spans: list = None
+
+
+@dataclass
+class LogFilterView:
+    """Filtered log lines plus their original raw-buffer indexes."""
+
+    lines: list
+    indexes: list
+    spans_by_index: dict
 
 
 @dataclass
@@ -1187,6 +1207,388 @@ def move_log_cursor(log_lines, cursor, delta):
     return max(0, min(cursor + delta, len(log_lines) - 1))
 
 
+def _log_filter_active(query):
+    return bool(str(query or "").strip())
+
+
+def _find_case_insensitive_spans(text, needle):
+    text = str(text)
+    needle = str(needle or "")
+    if not needle:
+        return []
+
+    spans = []
+    lowered = text.lower()
+    lowered_needle = needle.lower()
+    start = 0
+    while True:
+        index = lowered.find(lowered_needle, start)
+        if index < 0:
+            return spans
+        spans.append((index, index + len(needle)))
+        start = index + max(len(needle), 1)
+
+
+def _merge_spans(spans):
+    normalized = []
+    for start, end in spans or []:
+        try:
+            start = int(start)
+            end = int(end)
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        normalized.append((start, end))
+    normalized.sort()
+
+    merged = []
+    for start, end in normalized:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return [(start, end) for start, end in merged]
+
+
+def _ordered_fuzzy_spans(query, text):
+    chars = [char for char in str(query or "").lower() if not char.isspace()]
+    if not chars:
+        return []
+
+    spans = []
+    position = 0
+    lowered = str(text).lower()
+    for char in chars:
+        index = lowered.find(char, position)
+        if index < 0:
+            return []
+        spans.append((index, index + 1))
+        position = index + 1
+    return spans
+
+
+def score_log_filter(query, line):
+    """Score how well a free-text query matches one log line.
+
+    The matcher intentionally stays small and dependency-free. It first checks
+    for a case-insensitive exact substring, then checks whether every query
+    token appears somewhere in the line, and finally falls back to an ordered
+    subsequence match. Ordered subsequence matching lets "slwop" match
+    "Slow query operation" by finding those characters in order. The returned
+    score describes match strength only; log rendering still preserves stream
+    order instead of sorting by score.
+    """
+    query = str(query or "").strip()
+    line = str(line)
+    if not query:
+        return LogFilterMatch(True, score=0.0, spans=[])
+
+    exact_spans = _find_case_insensitive_spans(line, query)
+    if exact_spans:
+        return LogFilterMatch(True, score=300.0 + len(query), spans=exact_spans)
+
+    tokens = [token for token in query.split() if token]
+    if len(tokens) > 1:
+        token_spans = []
+        for token in tokens:
+            spans = _find_case_insensitive_spans(line, token)
+            if not spans:
+                break
+            token_spans.extend(spans)
+        else:
+            return LogFilterMatch(
+                True,
+                score=200.0 + sum(len(token) for token in tokens),
+                spans=_merge_spans(token_spans),
+            )
+
+    fuzzy_spans = _ordered_fuzzy_spans(query, line)
+    if fuzzy_spans:
+        compactness = fuzzy_spans[-1][1] - fuzzy_spans[0][0]
+        score = 100.0 + (len(fuzzy_spans) / max(compactness, 1))
+        return LogFilterMatch(True, score=score, spans=fuzzy_spans)
+
+    return LogFilterMatch(False, score=0.0, spans=[])
+
+
+def _parse_json_log(line):
+    text = strip_log_port_prefix(line).strip()
+    for candidate in _json_log_candidates(text):
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _walk_json_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key), item
+            for nested_key, nested_item in _walk_json_values(item):
+                yield nested_key, nested_item
+    elif isinstance(value, list):
+        for item in value:
+            for nested_key, nested_item in _walk_json_values(item):
+                yield nested_key, nested_item
+
+
+def _stringify_filter_value(value):
+    if isinstance(value, dict):
+        return " ".join(str(key) for key in value.keys())
+    if isinstance(value, list):
+        return " ".join(_stringify_filter_value(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _log_port(line):
+    prefix, separator, _ = str(line).partition(" | ")
+    if separator and prefix.strip().isdigit():
+        return prefix.strip()
+    return ""
+
+
+def _json_field_values(parsed, field):
+    aliases = {
+        "component": ("c", "component"),
+        "severity": ("s", "severity", "level"),
+        "msg": ("msg", "message"),
+        "message": ("msg", "message"),
+        "namespace": ("ns", "namespace"),
+        "ns": ("ns", "namespace"),
+    }.get(field, (field,))
+    aliases = set(aliases)
+
+    values = []
+    for key, value in _walk_json_values(parsed):
+        if key.lower() in aliases:
+            values.append(_stringify_filter_value(value))
+    return values
+
+
+def _command_names_from_json(parsed):
+    ignored = set([
+        "$clusterTime",
+        "$db",
+        "apiVersion",
+        "apiStrict",
+        "apiDeprecationErrors",
+        "autocommit",
+        "lsid",
+        "readConcern",
+        "readPreference",
+        "txnNumber",
+        "writeConcern",
+    ])
+    names = []
+    for key, value in _walk_json_values(parsed):
+        lowered = key.lower()
+        if lowered in ("commandname", "command_name", "cmd"):
+            text = _stringify_filter_value(value).strip()
+            if text:
+                names.append(text)
+        elif lowered == "command":
+            if isinstance(value, dict):
+                for command_key in value:
+                    if command_key not in ignored:
+                        names.append(str(command_key))
+                        break
+            else:
+                text = _stringify_filter_value(value).strip()
+                if text:
+                    names.append(text)
+    return names
+
+
+def _filter_terms(query):
+    try:
+        return shlex.split(str(query or ""))
+    except ValueError:
+        return str(query or "").split()
+
+
+def _structured_term(term):
+    if not FILTER_VALUE_RE.match(term):
+        return None, term
+    key, value = term.split(":", 1)
+    return key.strip().lower(), value.strip()
+
+
+def _is_slowop_query(query):
+    normalized = re.sub(r"[^a-z0-9]", "", str(query or "").lower())
+    return normalized in ("slowop", "slowops", "slowquery", "slowoperation")
+
+
+def _match_slowop_filter(line):
+    lowered = str(line).lower()
+    markers = [
+        "slow query",
+        "slow operation",
+        "slowms",
+        "durationmillis",
+        "docsexamined",
+        "keysexamined",
+        "plansummary",
+        "collscan",
+    ]
+    spans = []
+    for marker in markers:
+        spans.extend(_find_case_insensitive_spans(line, marker))
+    if spans:
+        return LogFilterMatch(True, score=260.0, spans=_merge_spans(spans))
+
+    parsed = _parse_json_log(line)
+    if parsed:
+        msg = " ".join(_json_field_values(parsed, "msg")).lower()
+        if "slow" in msg and ("query" in msg or "operation" in msg):
+            return LogFilterMatch(True, score=260.0, spans=[])
+    if "slow" in lowered and ("query" in lowered or "operation" in lowered):
+        return LogFilterMatch(True, score=240.0, spans=[])
+    return LogFilterMatch(False, score=0.0, spans=[])
+
+
+def _match_structured_filter(key, value, line):
+    parsed = _parse_json_log(line)
+    key = str(key or "").lower()
+    value = str(value or "").strip()
+    if not value:
+        return LogFilterMatch(False, score=0.0, spans=[])
+
+    if key == "port":
+        if _log_port(line) == value:
+            return LogFilterMatch(
+                True,
+                score=280.0,
+                spans=_find_case_insensitive_spans(line, value),
+            )
+        return LogFilterMatch(False, score=0.0, spans=[])
+
+    if key == "severity":
+        expected = _severity_from_value(value) or value.lower()
+        actual = detect_log_severity(line)
+        if actual == expected or value.lower() == actual:
+            return LogFilterMatch(
+                True,
+                score=280.0,
+                spans=_find_case_insensitive_spans(line, value),
+            )
+        return LogFilterMatch(False, score=0.0, spans=[])
+
+    if parsed is None:
+        return LogFilterMatch(False, score=0.0, spans=[])
+
+    if key in ("cmd", "command"):
+        values = _command_names_from_json(parsed)
+    else:
+        values = _json_field_values(parsed, key)
+
+    if not values:
+        return LogFilterMatch(False, score=0.0, spans=[])
+
+    field_text = " ".join(values)
+    match = score_log_filter(value, field_text)
+    if not match.matched:
+        return match
+
+    spans = _find_case_insensitive_spans(line, value)
+    if not spans:
+        spans = score_log_filter(value, line).spans or []
+    return LogFilterMatch(True, score=match.score + 80.0, spans=spans)
+
+
+def match_log_filter(query, line):
+    """Return whether a log line matches a free-text or structured filter.
+
+    Structured terms use ``field:value`` syntax and all supplied terms must
+    match. Supported fields include MongoDB log aliases such as ``cmd``,
+    ``component``, ``severity``, ``port``, and ``msg``. Plain queries use the
+    same dependency-free fuzzy scorer as search highlighting. The ``slowop``
+    alias matches common MongoDB slow-operation log markers.
+    """
+    query = str(query or "").strip()
+    if not query:
+        return LogFilterMatch(True, score=0.0, spans=[])
+    if _is_slowop_query(query):
+        return _match_slowop_filter(line)
+
+    terms = _filter_terms(query)
+    structured = [_structured_term(term) for term in terms]
+    if any(key for key, _ in structured):
+        score = 0.0
+        spans = []
+        for key, value in structured:
+            if key:
+                match = _match_structured_filter(key, value, line)
+            else:
+                match = score_log_filter(value, line)
+            if not match.matched:
+                return LogFilterMatch(False, score=0.0, spans=[])
+            score += match.score
+            spans.extend(match.spans or [])
+        return LogFilterMatch(True, score=score, spans=_merge_spans(spans))
+
+    return score_log_filter(query, line)
+
+
+def filter_log_lines(log_lines, query):
+    """Return log lines matching query while preserving raw-buffer indexes."""
+    if not _log_filter_active(query):
+        indexes = list(range(len(log_lines or [])))
+        return LogFilterView(list(log_lines or []), indexes, {})
+
+    lines = []
+    indexes = []
+    spans_by_index = {}
+    for index, line in enumerate(log_lines or []):
+        match = match_log_filter(query, line)
+        if not match.matched:
+            continue
+        lines.append(line)
+        indexes.append(index)
+        spans_by_index[index] = _merge_spans(match.spans or [])
+    return LogFilterView(lines, indexes, spans_by_index)
+
+
+def clamp_filtered_log_cursor(log_lines, cursor, follow_tail, query):
+    """Clamp a raw log cursor against the active filtered view."""
+    if not _log_filter_active(query):
+        return clamp_log_cursor(log_lines, cursor, follow_tail)
+
+    view = filter_log_lines(log_lines, query)
+    if not view.indexes:
+        return None
+    if follow_tail or cursor is None:
+        return view.indexes[-1]
+    if cursor in view.indexes:
+        return cursor
+    for index in view.indexes:
+        if index >= cursor:
+            return index
+    return view.indexes[-1]
+
+
+def move_filtered_log_cursor(log_lines, cursor, delta, query):
+    """Move the raw log cursor through the filtered view."""
+    if not _log_filter_active(query):
+        return move_log_cursor(log_lines, cursor, delta)
+
+    view = filter_log_lines(log_lines, query)
+    if not view.indexes:
+        return None
+    cursor = clamp_filtered_log_cursor(log_lines, cursor, False, query)
+    try:
+        position = view.indexes.index(cursor)
+    except ValueError:
+        position = len(view.indexes) - 1
+    position = max(0, min(position + delta, len(view.indexes) - 1))
+    return view.indexes[position]
+
+
 def clamp_pretty_scroll(pretty_lines, offset, height):
     """Return a valid top-line offset for a pretty JSON viewport."""
     if not pretty_lines:
@@ -1274,22 +1676,68 @@ def _visible_log_window(log_lines, cursor, height):
     return log_lines[start:end], start
 
 
-def format_log_lines(log_lines, cursor, height, yanked_cursor=None):
+def _highlight_log_spans(line, spans, resume_ansi=""):
+    spans = _merge_spans(spans)
+    if not spans:
+        return line
+
+    line = str(line)
+    output = []
+    position = 0
+    for start, end in spans:
+        start = max(0, min(start, len(line)))
+        end = max(start, min(end, len(line)))
+        output.append(line[position:start])
+        if end > start:
+            output.append(
+                ANSI_SEARCH_HIT + line[start:end] + ANSI_RESET + resume_ansi)
+        position = end
+    output.append(line[position:])
+    return "".join(output)
+
+
+def _display_cursor_index(line_indexes, cursor):
+    if cursor is None:
+        return None
+    try:
+        return line_indexes.index(cursor)
+    except ValueError:
+        return None
+
+
+def format_log_lines(log_lines, cursor, height, yanked_cursor=None,
+                     line_indexes=None, match_spans=None):
     """Format log lines with a highlighted cursor marker."""
-    visible, start = _visible_log_window(log_lines, cursor, height)
+    if line_indexes is None:
+        line_indexes = list(range(len(log_lines or [])))
+        display_cursor = cursor
+    else:
+        line_indexes = list(line_indexes)
+        display_cursor = _display_cursor_index(line_indexes, cursor)
+    match_spans = match_spans or {}
+
+    visible, start = _visible_log_window(log_lines, display_cursor, height)
     formatted = []
     for offset, line in enumerate(visible):
-        line_index = start + offset
-        marker = ">" if line_index == cursor else " "
-        text = "%s %s" % (marker, line)
+        display_index = start + offset
+        line_index = line_indexes[display_index]
+        selected = line_index == cursor
+        yanked = line_index == yanked_cursor
+        marker = ">" if selected else " "
         styles = []
         detected_style = severity_style(detect_log_severity(line))
         if detected_style:
             styles.append(detected_style)
-        if line_index == yanked_cursor:
+        if yanked:
             styles.append(STYLE_YANKED)
-        elif line_index == cursor:
+        elif selected:
             styles.append(STYLE_SELECTED)
+        base_ansi = _style_ansi(styles)
+        if not selected and not yanked:
+            line = _highlight_log_spans(
+                line, match_spans.get(line_index, []), resume_ansi=base_ansi)
+
+        text = "%s %s" % (marker, line)
         if styles:
             text = _styled_line(styles, text)
         formatted.append(text)
@@ -1831,7 +2279,9 @@ def format_thread_lines(process, thread_metrics, thread_error="",
 
 def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      stream_paused, process_scope, cpu_thread_view,
-                     server_status_active=False):
+                     server_status_active=False, log_filter_query="",
+                     log_filter_prompt=False, log_filter_input="",
+                     log_filter_match_count=None, log_filter_total=None):
     focused_pane = normalize_pane(focused_pane)
     stream_control = (
         "space resume stream" if stream_paused else "space pause stream")
@@ -1862,6 +2312,14 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
         controls.append("t %s threads" % (
             "process list" if cpu_thread_view else "thread view"))
     elif focused_pane == "logs":
+        if log_filter_prompt:
+            controls.extend([
+                "filter: %s_" % log_filter_input,
+                "Enter apply",
+                "Esc cancel",
+            ])
+            return " | ".join(controls)
+
         if pretty_active:
             controls.extend([
                 "pretty j/k arrows scroll",
@@ -1876,7 +2334,16 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                 "p pretty JSON",
                 "y yank",
                 stream_control,
+                "/ filter",
             ])
+        if _log_filter_active(log_filter_query):
+            controls.append("c clear filter")
+            if log_filter_match_count is not None and log_filter_total is not None:
+                controls.append(
+                    "%i/%i matches" % (
+                        log_filter_match_count,
+                        log_filter_total,
+                    ))
     else:
         controls.append("%s pane" % focused_pane)
 
@@ -1936,7 +2403,9 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      zoom_pane=None, cpu_cursor=None, cpu_thread_view=False,
                      thread_metrics=None, thread_error="",
                      thread_count=None, pretty_scroll=0,
-                     server_status_active=False, status_snapshot=None):
+                     server_status_active=False, status_snapshot=None,
+                     log_filter_query="", log_filter_prompt=False,
+                     log_filter_input=""):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -1944,6 +2413,10 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     columns = max(terminal_size.columns, 40)
     rows = max(terminal_size.lines - 1, 12)
     focused_pane = normalize_pane(focused_pane)
+    log_filter_view = filter_log_lines(log_lines, log_filter_query)
+    filter_active = _log_filter_active(log_filter_query)
+    filter_match_count = len(log_filter_view.lines) if filter_active else None
+    filter_total = len(log_lines or []) if filter_active else None
 
     controls = _footer_controls(
         focused_pane,
@@ -1954,6 +2427,11 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         process_scope,
         cpu_thread_view,
         server_status_active=server_status_active,
+        log_filter_query=log_filter_query,
+        log_filter_prompt=log_filter_prompt,
+        log_filter_input=log_filter_input,
+        log_filter_match_count=filter_match_count,
+        log_filter_total=filter_total,
     )
 
     if server_status_active:
@@ -1971,10 +2449,15 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_title = "Log Tail"
 
     pretty_active = pretty_lines is not None
+    title_states = []
     if pretty_active:
-        log_title += " (Pretty JSON)"
+        title_states.append("Pretty JSON")
     elif stream_paused:
-        log_title += " (Paused)"
+        title_states.append("Paused")
+    if filter_active:
+        title_states.append("filter: %s" % log_filter_query)
+    if title_states:
+        log_title += " (" + ", ".join(title_states) + ")"
 
     disk_metrics = disk_metrics or {}
     thread_metrics = thread_metrics or []
@@ -1998,18 +2481,28 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     net_lines = format_network_lines(processes, network_metrics)
     disk_lines = format_disk_lines(processes, disk_metrics)
 
-    log_cursor = clamp_log_cursor(log_lines, log_cursor, follow_tail=False)
+    log_cursor = clamp_filtered_log_cursor(
+        log_lines, log_cursor, follow_tail=False, query=log_filter_query)
     yanked_cursor = clamp_optional_log_cursor(log_lines, yanked_cursor)
     full_log_height = rows - 2
     if pretty_active:
         log_lines_rendered = format_pretty_log_lines(
             pretty_lines, full_log_height, offset=pretty_scroll)
     else:
-        log_lines_rendered = (
-            format_log_lines(log_lines, log_cursor, full_log_height,
-                             yanked_cursor) if log_lines
-            else ["No log selected."]
-        )
+        if filter_active and not log_filter_view.lines:
+            log_lines_rendered = [
+                "No log lines match filter: %s" % log_filter_query]
+        elif log_filter_view.lines:
+            log_lines_rendered = format_log_lines(
+                log_filter_view.lines,
+                log_cursor,
+                full_log_height,
+                yanked_cursor,
+                line_indexes=log_filter_view.indexes,
+                match_spans=log_filter_view.spans_by_index,
+            )
+        else:
+            log_lines_rendered = ["No log selected."]
 
     panels = {
         "cpu": (cpu_title, cpu_lines),
@@ -2026,6 +2519,11 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         stream_paused,
         process_scope,
         cpu_thread_view,
+        log_filter_query=log_filter_query,
+        log_filter_prompt=log_filter_prompt,
+        log_filter_input=log_filter_input,
+        log_filter_match_count=filter_match_count,
+        log_filter_total=filter_total,
     )
 
     if zoom_pane:
@@ -2046,11 +2544,20 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_content = format_pretty_log_lines(
             pretty_lines, log_content_height, offset=pretty_scroll)
     else:
-        log_content = (
-            format_log_lines(log_lines, log_cursor, log_content_height,
-                             yanked_cursor) if log_lines
-            else ["No log selected."]
-        )
+        if filter_active and not log_filter_view.lines:
+            log_content = [
+                "No log lines match filter: %s" % log_filter_query]
+        elif log_filter_view.lines:
+            log_content = format_log_lines(
+                log_filter_view.lines,
+                log_cursor,
+                log_content_height,
+                yanked_cursor,
+                line_indexes=log_filter_view.indexes,
+                match_spans=log_filter_view.spans_by_index,
+            )
+        else:
+            log_content = ["No log selected."]
 
     cpu_panel = make_panel(
         cpu_title, cpu_lines, left_width, top_height,
@@ -2220,6 +2727,9 @@ class Monitor:
         self.pretty_previous_zoom = None
         self.stream_paused = False
         self.server_status_active = False
+        self.log_filter_query = ""
+        self.log_filter_prompt = False
+        self.log_filter_input = ""
 
     def run(self):
         processes = self._discover_processes_or_report()
@@ -2297,6 +2807,9 @@ class Monitor:
                         thread_count=snapshot.thread_count,
                         server_status_active=self.server_status_active,
                         status_snapshot=snapshot.status_snapshot,
+                        log_filter_query=self.log_filter_query,
+                        log_filter_prompt=self.log_filter_prompt,
+                        log_filter_input=self.log_filter_input,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()
@@ -2337,8 +2850,12 @@ class Monitor:
         network_metrics = self.network_sampler.sample(processes)
         disk_metrics = read_disk_metrics(processes)
         log_lines = read_log_stream(tailer, self.stream_paused)
-        self.log_cursor = clamp_log_cursor(
-            log_lines, self.log_cursor, self.follow_tail)
+        self.log_cursor = clamp_filtered_log_cursor(
+            log_lines,
+            self.log_cursor,
+            self.follow_tail,
+            self.log_filter_query,
+        )
         self.yanked_cursor = clamp_optional_log_cursor(
             log_lines, self.yanked_cursor)
 
@@ -2401,6 +2918,15 @@ class Monitor:
             timeout = self.refresh_interval
         while time.time() - start < timeout:
             key = terminal.read_key()
+            if self.log_filter_prompt:
+                if key in ("ctrl-c", "\x03"):
+                    return "quit"
+                action = self._handle_log_filter_prompt_key(key, log_lines)
+                if action:
+                    return action
+                time.sleep(KEY_POLL_INTERVAL)
+                continue
+
             if key in ("q", "ctrl-c", "\x03"):
                 return "quit"
             if key == "r":
@@ -2472,6 +2998,12 @@ class Monitor:
                 if key == " ":
                     self._toggle_streaming()
                     return "redraw"
+                if key == "/":
+                    self._start_log_filter_prompt()
+                    return "redraw"
+                if key == "c":
+                    self._clear_log_filter(log_lines)
+                    return "redraw"
             elif key == " ":
                 self.status_message = "space applies to logs pane"
                 return "redraw"
@@ -2534,18 +3066,93 @@ class Monitor:
         else:
             self.status_message = "CPU process list"
 
+    def _start_log_filter_prompt(self):
+        if self.pretty_lines is not None:
+            self.status_message = "press p before filtering logs"
+            return
+        self.log_filter_prompt = True
+        self.log_filter_input = ""
+        self.status_message = "type log filter"
+
+    def _handle_log_filter_prompt_key(self, key, log_lines):
+        if key is None:
+            return None
+        if key in ("\r", "\n", "enter"):
+            self._apply_log_filter(log_lines)
+            return "redraw"
+        if key == "escape":
+            self.log_filter_prompt = False
+            self.log_filter_input = ""
+            self.status_message = "log filter unchanged"
+            return "redraw"
+        if key in ("\x7f", "\b", "backspace"):
+            self.log_filter_input = self.log_filter_input[:-1]
+            self.status_message = "filter: %s_" % self.log_filter_input
+            return "redraw"
+        if key == "\x15":
+            self.log_filter_input = ""
+            self.status_message = "filter: _"
+            return "redraw"
+        if len(str(key)) == 1 and str(key).isprintable():
+            self.log_filter_input += str(key)
+            self.status_message = "filter: %s_" % self.log_filter_input
+            return "redraw"
+        return None
+
+    def _apply_log_filter(self, log_lines):
+        query = self.log_filter_input.strip()
+        self.log_filter_prompt = False
+        self.log_filter_input = ""
+        self._clear_pretty_log_line(restore_zoom=False)
+        if not query:
+            self._clear_log_filter(log_lines)
+            return
+
+        self.log_filter_query = query
+        self.follow_tail = True
+        self.log_cursor = clamp_filtered_log_cursor(
+            log_lines, self.log_cursor, True, self.log_filter_query)
+        view = filter_log_lines(log_lines, self.log_filter_query)
+        if self.log_cursor is None:
+            self.status_message = "filter %s matched 0 log lines" % query
+        else:
+            self.status_message = "filter %s matched %i log lines" % (
+                query, len(view.lines))
+
+    def _clear_log_filter(self, log_lines):
+        if not _log_filter_active(self.log_filter_query):
+            self.log_filter_prompt = False
+            self.log_filter_input = ""
+            self.status_message = "no log filter active"
+            return
+
+        self.log_filter_query = ""
+        self.log_filter_prompt = False
+        self.log_filter_input = ""
+        self.log_cursor = clamp_log_cursor(
+            log_lines, self.log_cursor, self.follow_tail)
+        self.status_message = "log filter cleared"
+
     def _move_log_cursor(self, log_lines, delta):
         self._clear_pretty_log_line()
-        self.log_cursor = move_log_cursor(log_lines, self.log_cursor, delta)
+        self.log_cursor = move_filtered_log_cursor(
+            log_lines, self.log_cursor, delta, self.log_filter_query)
+        view = filter_log_lines(log_lines, self.log_filter_query)
+        latest_cursor = view.indexes[-1] if view.indexes else None
         if self.log_cursor is None:
             self.follow_tail = False
             self.status_message = "no log line selected"
-        elif delta > 0 and self.log_cursor == len(log_lines) - 1:
+        elif delta > 0 and self.log_cursor == latest_cursor:
             self.follow_tail = True
             self.status_message = "following latest log line"
         else:
             self.follow_tail = False
-            self.status_message = "highlighted log line %i" % (self.log_cursor + 1)
+            if _log_filter_active(self.log_filter_query):
+                position = view.indexes.index(self.log_cursor) + 1
+                self.status_message = "highlighted filtered log line %i" % position
+            else:
+                self.status_message = (
+                    "highlighted log line %i" % (self.log_cursor + 1))
 
     def _move_pretty_scroll(self, delta):
         if self.pretty_lines is None:
@@ -2593,6 +3200,8 @@ class Monitor:
         self.process_scope = "all" if self.process_scope == "mrun" else "mrun"
         self.log_cursor = None
         self.yanked_cursor = None
+        self.log_filter_prompt = False
+        self.log_filter_input = ""
         self.cpu_cursor = 0
         self.cpu_thread_view = False
         self.zoom_pane = None
@@ -2606,8 +3215,8 @@ class Monitor:
 
     def _jump_to_latest(self, log_lines):
         self._clear_pretty_log_line(restore_zoom=False)
-        self.log_cursor = clamp_log_cursor(log_lines, self.log_cursor,
-                                           follow_tail=True)
+        self.log_cursor = clamp_filtered_log_cursor(
+            log_lines, self.log_cursor, True, self.log_filter_query)
         if self.log_cursor is None:
             self.follow_tail = False
             self.status_message = "no log line selected"
@@ -2622,8 +3231,9 @@ class Monitor:
             self.status_message = "raw log line view"
             return
 
-        self.log_cursor = clamp_log_cursor(log_lines, self.log_cursor,
-                                           self.follow_tail)
+        self.log_cursor = clamp_filtered_log_cursor(
+            log_lines, self.log_cursor, self.follow_tail,
+            self.log_filter_query)
         if self.log_cursor is None:
             self.follow_tail = False
             self.status_message = "no log line selected"
@@ -2655,8 +3265,9 @@ class Monitor:
         self.pretty_previous_zoom = None
 
     def _yank_log_line(self, log_lines):
-        self.log_cursor = clamp_log_cursor(log_lines, self.log_cursor,
-                                           self.follow_tail)
+        self.log_cursor = clamp_filtered_log_cursor(
+            log_lines, self.log_cursor, self.follow_tail,
+            self.log_filter_query)
         if self.log_cursor is None:
             self.status_message = "no log line selected"
             return

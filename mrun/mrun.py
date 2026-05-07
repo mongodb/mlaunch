@@ -242,6 +242,7 @@ class MRunTool(BaseCmdLineTool):
                                           'p prettify highlighted log line '
                                           'as syntax-colored JSON, '
                                           'y yank highlighted log line, '
+                                          '/ filter logs, c clear filter, '
                                           'space pause/resume log streaming, '
                                           'E toggles expanded server status, '
                                           's cycle refresh 1s/5s/10s.'))

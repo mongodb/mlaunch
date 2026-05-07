@@ -11,6 +11,7 @@ from mrun.monitor import (
     ANSI_INVERSE,
     ANSI_RED,
     ANSI_DIM,
+    ANSI_SEARCH_HIT,
     ANSI_TEAL,
     ANSI_YELLOW,
     AUTH_REQUIRED_STATUS,
@@ -22,6 +23,7 @@ from mrun.monitor import (
     detect_terminal_theme,
     detect_log_severity,
     DiskMetrics,
+    filter_log_lines,
     format_pretty_log_lines,
     format_log_lines,
     filter_mrun_processes,
@@ -54,6 +56,7 @@ from mrun.monitor import (
     read_log_stream,
     render_dashboard,
     render_server_status_view,
+    score_log_filter,
     selected_process,
     strip_ansi,
     StatusSampler,
@@ -514,6 +517,7 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "g latest log line" in flat_output
     assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
+    assert "/ filter logs, c clear filter" in flat_output
     assert "space pause/resume log streaming" in flat_output
     assert "s cycle refresh 1s/5s/10s" in flat_output
 
@@ -946,6 +950,47 @@ def test_render_dashboard_paused_stream_updates_title_and_footer():
     assert "space resume stream" in rendered
 
 
+def test_render_dashboard_filters_log_stream_and_shows_match_count():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        [
+            '27017 | {"s":"I","msg":"startup complete"}',
+            '27017 | {"s":"I","msg":"Slow query","attr":{"durationMillis":42}}',
+        ],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((120, 24)),
+        log_cursor=1,
+        zoom_logs=True,
+        log_filter_query="slowop",
+    )
+
+    assert "filter: slowop" in rendered
+    assert "1/2 matches" in rendered
+    assert "Slow query" in strip_ansi(rendered)
+    assert "startup complete" not in strip_ansi(rendered)
+
+
+def test_render_dashboard_shows_empty_filter_result():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ['27017 | {"s":"I","msg":"startup complete"}'],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((100, 20)),
+        log_cursor=0,
+        zoom_logs=True,
+        log_filter_query="slowop",
+    )
+
+    assert "No log lines match filter: slowop" in rendered
+    assert "0/1 matches" in rendered
+
+
 def test_render_dashboard_shows_auth_required_network_status():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     rendered = render_dashboard(
@@ -1207,6 +1252,66 @@ def test_log_cursor_helpers_move_and_mark_lines():
     assert formatted[2] == "  third"
 
 
+def test_log_filter_scores_exact_token_and_fuzzy_matches():
+    exact = score_log_filter("Slow query", "27017 | Slow query operation")
+    token = score_log_filter("query slow", "27017 | Slow query operation")
+    fuzzy = score_log_filter("slwop", "27017 | Slow query operation")
+    missing = score_log_filter("rollback", "27017 | Slow query operation")
+
+    assert exact.matched is True
+    assert exact.score > token.score > fuzzy.score
+    assert exact.spans == [(8, 18)]
+    assert fuzzy.spans
+    assert missing.matched is False
+
+
+def test_filter_log_lines_supports_structured_mongodb_fields():
+    lines = [
+        (
+            '27017 | {"s":"I","c":"COMMAND","msg":"Slow query",'
+            '"attr":{"command":{"find":"users","filter":{}},"durationMillis":42}}'
+        ),
+        (
+            '27018 | {"s":"I","c":"COMMAND","msg":"ok",'
+            '"attr":{"command":{"aggregate":"orders","pipeline":[]}}}'
+        ),
+        '27017 | {"s":"E","c":"NETWORK","msg":"connection error"}',
+    ]
+
+    assert filter_log_lines(lines, "slowop").indexes == [0]
+    assert filter_log_lines(lines, "cmd:find").indexes == [0]
+    assert filter_log_lines(lines, "cmd:aggregate").indexes == [1]
+    assert filter_log_lines(lines, "component:NETWORK").indexes == [2]
+    assert filter_log_lines(lines, "severity:E").indexes == [2]
+    assert filter_log_lines(lines, "port:27018").indexes == [1]
+    assert filter_log_lines(lines, 'msg:"Slow query"').indexes == [0]
+
+
+def test_format_log_lines_highlights_filter_hits_without_overriding_selection():
+    lines = ["27017 | Slow query operation", "27017 | startup complete"]
+    view = filter_log_lines(lines, "slowop")
+
+    formatted = format_log_lines(
+        view.lines,
+        cursor=0,
+        height=5,
+        line_indexes=view.indexes,
+        match_spans=view.spans_by_index,
+    )
+
+    assert ANSI_SEARCH_HIT not in formatted[0]
+
+    formatted = format_log_lines(
+        view.lines,
+        cursor=1,
+        height=5,
+        line_indexes=view.indexes,
+        match_spans=view.spans_by_index,
+    )
+
+    assert ANSI_SEARCH_HIT in formatted[0]
+
+
 def test_dashboard_snapshot_due_skips_sampler_work_for_fast_redraws():
     snapshot = object()
 
@@ -1279,6 +1384,80 @@ def test_monitor_jump_to_latest_resumes_follow_tail():
     assert monitor.log_cursor == 2
     assert monitor.follow_tail is True
     assert monitor.status_message == "following latest log line"
+
+
+def test_monitor_log_filter_prompt_applies_and_clears_filter():
+    lines = [
+        '27017 | {"s":"I","msg":"startup complete"}',
+        '27017 | {"s":"I","msg":"Slow query","attr":{"durationMillis":42}}',
+    ]
+    monitor = Monitor(stdout=io.StringIO())
+
+    action = monitor._wait_for_action(FakeTerminal("/"), time.time(), lines)
+
+    assert action == "redraw"
+    assert monitor.log_filter_prompt is True
+
+    for char in "slowop":
+        action = monitor._handle_log_filter_prompt_key(char, lines)
+        assert action == "redraw"
+
+    action = monitor._handle_log_filter_prompt_key("\r", lines)
+
+    assert action == "redraw"
+    assert monitor.log_filter_prompt is False
+    assert monitor.log_filter_query == "slowop"
+    assert monitor.log_cursor == 1
+    assert monitor.status_message == "filter slowop matched 1 log lines"
+
+    action = monitor._wait_for_action(FakeTerminal("c"), time.time(), lines)
+
+    assert action == "redraw"
+    assert monitor.log_filter_query == ""
+    assert monitor.status_message == "log filter cleared"
+
+
+def test_monitor_log_filter_prompt_escape_keeps_existing_filter():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.log_filter_query = "slowop"
+    monitor.log_filter_prompt = True
+    monitor.log_filter_input = "cmd:find"
+
+    action = monitor._handle_log_filter_prompt_key("escape", [])
+
+    assert action == "redraw"
+    assert monitor.log_filter_query == "slowop"
+    assert monitor.log_filter_prompt is False
+    assert monitor.log_filter_input == ""
+    assert monitor.status_message == "log filter unchanged"
+
+
+def test_monitor_filtered_navigation_yank_and_pretty_use_raw_line():
+    stdout = io.StringIO()
+    lines = [
+        '27017 | {"s":"I","msg":"Slow query","attr":{"durationMillis":41}}',
+        '27017 | {"s":"I","msg":"startup complete"}',
+        '27017 | {"s":"I","msg":"Slow query","attr":{"durationMillis":42}}',
+    ]
+    monitor = Monitor(stdout=stdout)
+    monitor.log_filter_query = "slowop"
+    monitor.log_cursor = 0
+    monitor.follow_tail = False
+
+    monitor._move_log_cursor(lines, 1)
+
+    assert monitor.log_cursor == 2
+    assert monitor.follow_tail is True
+
+    monitor._yank_log_line(lines)
+
+    assert build_osc52_sequence(lines[2]) in stdout.getvalue()
+    assert monitor.yanked_cursor == 2
+
+    monitor._toggle_pretty_log_line(lines)
+
+    assert monitor.pretty_lines is not None
+    assert '  "msg": "Slow query",' in monitor.pretty_lines
 
 
 def test_refresh_interval_cycle_and_key_handler():

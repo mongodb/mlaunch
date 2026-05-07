@@ -48,9 +48,9 @@ Monitor
    opens a live terminal monitor for running **mrun** managed ``mongod`` and
    ``mongos`` processes from the selected data directory. The monitor shows
    CPU usage, memory usage, network activity, disk consumption, and a
-   selectable live log tail with severity colors. If no **mrun** managed
-   MongoDB server processes are running, **mrun** will print a message and
-   exit.
+   selectable live log tail with severity colors and local filtering. If no
+   **mrun** managed MongoDB server processes are running, **mrun** will print a
+   message and exit.
 
 ``--all``
    used with ``--monitor`` to include all local ``mongod`` and ``mongos``
@@ -78,6 +78,12 @@ Monitor
    -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
       line.
    -  ``g`` jumps to the newest log line and resumes live-follow.
+   -  ``/`` opens a log filter prompt. Press Enter to apply the typed filter,
+      or Esc to cancel.
+   -  ``c`` clears the active log filter from the logs pane.
+   -  Filters support free text, fuzzy matching, ``slowop``, and structured
+      fields such as ``cmd:find``, ``component:COMMAND``, ``severity:E``,
+      ``port:27017``, and ``msg:"Slow query"``.
    -  ``p`` prettifies the highlighted line as syntax-colored JSON, pauses
       live-follow, and expands the log view. Press ``p`` again to return to
       the raw log line.
