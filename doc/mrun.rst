@@ -52,10 +52,11 @@ Monitor
    side stacks CPU, memory, network, and disk metrics; the right side shows the
    log tail or a top-10 active ``currentOp`` activity view. CPU, memory,
    network, disk, and currentOp rows include a ``ROLE`` column for
-   primary/secondary state. Primary is green; secondary and password-required
-   states are yellow. Pane borders stay neutral, while pane titles and table
-   headers are bold and color-coded by pane, with consistent padding for CPU,
-   memory, network, disk, status, thread, currentOp, and log views. If no
+   primary/secondary state. Role values use muted, non-bold semantic colors
+   that do not compete with pane headers. Pane borders stay neutral, while pane
+   titles and table headers are bold and color-coded by pane. CPU, memory,
+   network, disk, and currentOp rows share an ANSI-aware table formatter for
+   stable column alignment. If no
    **mrun**
    managed MongoDB server processes are running, **mrun** will print a message
    and exit.
@@ -92,6 +93,12 @@ Monitor
       The selector lists active namespaces and also accepts a typed namespace.
    -  ``c`` clears the currentOp namespace filter while currentOp is active,
       or clears the log filter while the logs pane is active.
+   -  ``p`` prettifies the highlighted currentOp document as syntax-colored
+      JSON while currentOp is active. Press ``p`` again to return to the
+      currentOp list.
+   -  ``y`` yanks the highlighted currentOp while currentOp is active. The
+      copied text follows the active currentOp mode: formatted row, raw JSON,
+      or Pretty JSON.
    -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
       cursor. The text stays still while the cursor moves inside the visible
       window and scrolls only when the cursor reaches the visible edge.

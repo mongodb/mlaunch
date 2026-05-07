@@ -53,6 +53,7 @@ mrun/monitor.py
 |   +-- RoleSampler
 |   +-- reads serverStatus().repl role data for Primary/Secondary labels
 |   +-- roles are rendered in CPU, memory, network, disk, and currentOp rows
+|   +-- role cells use muted non-bold semantic colors, separate from headers
 |   +-- ThreadSampler
 |   +-- samples psutil Process.threads() only when CPU thread view is toggled
 |   +-- computes per-thread CPU from user/system time deltas
@@ -83,10 +84,13 @@ mrun/monitor.py
 |   +-- make_panel()
 |   +-- left metric stack plus right log/currentOp activity pane
 |   +-- neutral borders, bold pane titles, pane-colored table headers, and left-padded rows
+|   +-- CPU, memory, network, disk, and currentOp use one ANSI-aware table formatter
 |   +-- ANSI-aware truncation and padding so colors do not shift borders
 |   +-- format_log_lines()
 |   +-- log cursor has an independent viewport start and scrolls only at edges
 |   +-- raw currentOp documents use BSON-safe JSON-like rendering
+|   +-- selected currentOp documents can be opened as syntax-colored Pretty JSON
+|   +-- selected currentOp rows/documents can be yanked through OSC 52
 |   +-- detect_log_severity()
 |   +-- fatal/error/warning/info/debug log rows receive severity colors
 |   +-- selected log row uses inverse video over severity color
@@ -108,6 +112,8 @@ mrun/monitor.py
     +-- O toggles formatted/raw currentOp documents while currentOp is active
     +-- n opens currentOp namespace selection while currentOp is active
     +-- currentOp c clears the active currentOp namespace filter
+    +-- currentOp p toggles Pretty JSON for the highlighted operation
+    +-- currentOp y yanks the highlighted operation
     +-- logs focus: j/k or arrows move the highlighted log row
     +-- currentOp activity focus: j/k or arrows move the highlighted currentOp row
     +-- Pretty JSON focus: j/k or arrows scroll expanded JSON
@@ -159,6 +165,8 @@ flowchart TD
     Q -- O --> V3[Toggle formatted/raw currentOp]
     Q -- currentOp n --> V4[Select currentOp namespace]
     Q -- currentOp c --> V5[Clear currentOp namespace]
+    Q -- currentOp p --> V6[Toggle currentOp Pretty JSON]
+    Q -- currentOp y --> V7[Yank highlighted currentOp]
     Q -- logs j/k/arrows --> W[Move highlighted row]
     Q -- currentOp j/k/arrows --> W2[Move highlighted currentOp row]
     Q -- logs g --> X[Jump to newest row and follow]
@@ -174,6 +182,8 @@ flowchart TD
     V3 --> L
     V4 --> L
     V5 --> L
+    V6 --> L
+    V7 --> L
     W --> L
     W2 --> L
     X --> L
@@ -265,13 +275,15 @@ alignment rules:
 +----------------------------------------------+
 ```
 
-The table formatters mark header rows with an internal style token before the
-panel is rendered. `make_panel()` removes that token, applies the pane header
-color and bold text, then clips and pads using ANSI-aware helpers. This keeps
-CPU, memory, network, disk, thread, Pretty JSON, and expanded server-status
-panes aligned even when the title, header, or body row contains color escapes.
-The role formatter colors Primary green and Secondary/Password Required yellow
-without coloring panel borders.
+The metric and currentOp formatters build rows through a shared ANSI-aware
+table formatter before the panel is rendered. Header rows carry an internal
+style token; `make_panel()` removes that token, applies the pane header color
+and bold text, then clips and pads using visible-width helpers. This keeps CPU,
+memory, network, disk, currentOp, thread, Pretty JSON, and expanded
+server-status panes aligned even when the title, header, or body row contains
+color escapes. The role formatter uses muted non-bold semantic colors for
+Primary, Secondary, and Password Required without coloring panel borders or
+matching the bold header style.
 
 ## Pane focus and CPU modes
 
@@ -295,10 +307,14 @@ from log tail to the top 10 active currentOp entries across visible processes.
 Pressing `O` while currentOp is active toggles formatted rows and raw currentOp
 documents derived from `db.currentOp()`. Raw rendering is BSON-safe: ObjectId,
 Timestamp, datetime, and other non-JSON values are converted to readable text
-before terminal rendering. Pressing `n` while currentOp is active opens a
-namespace selector built from active currentOp namespaces, and typed namespaces
-are also accepted. Pressing `c` while currentOp is active clears that namespace
-filter. Pressing `o` again returns the activity pane to the log tail.
+before terminal rendering. Pressing `p` opens the highlighted currentOp raw
+document as scrollable syntax-colored Pretty JSON; pressing `p` again returns
+to the list. Pressing `y` yanks the highlighted currentOp as the active
+formatted row, raw JSON, or Pretty JSON document. Pressing `n` while currentOp
+is active opens a namespace selector built from active currentOp namespaces,
+and typed namespaces are also accepted. Pressing `c` while currentOp is active
+clears that namespace filter. Pressing `o` again returns the activity pane to
+the log tail.
 
 All metric panes include a `ROLE` column. The monitor reads
 `serverStatus().repl.stateStr` first and falls back to
@@ -330,6 +346,10 @@ stateDiagram-v2
     RawCurrentOpView --> CurrentOpView: O
     CurrentOpView --> CurrentOpView: currentOp j/k/arrows select row
     RawCurrentOpView --> RawCurrentOpView: currentOp j/k/arrows select row
+    CurrentOpView --> CurrentOpPretty: p
+    RawCurrentOpView --> CurrentOpPretty: p
+    CurrentOpPretty --> CurrentOpPretty: currentOp j/k/arrows scroll JSON
+    CurrentOpPretty --> CurrentOpView: p
     CurrentOpView --> ProcessList: o
     RawCurrentOpView --> ProcessList: o
 ```
