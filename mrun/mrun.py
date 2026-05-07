@@ -243,6 +243,7 @@ class MRunTool(BaseCmdLineTool):
                                           'as syntax-colored JSON, '
                                           'y yank highlighted log line, '
                                           'space pause/resume log streaming, '
+                                          'E toggles expanded server status, '
                                           's cycle refresh 1s/5s/10s.'))
         self.argparser.add_argument('--all', action='store_true',
                                     default=False,

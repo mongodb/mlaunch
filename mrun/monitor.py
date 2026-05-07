@@ -49,6 +49,17 @@ ANSI_TEAL = "\033[38;5;44m"
 ANSI_DIM = "\033[2m"
 ANSI_INVERSE = "\033[7m"
 ANSI_DEFAULT = "\033[39m"
+PANE_HEADER_COLORS = {
+    "cpu": ANSI_TEAL,
+    "memory": ANSI_GREEN,
+    "network": ANSI_YELLOW,
+    "disk": ANSI_RED,
+    "logs": ANSI_TEAL,
+    "disk status": ANSI_RED,
+    "network status": ANSI_YELLOW,
+    "storage subsystem": ANSI_GREEN,
+    "other subsystems": ANSI_TEAL,
+}
 ANSI_PRETTY_KEY_DARK = "\033[38;5;81m"
 ANSI_PRETTY_STRING_DARK = "\033[38;5;114m"
 ANSI_PRETTY_NUMBER_DARK = "\033[38;5;215m"
@@ -199,6 +210,7 @@ class DashboardSnapshot:
     log_lines: list
     selected_ports: list
     thread_metrics: list
+    status_snapshot: "ServerStatusSnapshot" = None
     thread_error: str = ""
     thread_count: int = None
     sampled_at: float = 0.0
@@ -212,6 +224,23 @@ class NetworkMetrics:
     bytes_in_per_sec: float = 0.0
     bytes_out_per_sec: float = 0.0
     requests_per_sec: float = 0.0
+    error: str = ""
+
+
+@dataclass
+class ServerStatusSnapshot:
+    """Expanded MongoDB serverStatus results segregated by category."""
+
+    available: bool
+    port: int = 0
+    # Disk (WiredTiger block manager, logging, flushing)
+    disk: dict = None
+    # Network (connections, opcounters, network rates)
+    network: dict = None
+    # Storage (WT cache, tickets, global lock, mem)
+    storage: dict = None
+    # Lightweight summaries for every top-level serverStatus subsystem.
+    subsystems: dict = None
     error: str = ""
 
 
@@ -709,6 +738,188 @@ class NetworkSampler:
         finally:
             if client is not None and hasattr(client, "close"):
                 client.close()
+
+    @staticmethod
+    def _default_client_factory(host, **kwargs):
+        from pymongo import MongoClient
+
+        return MongoClient(host, **kwargs)
+
+
+class StatusSampler:
+    """Sample detailed MongoDB serverStatus metrics on demand."""
+
+    SUBSYSTEM_PRIORITY = [
+        "host",
+        "version",
+        "process",
+        "pid",
+        "uptime",
+        "localTime",
+        "asserts",
+        "connections",
+        "network",
+        "opcounters",
+        "opcountersRepl",
+        "metrics",
+        "locks",
+        "globalLock",
+        "flowControl",
+        "transactions",
+        "repl",
+        "electionMetrics",
+        "sharding",
+        "wiredTiger",
+        "storageEngine",
+        "mem",
+        "tcmalloc",
+        "security",
+        "transportSecurity",
+        "extra_info",
+        "backgroundFlushing",
+    ]
+
+    def __init__(self, client_factory=None, clock=None, client_kwargs=None,
+                 auth_required=False):
+        self.client_factory = client_factory or self._default_client_factory
+        self.clock = clock or time.time
+        self.client_kwargs = dict(client_kwargs or {})
+        self.auth_required = auth_required
+        self.previous = {}
+
+    def sample(self, process_info):
+        """Execute serverStatus and segregate into Disk/Network/Storage."""
+        if self.auth_required:
+            return ServerStatusSnapshot(
+                False,
+                port=process_info.port,
+                error=AUTH_REQUIRED_STATUS,
+            )
+
+        now = self.clock()
+        client = None
+        try:
+            client_kwargs = {
+                "directConnection": True,
+                "serverSelectionTimeoutMS": 200,
+            }
+            client_kwargs.update(self.client_kwargs)
+            client = self.client_factory(
+                "localhost:%i" % process_info.port,
+                **client_kwargs
+            )
+            status = client.admin.command("serverStatus")
+            subsystems = self._extract_subsystems(status)
+
+            disk = {
+                "wt_block_manager": status.get(
+                    "wiredTiger", {}).get("block-manager", {}),
+                "wt_log": status.get("wiredTiger", {}).get("log", {}),
+                "backgroundFlushing": status.get("backgroundFlushing", {}),
+                "rates": {},
+            }
+            network_data = {
+                "network": status.get("network", {}),
+                "connections": status.get("connections", {}),
+                "opcounters": status.get("opcounters", {}),
+                "opcountersRepl": status.get("opcountersRepl", {}),
+                "rates": {},
+            }
+            storage = {
+                "wt_cache": status.get("wiredTiger", {}).get("cache", {}),
+                "wt_tickets": status.get(
+                    "wiredTiger", {}).get("concurrentTransactions", {}),
+                "globalLock": status.get("globalLock", {}),
+                "mem": status.get("mem", {}),
+                "extra_info": status.get("extra_info", {}),
+            }
+
+            prev = self.previous.get(process_info.port)
+            if prev:
+                prev_time, prev_status = prev
+                elapsed = max(now - prev_time, 0.001)
+                disk["rates"] = self._calculate_disk_rates(
+                    status, prev_status, elapsed)
+                network_data["rates"] = self._calculate_network_rates(
+                    status, prev_status, elapsed)
+
+            self.previous[process_info.port] = (now, status)
+
+            return ServerStatusSnapshot(
+                available=True,
+                port=process_info.port,
+                disk=disk,
+                network=network_data,
+                storage=storage,
+                subsystems=subsystems,
+            )
+
+        except Exception as exc:
+            return ServerStatusSnapshot(
+                False,
+                port=process_info.port,
+                error=str(exc),
+            )
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
+
+    def _calculate_disk_rates(self, current, previous, elapsed):
+        curr_wt = current.get("wiredTiger", {}).get("block-manager", {})
+        prev_wt = previous.get("wiredTiger", {}).get("block-manager", {})
+        return {
+            "bytes_read_per_sec": (
+                curr_wt.get("bytes read", 0) -
+                prev_wt.get("bytes read", 0)
+            ) / elapsed,
+            "bytes_written_per_sec": (
+                curr_wt.get("bytes written", 0) -
+                prev_wt.get("bytes written", 0)
+            ) / elapsed,
+        }
+
+    def _calculate_network_rates(self, current, previous, elapsed):
+        curr_net = current.get("network", {})
+        prev_net = previous.get("network", {})
+        curr_ops = current.get("opcounters", {})
+        prev_ops = previous.get("opcounters", {})
+
+        rates = {
+            "bytes_in_per_sec": (
+                curr_net.get("bytesIn", 0) -
+                prev_net.get("bytesIn", 0)
+            ) / elapsed,
+            "bytes_out_per_sec": (
+                curr_net.get("bytesOut", 0) -
+                prev_net.get("bytesOut", 0)
+            ) / elapsed,
+        }
+        for op in ["insert", "query", "update", "delete", "getmore", "command"]:
+            rates[op] = (curr_ops.get(op, 0) - prev_ops.get(op, 0)) / elapsed
+        return rates
+
+    @classmethod
+    def _extract_subsystems(cls, status):
+        """Summarize each top-level serverStatus subsystem for the UI."""
+        priority = {name: index for index, name in enumerate(cls.SUBSYSTEM_PRIORITY)}
+        subsystems = {}
+        for name in sorted(
+                status,
+                key=lambda key: (priority.get(key, len(priority)), key)):
+            subsystems[name] = cls._summarize_subsystem_value(status.get(name))
+        return subsystems
+
+    @staticmethod
+    def _summarize_subsystem_value(value):
+        if isinstance(value, dict):
+            if not value:
+                return "empty"
+            return "%i fields" % len(value)
+        if isinstance(value, (list, tuple)):
+            return "%i items" % len(value)
+        if value is None:
+            return "null"
+        return _truncate(str(value), 32)
 
     @staticmethod
     def _default_client_factory(host, **kwargs):
@@ -1298,7 +1509,7 @@ def _footer(status_message, controls):
     return "%s | %s" % (status_message, controls) if status_message else controls
 
 
-def make_panel(title, lines, width, height, focused=False):
+def make_panel(title, lines, width, height, focused=False, header_color=None):
     """Render one bordered panel with clipped content."""
     if width < 4 or height < 3:
         return [" " * max(width, 0) for _ in range(max(height, 0))]
@@ -1306,23 +1517,57 @@ def make_panel(title, lines, width, height, focused=False):
     inner_width = width - 2
     inner_height = height - 2
     border_char = "=" if focused else "-"
-    if focused:
-        title = "[%s]" % title
-    title = " %s " % title
-    border = "+" + _truncate(title, inner_width).ljust(inner_width, border_char) + "+"
-    rows = [border]
+    title_text = "[%s]" % title if focused else title
+    title_text = " %s " % title_text
+    border_color = ANSI_RED if focused else header_color
+    title_color = header_color or border_color
 
-    for index in range(inner_height):
-        text = lines[index] if index < len(lines) else ""
-        styles, text = _split_style(text)
-        row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
-        ansi = _style_ansi(styles)
-        if ansi:
-            rows.append(ansi + "|" + row_text + "|" + ANSI_RESET)
-        else:
-            rows.append("|" + row_text + "|")
+    if border_color:
+        header_content = title_text
+        if title_color:
+            header_content = title_color + title_text + border_color
+        top_border_middle = _pad_ansi(
+            _truncate_ansi(header_content, inner_width),
+            inner_width,
+            fillchar=border_char,
+        )
+        border = border_color + "+" + top_border_middle + "+" + ANSI_RESET
+        rows = [border]
 
-    rows.append("+" + border_char * inner_width + "+")
+        for index in range(inner_height):
+            text = lines[index] if index < len(lines) else ""
+            styles, text = _split_style(text)
+            row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
+            ansi = _style_ansi(styles)
+
+            if ansi:
+                rows.append(
+                    border_color + "|" + ANSI_RESET +
+                    ansi + row_text + ANSI_RESET +
+                    border_color + "|" + ANSI_RESET)
+            else:
+                rows.append(
+                    border_color + "|" + ANSI_RESET +
+                    row_text +
+                    border_color + "|" + ANSI_RESET)
+
+        rows.append(
+            border_color + "+" + (border_char * inner_width) + "+" +
+            ANSI_RESET)
+    else:
+        border = "+" + _truncate(title_text, inner_width).ljust(inner_width, border_char) + "+"
+        rows = [border]
+        for index in range(inner_height):
+            text = lines[index] if index < len(lines) else ""
+            styles, text = _split_style(text)
+            row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
+            ansi = _style_ansi(styles)
+            if ansi:
+                rows.append(ansi + "|" + row_text + "|" + ANSI_RESET)
+            else:
+                rows.append("|" + row_text + "|")
+        rows.append("+" + border_char * inner_width + "+")
+
     return rows
 
 
@@ -1414,6 +1659,144 @@ def format_disk_lines(processes, disk_metrics):
     return lines
 
 
+def _ascii_bar(value, total, width=10):
+    """Render a simple ASCII progress bar."""
+    if total <= 0:
+        return "[" + "-" * width + "]"
+    percent = min(1.0, max(0.0, value / total))
+    filled = int(round(percent * width))
+    return "[" + "#" * filled + "-" * (width - filled) + "] %i%%" % (percent * 100)
+
+
+def _unavailable_status_lines(label, snapshot):
+    lines = ["%s unavailable." % label]
+    if snapshot and snapshot.error:
+        lines.append(_truncate(snapshot.error, 78))
+    return lines
+
+
+def format_disk_status_lines(snapshot):
+    """Format Disk section for expanded status view."""
+    if not snapshot or not snapshot.available:
+        return _unavailable_status_lines("Disk status", snapshot)
+
+    lines = []
+    disk = snapshot.disk or {}
+    wt_bm = disk.get("wt_block_manager", {})
+    rates = disk.get("rates", {})
+
+    lines.append("WT Block Manager:")
+    lines.append(" Read:    %s" % format_rate(rates.get("bytes_read_per_sec", 0)))
+    lines.append(" Written: %s" % format_rate(rates.get("bytes_written_per_sec", 0)))
+    lines.append(" Mapped Read: %s" % format_bytes(wt_bm.get("mapped bytes read", 0)))
+    lines.append("")
+
+    wt_log = disk.get("wt_log", {})
+    lines.append("WT Logging:")
+    lines.append(" Log Size:  %s" % format_bytes(wt_log.get("total log size activated", 0)))
+    lines.append(" Log Write: %s" % format_bytes(wt_log.get("log bytes written", 0)))
+    lines.append(" Log Ops:   %s" % wt_log.get("log write operations", 0))
+    lines.append("")
+
+    flushing = disk.get("backgroundFlushing", {})
+    lines.append("Background Flushing:")
+    lines.append(" Flushes: %s" % flushing.get("flushes", 0))
+    lines.append(" Last ms: %sms" % flushing.get("last_ms", 0))
+    lines.append(" Avg ms:  %sms" % flushing.get("average_ms", 0))
+
+    return lines
+
+
+def format_network_status_lines(snapshot):
+    """Format Network section for expanded status view."""
+    if not snapshot or not snapshot.available:
+        return _unavailable_status_lines("Network status", snapshot)
+
+    lines = []
+    network = snapshot.network or {}
+    conns = network.get("connections", {})
+    rates = network.get("rates", {})
+
+    lines.append("Connections:")
+    lines.append(" Current:   %s" % conns.get("current", 0))
+    lines.append(" Available: %s" % conns.get("available", 0))
+    lines.append(" Created:   %s" % conns.get("totalCreated", 0))
+    lines.append("")
+
+    lines.append("Op Rates (ops/sec):")
+    for op in ["insert", "query", "update", "delete", "getmore", "command"]:
+        lines.append(" %-8s %7.1f" % (op.capitalize() + ":", rates.get(op, 0)))
+
+    lines.append("")
+    lines.append("Network Rates:")
+    lines.append(" In:  %s" % format_rate(rates.get("bytes_in_per_sec", 0)))
+    lines.append(" Out: %s" % format_rate(rates.get("bytes_out_per_sec", 0)))
+
+    return lines
+
+
+def format_storage_status_lines(snapshot):
+    """Format Storage Subsystem section for expanded status view."""
+    if not snapshot or not snapshot.available:
+        return _unavailable_status_lines("Storage status", snapshot)
+
+    lines = []
+    storage = snapshot.storage or {}
+    wt_cache = storage.get("wt_cache", {})
+    wt_tickets = storage.get("wt_tickets", {})
+    lock = storage.get("globalLock", {})
+    mem = storage.get("mem", {})
+
+    lines.append("WT Cache:")
+    used = wt_cache.get("bytes currently in the cache", 0)
+    total = wt_cache.get("maximum bytes configured", 0)
+    lines.append(" Used:  %s" % _ascii_bar(used, total, width=12))
+    lines.append(" Dirty: %s" % format_bytes(wt_cache.get("tracked dirty bytes in the cache", 0)))
+    lines.append(" Max:   %s" % format_bytes(total))
+    lines.append("")
+
+    lines.append("WT Tickets (available):")
+    lines.append(" Read:  %s" % wt_tickets.get("read", {}).get("available", 0))
+    lines.append(" Write: %s" % wt_tickets.get("write", {}).get("available", 0))
+    lines.append("")
+
+    lines.append("Global Lock:")
+    active = lock.get("activeClients", {})
+    queue = lock.get("currentQueue", {})
+    lines.append(" Active: R:%i / W:%i" % (active.get("readers", 0), active.get("writers", 0)))
+    lines.append(" Queue:  R:%i / W:%i" % (queue.get("readers", 0), queue.get("writers", 0)))
+    lines.append("")
+
+    lines.append("Memory:")
+    lines.append(" Resident: %s" % format_bytes(mem.get("resident", 0) * 1024 * 1024))
+    lines.append(" Virtual:  %s" % format_bytes(mem.get("virtual", 0) * 1024 * 1024))
+
+    return lines
+
+
+def format_subsystem_status_lines(snapshot):
+    """Format top-level serverStatus subsystem summaries."""
+    if not snapshot or not snapshot.available:
+        return _unavailable_status_lines("Subsystem status", snapshot)
+
+    lines = [
+        "Top-level serverStatus keys:",
+        "SUBSYSTEM              SUMMARY",
+    ]
+    subsystems = snapshot.subsystems or {}
+    if not subsystems:
+        lines.append("No subsystem fields returned.")
+        return lines
+
+    for name, summary in subsystems.items():
+        lines.append("%-22s %s" % (
+            _truncate(name + ":", 22),
+            _truncate(summary, 36),
+        ))
+
+    return lines
+
+
 def format_thread_lines(process, thread_metrics, thread_error="",
                         thread_count=None):
     """Format per-thread timing rows for the selected process."""
@@ -1447,7 +1830,8 @@ def format_thread_lines(process, thread_metrics, thread_error="",
 
 
 def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
-                     stream_paused, process_scope, cpu_thread_view):
+                     stream_paused, process_scope, cpu_thread_view,
+                     server_status_active=False):
     focused_pane = normalize_pane(focused_pane)
     stream_control = (
         "space resume stream" if stream_paused else "space pause stream")
@@ -1455,11 +1839,19 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
     zoom_control = "z quadrants" if zoom_pane else "z zoom focus"
 
+    if server_status_active:
+        return " | ".join([
+            "q/Ctrl+C quit",
+            "E exit status view",
+            "s refresh %s" % format_seconds(refresh_interval),
+        ])
+
     controls = [
         "q/Ctrl+C quit",
         "Tab pane",
         zoom_control,
         "r reselect",
+        "E server status",
         scope_label,
         scope_toggle,
         "s refresh %s" % format_seconds(refresh_interval),
@@ -1491,6 +1883,50 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
     return " | ".join(controls)
 
 
+def render_server_status_view(snapshot, columns, rows, status_message, controls):
+    """Render the expanded server status view."""
+    if not snapshot:
+        snapshot = ServerStatusSnapshot(
+            available=False,
+            error="No status snapshot available.",
+        )
+
+    title_suffix = " (port %s)" % snapshot.port if snapshot.port else ""
+    disk_lines = format_disk_status_lines(snapshot)
+    network_lines = format_network_status_lines(snapshot)
+    storage_lines = format_storage_status_lines(snapshot)
+    subsystem_lines = format_subsystem_status_lines(snapshot)
+
+    left_width = columns // 2
+    right_width = columns - left_width
+    top_height = max(3, rows // 2)
+    bottom_height = max(3, rows - top_height)
+    disk_panel = make_panel(
+        "DISK STATUS" + title_suffix, disk_lines, left_width, top_height,
+        header_color=PANE_HEADER_COLORS.get("disk status"))
+    network_panel = make_panel(
+        "NETWORK STATUS" + title_suffix, network_lines, right_width,
+        top_height,
+        header_color=PANE_HEADER_COLORS.get("network status"))
+    storage_panel = make_panel(
+        "STORAGE SUBSYSTEM" + title_suffix, storage_lines, left_width,
+        bottom_height,
+        header_color=PANE_HEADER_COLORS.get("storage subsystem"))
+    subsystem_panel = make_panel(
+        "OTHER SUBSYSTEMS" + title_suffix, subsystem_lines, right_width,
+        bottom_height,
+        header_color=PANE_HEADER_COLORS.get("other subsystems"))
+
+    frame = []
+    for left, right in zip(disk_panel, network_panel):
+        frame.append(left + right)
+    for left, right in zip(storage_panel, subsystem_panel):
+        frame.append(left + right)
+
+    frame.append(_footer(status_message, controls))
+    return "\n".join(frame)
+
+
 def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      selected_ports=None, terminal_size=None, log_cursor=None,
                      status_message="", zoom_logs=False, yanked_cursor=None,
@@ -1499,14 +1935,31 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      process_scope="mrun", focused_pane="logs",
                      zoom_pane=None, cpu_cursor=None, cpu_thread_view=False,
                      thread_metrics=None, thread_error="",
-                     thread_count=None, pretty_scroll=0):
-    """Render the full four-quadrant monitor frame as a string."""
+                     thread_count=None, pretty_scroll=0,
+                     server_status_active=False, status_snapshot=None):
+    """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
 
     columns = max(terminal_size.columns, 40)
     rows = max(terminal_size.lines - 1, 12)
     focused_pane = normalize_pane(focused_pane)
+
+    controls = _footer_controls(
+        focused_pane,
+        zoom_pane if not server_status_active else None,
+        refresh_interval,
+        pretty_lines is not None,
+        stream_paused,
+        process_scope,
+        cpu_thread_view,
+        server_status_active=server_status_active,
+    )
+
+    if server_status_active:
+        return render_server_status_view(
+            status_snapshot, columns, rows, status_message, controls)
+
     if zoom_pane is None and zoom_logs:
         zoom_pane = "logs"
     zoom_pane = zoom_pane if zoom_pane in PANE_ORDER else None
@@ -1578,7 +2031,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     if zoom_pane:
         zoom_title, zoom_lines = panels[zoom_pane]
         frame = make_panel(
-            zoom_title, zoom_lines, columns, rows, focused=True)
+            zoom_title, zoom_lines, columns, rows, focused=True,
+            header_color=PANE_HEADER_COLORS.get(zoom_pane))
         frame.append(_footer(status_message, controls))
         return "\n".join(frame)
 
@@ -1600,24 +2054,29 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
 
     cpu_panel = make_panel(
         cpu_title, cpu_lines, left_width, top_height,
-        focused=focused_pane == "cpu")
+        focused=focused_pane == "cpu",
+        header_color=PANE_HEADER_COLORS.get("cpu"))
     mem_panel = make_panel(
         "Memory Usage", mem_lines, right_width, top_height,
-        focused=focused_pane == "memory")
+        focused=focused_pane == "memory",
+        header_color=PANE_HEADER_COLORS.get("memory"))
     net_height = max(bottom_height // 2, 3)
     disk_height = max(bottom_height - net_height, 3)
     if net_height + disk_height > bottom_height:
         disk_height = max(bottom_height - net_height, 0)
     net_panel = make_panel(
         "Network Usage", net_lines, left_width, net_height,
-        focused=focused_pane == "network")
+        focused=focused_pane == "network",
+        header_color=PANE_HEADER_COLORS.get("network"))
     disk_panel = make_panel(
         "Disk Usage", disk_lines, left_width, disk_height,
-        focused=focused_pane == "disk")
+        focused=focused_pane == "disk",
+        header_color=PANE_HEADER_COLORS.get("disk"))
     lower_left_panel = net_panel + disk_panel
     log_panel = make_panel(
         log_title, log_content, right_width, bottom_height,
-        focused=focused_pane == "logs")
+        focused=focused_pane == "logs",
+        header_color=PANE_HEADER_COLORS.get("logs"))
 
     frame = []
     frame.extend(left + right for left, right in zip(cpu_panel, mem_panel))
@@ -1760,6 +2219,7 @@ class Monitor:
         self.pretty_scroll = 0
         self.pretty_previous_zoom = None
         self.stream_paused = False
+        self.server_status_active = False
 
     def run(self):
         processes = self._discover_processes_or_report()
@@ -1835,6 +2295,8 @@ class Monitor:
                         thread_metrics=snapshot.thread_metrics,
                         thread_error=snapshot.thread_error,
                         thread_count=snapshot.thread_count,
+                        server_status_active=self.server_status_active,
+                        status_snapshot=snapshot.status_snapshot,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()
@@ -1880,6 +2342,18 @@ class Monitor:
         self.yanked_cursor = clamp_optional_log_cursor(
             log_lines, self.yanked_cursor)
 
+        status_snapshot = None
+        if self.server_status_active and selected_cpu:
+            if not hasattr(self, "status_sampler"):
+                network_client_kwargs = load_monitor_tls_kwargs(self.data_dir)
+                network_client_kwargs.update(self.auth_config.client_kwargs())
+                self.status_sampler = StatusSampler(
+                    client_factory=self.client_factory,
+                    client_kwargs=network_client_kwargs,
+                    auth_required=self.auth_config.requires_credentials(),
+                )
+            status_snapshot = self.status_sampler.sample(selected_cpu)
+
         return DashboardSnapshot(
             processes=processes,
             process_metrics=process_metrics,
@@ -1888,6 +2362,7 @@ class Monitor:
             log_lines=log_lines,
             selected_ports=sorted(logpaths),
             thread_metrics=thread_metrics,
+            status_snapshot=status_snapshot,
             thread_error=thread_error,
             thread_count=thread_count,
             sampled_at=time.time(),
@@ -1947,6 +2422,14 @@ class Monitor:
                 self._cycle_refresh_interval()
                 return "redraw"
 
+            if key in ("e", "E"):
+                self._toggle_server_status_view()
+                return "resample"
+
+            if key == "escape" and self.server_status_active:
+                self._toggle_server_status_view()
+                return "resample"
+
             if self.focused_pane == "cpu":
                 if key in ("up", "k"):
                     self._move_cpu_cursor(processes, -1)
@@ -1994,6 +2477,13 @@ class Monitor:
                 return "redraw"
             time.sleep(KEY_POLL_INTERVAL)
         return None
+
+    def _toggle_server_status_view(self):
+        self.server_status_active = not self.server_status_active
+        if self.server_status_active:
+            self.status_message = "server status expanded view active"
+        else:
+            self.status_message = "dashboard view active"
 
     def _focus_next_pane(self, delta):
         previous_pane = self.focused_pane

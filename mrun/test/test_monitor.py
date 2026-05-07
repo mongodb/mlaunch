@@ -29,6 +29,7 @@ from mrun.monitor import (
     load_monitor_auth_config,
     load_monitor_tls_kwargs,
     load_mrun_process_specs,
+    make_panel,
     MonitorAuthConfig,
     Monitor,
     MongoProcessInfo,
@@ -52,8 +53,11 @@ from mrun.monitor import (
     prettify_log_line,
     read_log_stream,
     render_dashboard,
+    render_server_status_view,
     selected_process,
     strip_ansi,
+    StatusSampler,
+    ServerStatusSnapshot,
     ThreadMetrics,
     ThreadSampler,
     TerminalController,
@@ -1085,6 +1089,21 @@ def test_pretty_json_panel_uses_ansi_aware_widths():
     assert all(visible_width(line) == 50 for line in panel_lines)
 
 
+def test_make_panel_colors_unfocused_header_boundaries():
+    panel = make_panel(
+        "Network Usage",
+        ["content"],
+        40,
+        5,
+        header_color=ANSI_YELLOW,
+    )
+
+    assert panel[0].startswith(ANSI_YELLOW + "+")
+    assert "Network Usage" in panel[0]
+    assert panel[1].startswith(ANSI_YELLOW + "|")
+    assert all(visible_width(line) == 40 for line in panel)
+
+
 def test_render_dashboard_marks_yanked_log_line_green():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     rendered = render_dashboard(
@@ -1633,6 +1652,113 @@ def test_ctrl_c_quits_monitor():
     action = monitor._wait_for_action(FakeTerminal("ctrl-c"), time.time(), [])
 
     assert action == "quit"
+
+
+def test_status_sampler_segregates_metrics():
+    # Exhaustive response containing Disk, Network, Storage, and other fields
+    response = {
+        "version": "8.0.0",
+        "process": "mongod",
+        "wiredTiger": {
+            "block-manager": {"bytes read": 1000, "bytes written": 500},
+            "log": {"total log size activated": 10000, "log bytes written": 200},
+            "cache": {
+                "bytes currently in the cache": 400,
+                "maximum bytes configured": 1000,
+                "tracked dirty bytes in the cache": 50
+            },
+            "concurrentTransactions": {
+                "read": {"available": 128},
+                "write": {"available": 127}
+            }
+        },
+        "backgroundFlushing": {"flushes": 10},
+        "network": {"bytesIn": 100, "bytesOut": 200},
+        "connections": {"current": 5, "available": 95},
+        "opcounters": {"insert": 1, "query": 2},
+        "metrics": {"queryExecutor": {"scanned": 10}},
+        "locks": {"Global": {"acquireCount": {"r": 1}}},
+        "mem": {"resident": 100, "virtual": 200}
+    }
+
+    def client_factory(host, **kwargs):
+        return FakeClient(response)
+
+    sampler = StatusSampler(client_factory=client_factory)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    snapshot = sampler.sample(process)
+
+    assert snapshot.available is True
+    # Verify Segregation
+    assert snapshot.disk["wt_block_manager"]["bytes read"] == 1000
+    assert snapshot.network["connections"]["current"] == 5
+    assert snapshot.storage["wt_cache"]["maximum bytes configured"] == 1000
+    assert snapshot.storage["wt_tickets"]["read"]["available"] == 128
+    assert snapshot.subsystems["version"] == "8.0.0"
+    assert snapshot.subsystems["metrics"] == "1 fields"
+    assert snapshot.subsystems["locks"] == "1 fields"
+
+
+def test_monitor_e_toggles_server_status_view():
+    monitor = Monitor(stdout=io.StringIO())
+    assert monitor.server_status_active is False
+
+    action = monitor._wait_for_action(FakeTerminal("e"), time.time(), [])
+
+    assert action == "resample"
+    assert monitor.server_status_active is True
+    assert "server status expanded view active" in monitor.status_message
+
+    action = monitor._wait_for_action(FakeTerminal("E"), time.time(), [])
+
+    assert action == "resample"
+    assert monitor.server_status_active is False
+    assert "dashboard view active" in monitor.status_message
+
+
+def test_render_server_status_view_contains_all_sections():
+    snapshot = ServerStatusSnapshot(
+        available=True,
+        port=27017,
+        disk={"wt_block_manager": {}, "wt_log": {}, "backgroundFlushing": {}, "rates": {}},
+        network={"network": {}, "connections": {}, "opcounters": {}, "rates": {}},
+        storage={"wt_cache": {}, "wt_tickets": {}, "globalLock": {}, "mem": {}},
+        subsystems={"version": "8.0.0", "metrics": "3 fields"}
+    )
+
+    rendered = render_server_status_view(
+        snapshot, 120, 24, "test message", "controls")
+
+    assert "DISK STATUS (port 27017)" in rendered
+    assert "NETWORK STATUS (port 27017)" in rendered
+    assert "STORAGE SUBSYSTEM (port 27017)" in rendered
+    assert "OTHER SUBSYSTEMS (port 27017)" in rendered
+    assert "metrics:" in rendered
+    assert "test message" in rendered
+    assert "controls" in rendered
+
+
+def test_render_server_status_view_shows_unavailable_errors():
+    snapshot = ServerStatusSnapshot(
+        available=False,
+        port=27017,
+        error=AUTH_REQUIRED_STATUS,
+    )
+
+    rendered = render_server_status_view(snapshot, 100, 20, "", "controls")
+
+    assert "Disk status unavailable." in rendered
+    assert AUTH_REQUIRED_STATUS in rendered
+    assert "controls" in rendered
+
+
+def test_ascii_bar_rendering():
+    from mrun.monitor import _ascii_bar
+    assert _ascii_bar(50, 100, width=10) == "[#####-----] 50%"
+    assert _ascii_bar(100, 100, width=10) == "[##########] 100%"
+    assert _ascii_bar(0, 100, width=10) == "[----------] 0%"
+    assert _ascii_bar(120, 100, width=10) == "[##########] 100%"
 
 
 def test_monitor_review_doc_explains_invocation_path():

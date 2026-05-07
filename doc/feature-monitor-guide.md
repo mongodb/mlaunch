@@ -33,9 +33,12 @@ The monitor shows:
 - Disk consumption for each process dbpath and log file.
 - Selectable live log tail with severity colors.
 - Focusable panes with full-pane zoom.
-- Selectable CPU process rows.
-- Optional CPU thread view for the selected process.
-- Zoomed log view.
+- selectable CPU process rows.
+- optional CPU thread view for the selected process.
+- expanded server status view for Disk, Network, Storage, and all top-level
+  `serverStatus()` subsystem summaries.
+- zoomed log view.
+
 - Scrollable syntax-colored Pretty JSON view for a highlighted log line.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
@@ -49,18 +52,19 @@ mongorun.
 ```text
 feature-monitor branch
 |
-+-- mrun/mrun.py
-|   +-- adds top-level --monitor, --all, and --dir handling
++-- mrun/mrun.py (lines 208-745)
+|   +-- adds top-level --monitor, --all, and --dir handling (lines 223-267)
 |   +-- adds --monitor-username, --monitor-password, --monitor-auth-db
-|   +-- routes monitor requests before normal command dispatch
-|   +-- constructs Monitor with data_dir and include_all options
+|   +-- routes monitor requests before normal command dispatch (line 684)
+|   +-- constructs Monitor with data_dir and include_all options (lines 725-736)
 |
-+-- mrun/monitor.py
-|   +-- new interactive monitor implementation
-|   +-- process discovery, metrics sampling, log tailing, rendering, key input
-|   +-- auth and TLS metadata loading for network sampling
++-- mrun/monitor.py (lines 1-2675)
+|   +-- new interactive monitor implementation (lines 2177-2675)
+|   +-- process discovery (lines 437-479), metrics sampling (lines 583-929), log tailing (lines 931-994), rendering (lines 1512-2078), key input (lines 2088-2176)
+|   +-- auth and TLS metadata loading for network sampling (lines 347-435)
 |   +-- pane focus, focused-pane zoom, CPU process selection, thread sampling
-|   +-- ProcessSampler preserves psutil CPU state across refreshes
+|   +-- ProcessSampler preserves psutil CPU state across refreshes (lines 583-670)
+|   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 749-929)
 |
 +-- mrun/fault_inject_collection_scans.py
 |   +-- local-only PyMongo workload for monitor troubleshooting
@@ -110,13 +114,13 @@ user command
     |
     |  mrun --monitor [--all] [--dir DIR]
     v
-MRunTool.run()
+MRunTool.run() (lines 208-684)
     |
-    +--> parse top-level monitor flags
+    +--> parse top-level monitor flags (lines 223-267)
     |
-    +--> MRunTool.monitor()
+    +--> MRunTool.monitor() (lines 725-736)
          |
-         +--> Monitor(...).run()
+         +--> Monitor(...).run() (lines 2086-2114)
               |
               +--> interactive terminal dashboard
 ```
@@ -144,16 +148,16 @@ sequenceDiagram
     participant FS as .mrun_startup
 
     User->>CLI: mrun --monitor
-    CLI->>Tool: MRunTool.run()
-    Tool->>Tool: argparse parses --monitor
-    Tool->>Tool: skip default init routing
-    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run()
-    Monitor->>FS: load ./data/.mrun_startup
-    Monitor->>PS: discover local mongod/mongos
-    Monitor->>Monitor: keep only startup ports
-    Monitor-->>User: prompt for logs to tail
-    User-->>Monitor: select log indexes or ports
-    Monitor-->>User: render dashboard until quit
+    CLI->>Tool: MRunTool.run() [mrun/mrun.py:208]
+    Tool->>Tool: argparse parses --monitor [mrun/mrun.py:223]
+    Tool->>Tool: skip default init routing [mrun/mrun.py:684]
+    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run() [mrun/mrun.py:725]
+    Monitor->>FS: load ./data/.mrun_startup [mrun/monitor.py:320]
+    Monitor->>PS: discover local mongod/mongos [mrun/monitor.py:455]
+    Monitor->>Monitor: keep only startup ports [mrun/monitor.py:437]
+    Monitor-->>User: prompt for logs to tail [mrun/monitor.py:1020]
+    User-->>Monitor: select log indexes or ports [mrun/monitor.py:996]
+    Monitor-->>User: render dashboard until quit [mrun/monitor.py:2256]
 ```
 
 ## All-process mode sequence
@@ -166,12 +170,12 @@ sequenceDiagram
     participant PS as psutil
 
     User->>Tool: mrun --monitor --all
-    Tool->>Monitor: Monitor(include_all=true).run()
-    Monitor->>PS: discover all local mongod/mongos
-    Monitor-->>User: prompt for logs from all discovered processes
-    User-->>Monitor: press a
-    Monitor->>Monitor: toggle process_scope to mrun
-    Monitor-->>User: reselect logs using mrun-managed scope
+    Tool->>Monitor: Monitor(include_all=true).run() [mrun/mrun.py:725]
+    Monitor->>PS: discover all local mongod/mongos [mrun/monitor.py:455]
+    Monitor-->>User: prompt for logs from all discovered processes [mrun/monitor.py:1020]
+    User-->>Monitor: press a [mrun/monitor.py:2397]
+    Monitor->>Monitor: toggle process_scope to mrun [mrun/monitor.py:2592]
+    Monitor-->>User: reselect logs using mrun-managed scope [mrun/monitor.py:2397]
 ```
 
 ## Auth and TLS network sequence
@@ -183,14 +187,14 @@ sequenceDiagram
     participant Sampler as NetworkSampler
     participant Mongo as MongoDB
 
-    Monitor->>FS: load parsed_args
+    Monitor->>FS: load parsed_args [mrun/monitor.py:320]
     FS-->>Monitor: auth, username, password, auth_db, TLS/SSL fields
-    Monitor->>Monitor: apply monitor credential overrides if present
-    Monitor->>Monitor: build PyMongo kwargs
-    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required)
-    Sampler->>Mongo: admin.command(serverStatus)
+    Monitor->>Monitor: apply monitor credential overrides if present [mrun/monitor.py:2194]
+    Monitor->>Monitor: build PyMongo kwargs [mrun/monitor.py:360]
+    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required) [mrun/monitor.py:672]
+    Sampler->>Mongo: admin.command(serverStatus) [mrun/monitor.py:724]
     Mongo-->>Sampler: network counters or auth/TLS error
-    Sampler-->>Monitor: NetworkMetrics
+    Sampler-->>Monitor: NetworkMetrics [mrun/monitor.py:702]
 ```
 
 ## Runtime dashboard loop
@@ -226,6 +230,7 @@ flowchart TD
     M -- logs p --> W[Toggle pretty JSON]
     M -- logs y --> X[Yank highlighted raw line]
     M -- logs space --> Y[Pause or resume log streaming]
+    M -- E --> SS[Toggle expanded server status view]
     M -- s --> Z[Cycle refresh interval]
     O --> A
     P --> A
@@ -239,6 +244,23 @@ flowchart TD
     X --> A
     Y --> A
     Z --> A
+
+Implementation mapping for the dashboard loop:
+
+- **Loop Start**: `Monitor._run_dashboard()` [mrun/monitor.py:2256]
+- **Discover Processes**: `Monitor._discover_processes_or_report()` [mrun/monitor.py:2378]
+- **Read CPU/Memory**: `ProcessSampler.sample()` [mrun/monitor.py:599]
+- **Sample Network**: `NetworkSampler.sample()` [mrun/monitor.py:683]
+- **Read Disk Sizes**: `read_disk_metrics()` [mrun/monitor.py:656]
+- **Poll Logs**: `LogTailer.poll()` [mrun/monitor.py:958]
+- **Render Frame**: `render_dashboard()` [mrun/monitor.py:1930]
+- **Key Actions**: `Monitor._wait_for_action()` [mrun/monitor.py:2397]
+- **Pane Focus**: `Monitor._focus_next_pane()` [mrun/monitor.py:2488]
+- **Zoom Pane**: `Monitor._toggle_focused_zoom()` [mrun/monitor.py:2498]
+- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()` [mrun/monitor.py:2522]
+- **Pretty JSON**: `Monitor._toggle_pretty_log_line()` [mrun/monitor.py:2619]
+- **Yank Log**: `Monitor._yank_log_line()` [mrun/monitor.py:2657]
+- **Expanded Status**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:2481]
 ```
 
 ## Terminal layout
@@ -246,6 +268,22 @@ flowchart TD
 The monitor renders one full terminal frame. In the normal dashboard, the top
 half contains CPU and memory panels. The lower-left area is split horizontally
 into network and disk usage. The lower-right area is the log tail.
+
+### Highlighting and color coding
+
+The monitor uses visual cues to indicate focus and severity:
+
+- **Pane focus**: The currently focused pane is indicated by a **red** border
+  and an emphasized, pane-colored header.
+- **Boundary color coding**: Each quadrant keeps a stable color-coded border
+  and header even when it is not focused:
+  - **CPU Usage**: Teal
+  - **Memory Usage**: Green
+  - **Network Usage**: Yellow
+  - **Disk Usage**: Red
+  - **Log Tail**: Teal
+- **Log severity**: MongoDB log lines are colored by severity (Fatal: red
+  inverse, Error: red, Warning: yellow, Info: teal, Debug: dim gray).
 
 ```text
 + [CPU Usage] ==================++ Memory Usage -----------------+
@@ -299,14 +337,98 @@ Pretty JSON mode also uses the full log view:
 +-----------------------------------------------------------------+
 ```
 
-In the real terminal view, Pretty JSON mode colors object keys, string values,
-numbers, booleans/null, and punctuation independently. This is separate from
-raw log severity coloring.
+## Expanded Server Status View
 
-`p` keeps the existing behavior of opening Pretty JSON in the zoomed log pane.
-While Pretty JSON is active, `j`/`k` and the up/down arrows scroll the expanded
-JSON body. They do not move the selected raw log line until `p` returns to raw
-log view.
+The expanded status view is triggered by `E` and provides a deeper view into
+the internals of the selected MongoDB process. It replaces the standard
+dashboard quadrants with a four-panel `serverStatus()` layout.
+
+### Layout segregation
+
+| Category | Source Metrics | Key Data Points |
+| :--- | :--- | :--- |
+| **Disk** | `wiredTiger.block-manager`, `wiredTiger.log`, `backgroundFlushing` | Read/Write rates, Log size, Flush durations |
+| **Network** | `network`, `connections`, `opcounters` | Active connections, Op rates (ops/sec), Network IO |
+| **Storage** | `wiredTiger.cache`, `concurrentTransactions`, `globalLock`, `mem` | Cache usage (%), Read/Write tickets, Lock queues, RSS |
+| **Other Subsystems** | all top-level `serverStatus()` keys | key name and compact summary, including `metrics`, `locks`, `repl`, `flowControl`, `security`, and any version-specific fields |
+
+The other-subsystems panel intentionally lists compact summaries instead of
+dumping the entire BSON response. This keeps the terminal readable while still
+making it clear which MongoDB subsystem sections are present for the selected
+node.
+
+### Status sequence
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Monitor
+    participant StatusSampler
+    participant Mongo as MongoDB
+
+    User->>Monitor: Press 'E' [mrun/monitor.py:2397]
+    Monitor->>Monitor: Set server_status_active = True [mrun/monitor.py:2481]
+    loop Refresh Loop
+        Monitor->>StatusSampler: sample(process) [mrun/monitor.py:2355]
+        StatusSampler->>Mongo: runCommand({serverStatus: 1}) [mrun/monitor.py:811]
+        Mongo-->>StatusSampler: Full BSON Response
+        StatusSampler->>StatusSampler: Summarize every top-level subsystem [mrun/monitor.py:902]
+        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details [mrun/monitor.py:814]
+        StatusSampler-->>Monitor: ServerStatusSnapshot [mrun/monitor.py:790]
+        Monitor->>Monitor: render_server_status_view() [mrun/monitor.py:1886]
+        Monitor-->>User: Refresh 4-panel UI [mrun/monitor.py:1886]
+    end
+    User->>Monitor: Press 'E' or 'Esc' [mrun/monitor.py:2397]
+    Monitor->>Monitor: Set server_status_active = False [mrun/monitor.py:2481]
+```
+
+### ASCII Layout (Expanded View)
+
+```text
++ [DISK STATUS] (port 27017) ----------+ [NETWORK STATUS] (port 27017) ------+
+| WT Block Manager:                    | Connections:                       |
+|  Read:    1.2 MB/s                   |  Current:   15                     |
+|  Written: 0.5 MB/s                   | Op Rates (ops/sec):                |
+| WT Logging:                          |  Query:   450.5                    |
++--------------------------------------+------------------------------------+
++ [STORAGE SUBSYSTEM] (port 27017) ----+ [OTHER SUBSYSTEMS] (port 27017) ---+
+| WT Cache:                            | Top-level serverStatus keys:       |
+|  Used: [####------] 42%              | SUBSYSTEM              SUMMARY     |
+| WT Tickets (available):              | version:               8.0.0       |
+|  Read:  128                          | metrics:               18 fields   |
+| Memory:                              | locks:                 5 fields    |
++--------------------------------------+------------------------------------+
+E exit status view | s refresh 1s | q quit
+```
+
+Implementation mapping for expanded status view:
+
+- **Status Snapshot Model**: `ServerStatusSnapshot` [mrun/monitor.py:231]
+- **Status Sampler**: `StatusSampler.sample()` [mrun/monitor.py:790]
+- **Subsystem Summaries**: `StatusSampler._extract_subsystems()` [mrun/monitor.py:902]
+- **Disk Formatting**: `format_disk_status_lines()` [mrun/monitor.py:1678]
+- **Network Formatting**: `format_network_status_lines()` [mrun/monitor.py:1710]
+- **Storage Formatting**: `format_storage_status_lines()` [mrun/monitor.py:1738]
+- **Other Subsystems Formatting**: `format_subsystem_status_lines()` [mrun/monitor.py:1777]
+- **Four-Panel Renderer**: `render_server_status_view()` [mrun/monitor.py:1886]
+- **Boundary Color Rendering**: `make_panel()` [mrun/monitor.py:1512]
+- **Toggle Handling**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:2481]
+
+### Logical flow
+
+```mermaid
+flowchart LR
+    A[Monitor Loop] --> B{server_status_active?}
+    B -- No --> C[Render Standard Quadrants]
+    B -- Yes --> D[Invoke StatusSampler]
+    D --> E[Execute serverStatus]
+    E --> F[Extract detailed categories]
+    E --> K[Summarize all top-level subsystem keys]
+    F --> G[Disk: WT Blocks/Log]
+    F --> H[Network: Ops/Conns]
+    F --> I[Storage: Cache/Locks]
+    G & H & I & K --> J[Render 4-Panel View]
+```
 
 ## Process discovery
 
@@ -406,6 +528,14 @@ DiskMetrics
 +-- log_size
 +-- error
 
+ServerStatusSnapshot
+|
++-- available
++-- port
++-- disk/network/storage detailed categories
++-- subsystems: compact top-level serverStatus summaries
++-- error
+
 DashboardSnapshot
 |
 +-- processes
@@ -414,6 +544,7 @@ DashboardSnapshot
 +-- disk_metrics
 +-- log_lines
 +-- thread_metrics/thread_error/thread_count
++-- status_snapshot
 +-- sampled_at
 ```
 
@@ -431,6 +562,12 @@ those values override stored credentials for monitor network sampling only.
 TLS/SSL client options are also rehydrated from `.mrun_startup` and passed to
 the same network client path. Disk size is computed with standard library file
 traversal: `os.walk()` and `os.path.getsize()`.
+
+Expanded status mode reuses the same MongoDB client configuration and calls
+`serverStatus()` for the selected CPU process. Detailed fields are split into
+Disk, Network, and Storage panels, while every top-level response key is also
+summarized in the Other Subsystems panel so version-specific subsystems are not
+silently hidden.
 
 Thread metrics are sampled only when the CPU pane is in thread view. The
 monitor reads `psutil.Process(pid).threads()` for the selected process and
@@ -768,6 +905,7 @@ same local replica set that `mrun --monitor` is tailing.
 | Logs Space | Pause or resume log streaming                       |
 | Pretty Up/k| Scroll expanded Pretty JSON up                      |
 | Pretty Dn/j| Scroll expanded Pretty JSON down                    |
+| E          | Toggle expanded server status view                  |
 | s          | Cycle refresh interval: 1s -> 5s -> 10s -> 1s       |
 +------------+-----------------------------------------------------+
 ```
@@ -949,6 +1087,10 @@ The focused monitor test module covers:
 - Pretty JSON syntax coloring and theme selection.
 - Pretty JSON scroll offset and j/k navigation.
 - ANSI-aware panel clipping for colored Pretty JSON.
+- serverStatus sampling for Disk, Network, Storage, and top-level subsystem
+  summaries.
+- expanded serverStatus rendering, unavailable status errors, and pane boundary
+  colors.
 - collection-scan injector CLI parsing and dry-run behavior.
 - collection-scan injector localhost safety guard.
 - collection-scan injector query comments and unindexed filters.
@@ -1015,6 +1157,10 @@ Use this list for manual review:
 [ ] Pretty JSON j/k or arrows scroll long slow-operation JSON.
 [ ] Pretty JSON p returns to the selected raw log line.
 [ ] MRUN_MONITOR_THEME=dark and MRUN_MONITOR_THEME=light select different palettes.
+[ ] E opens the expanded serverStatus view for the selected CPU process.
+[ ] Expanded serverStatus shows Disk, Network, Storage, and Other Subsystems.
+[ ] Other Subsystems lists compact summaries for top-level serverStatus keys.
+[ ] Auth or connection failures show a status error instead of a blank status view.
 [ ] Space pauses and resumes log streaming.
 [ ] g jumps back to the newest log line.
 [ ] fault injector --dry-run prints the local target without connecting.
