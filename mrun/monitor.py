@@ -871,7 +871,7 @@ class CurrentOpSampler:
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
 
-    def sample(self, processes, role_metrics=None, limit=10):
+    def sample(self, processes, role_metrics=None, limit=10, namespace=""):
         if self.auth_required:
             return CurrentOpSnapshot(
                 False,
@@ -883,7 +883,8 @@ class CurrentOpSampler:
         entries = []
         errors = []
         for process in processes:
-            process_entries, error = self._read_current_ops(process, role_metrics)
+            process_entries, error = self._read_current_ops(
+                process, role_metrics, namespace)
             entries.extend(process_entries)
             if error:
                 errors.append("%s: %s" % (process.port, error))
@@ -895,7 +896,7 @@ class CurrentOpSampler:
             return CurrentOpSnapshot(False, [], error="; ".join(errors))
         return CurrentOpSnapshot(True, [])
 
-    def _read_current_ops(self, process, role_metrics):
+    def _read_current_ops(self, process, role_metrics, namespace=""):
         client = None
         try:
             client_kwargs = {
@@ -907,16 +908,20 @@ class CurrentOpSampler:
                 "localhost:%i" % process.port,
                 **client_kwargs
             )
-            result = client.admin.command({
+            command = {
                 "currentOp": 1,
                 "$all": True,
                 "active": True,
-            })
+            }
+            if namespace:
+                command["ns"] = namespace
+            result = client.admin.command(command)
             role = role_display(role_metrics.get(process.port))
             entries = [
                 current_op_entry(process.port, role, raw)
                 for raw in result.get("inprog", [])
                 if raw.get("active", True)
+                and (not namespace or raw.get("ns") == namespace)
             ]
             return entries, ""
         except Exception as exc:
@@ -1193,6 +1198,50 @@ def current_op_entry(port, role, raw):
     )
 
 
+def current_op_namespaces(snapshot):
+    """Return sorted namespace names visible in a currentOp snapshot."""
+    if not snapshot or not snapshot.entries:
+        return []
+    namespaces = {
+        str(entry.ns)
+        for entry in snapshot.entries
+        if str(entry.ns or "").strip()
+    }
+    return sorted(namespaces)
+
+
+def json_safe_value(value, depth=0):
+    """Convert BSON/PyMongo values into dependency-free JSON-safe values."""
+    if depth > 30:
+        return str(value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in value.items():
+            if isinstance(key, str):
+                safe_key = key
+            else:
+                safe_key = str(json_safe_value(key, depth + 1))
+            safe[safe_key] = json_safe_value(item, depth + 1)
+        return safe
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe_value(item, depth + 1) for item in value]
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    return str(value)
+
+
+def current_op_raw_json(raw):
+    """Render a db.currentOp-style document as safe compact JSON text."""
+    return json.dumps(json_safe_value(raw or {}))
+
+
 class LogTailer:
     """Tail selected log files and retain a bounded in-memory buffer."""
 
@@ -1280,6 +1329,42 @@ def parse_log_selection(selection, candidates):
             selected_ports.append(port)
 
     return selected_ports
+
+
+def parse_current_op_namespace_selection(selection, namespaces):
+    """Return a selected currentOp namespace, empty clear value, or None."""
+    if selection is None:
+        return None
+    selection = str(selection).strip()
+    if selection == "":
+        return None
+    if selection.lower() in ("all", "clear", "none", "*"):
+        return ""
+
+    try:
+        index = int(selection)
+    except ValueError:
+        return selection
+
+    if 1 <= index <= len(namespaces):
+        return namespaces[index - 1]
+    return None
+
+
+def choose_current_op_namespace(namespaces, input_func=input, stdout=None):
+    """Prompt for a currentOp namespace filter."""
+    stdout = stdout or sys.stdout
+    namespaces = list(namespaces or [])
+    stdout.write("\nSelect currentOp namespace filter:\n")
+    if namespaces:
+        for index, namespace in enumerate(namespaces, start=1):
+            stdout.write("  [%i] %s\n" % (index, namespace))
+    else:
+        stdout.write("  No active currentOp namespaces detected.\n")
+    stdout.write(
+        "Enter index or namespace, 'all' to clear, or press Enter to cancel: ")
+    stdout.flush()
+    return parse_current_op_namespace_selection(input_func(), namespaces)
 
 
 def choose_logpaths(processes, input_func=input, stdout=None):
@@ -2405,7 +2490,7 @@ def format_current_op_lines(snapshot, cursor=None, height=None, raw=False):
         index = start + offset
         marker = ">" if index == cursor else " "
         if raw:
-            raw_text = json.dumps(entry.raw or {})
+            raw_text = current_op_raw_json(entry.raw)
             text = "%s %-6s %s %s" % (
                 marker, entry.port, format_role(RoleMetrics(True, entry.role)),
                 raw_text)
@@ -2429,15 +2514,15 @@ def format_current_op_lines(snapshot, cursor=None, height=None, raw=False):
 def format_memory_lines(processes, process_metrics, role_metrics=None):
     """Format memory rows for process RSS usage."""
     role_metrics = role_metrics or {}
-    lines = [_table_header("PORT   ROLE              PID      PROCESS  RSS")]
+    lines = [_table_header("  PORT   ROLE              PID      PROCESS  RSS")]
     if not processes:
-        lines.append("No MongoDB processes found.")
+        lines.append("  No MongoDB processes found.")
         return lines
 
     for process in processes:
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        lines.append("%-6s %s %-8s %-8s %s" % (
+        lines.append("  %-6s %s %-8s %-8s %s" % (
             process.port,
             format_role(role_metrics.get(process.port)),
             process.pid,
@@ -2449,15 +2534,16 @@ def format_memory_lines(processes, process_metrics, role_metrics=None):
 def format_network_lines(processes, network_metrics, role_metrics=None):
     """Format MongoDB network counter rates."""
     role_metrics = role_metrics or {}
-    lines = [_table_header("PORT   ROLE              IN       OUT      REQ/s   STATUS")]
+    lines = [_table_header(
+        "  PORT   ROLE              IN       OUT      REQ/s   STATUS")]
     if not processes:
-        lines.append("No MongoDB processes found.")
+        lines.append("  No MongoDB processes found.")
         return lines
 
     for process in processes:
         network = network_metrics.get(process.port, NetworkMetrics(False))
         if network.available:
-            lines.append("%-6s %s %-8s %-8s %-7.1f ok" % (
+            lines.append("  %-6s %s %-8s %-8s %-7.1f ok" % (
                 process.port,
                 format_role(role_metrics.get(process.port)),
                 format_rate(network.bytes_in_per_sec),
@@ -2465,7 +2551,7 @@ def format_network_lines(processes, network_metrics, role_metrics=None):
                 network.requests_per_sec,
             ))
         else:
-            lines.append("%-6s %s %-8s %-8s %-7s %s" % (
+            lines.append("  %-6s %s %-8s %-8s %-7s %s" % (
                 process.port,
                 format_role(role_metrics.get(process.port)),
                 "-", "-", "-", network_status_label(network)))
@@ -2475,22 +2561,23 @@ def format_network_lines(processes, network_metrics, role_metrics=None):
 def format_disk_lines(processes, disk_metrics, role_metrics=None):
     """Format dbpath and logpath disk consumption."""
     role_metrics = role_metrics or {}
-    lines = [_table_header("PORT   ROLE              DB SIZE   LOG SIZE  STATUS")]
+    lines = [_table_header(
+        "  PORT   ROLE              DB SIZE   LOG SIZE  STATUS")]
     if not processes:
-        lines.append("No MongoDB processes found.")
+        lines.append("  No MongoDB processes found.")
         return lines
 
     for process in processes:
         disk = disk_metrics.get(process.port, DiskMetrics(False))
         if disk.available:
-            lines.append("%-6s %s %-9s %-9s ok" % (
+            lines.append("  %-6s %s %-9s %-9s ok" % (
                 process.port,
                 format_role(role_metrics.get(process.port)),
                 format_bytes(disk.db_size),
                 format_bytes(disk.log_size),
             ))
         else:
-            lines.append("%-6s %s %-9s %-9s unavailable" % (
+            lines.append("  %-6s %s %-9s %-9s unavailable" % (
                 process.port,
                 format_role(role_metrics.get(process.port)),
                 format_bytes(disk.db_size),
@@ -2674,7 +2761,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      server_status_active=False, log_filter_query="",
                      log_filter_prompt=False, log_filter_input="",
                      log_filter_match_count=None, log_filter_total=None,
-                     current_op_view=False, current_op_raw=False):
+                     current_op_view=False, current_op_raw=False,
+                     current_op_namespace=""):
     focused_pane = normalize_pane(focused_pane)
     stream_control = "space resume" if stream_paused else "space pause"
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
@@ -2709,7 +2797,11 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                 "op j/k",
                 "o logs",
                 "O %s" % ("formatted" if current_op_raw else "raw"),
+                "n ns",
             ])
+            if current_op_namespace:
+                controls.append("ns %s" % current_op_namespace)
+                controls.append("c clear ns")
             return " | ".join(controls)
         elif log_filter_prompt:
             controls.extend([
@@ -2817,7 +2909,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      log_filter_input="", role_metrics=None,
                      current_op_view=False, current_ops=None,
                      current_op_raw=False, current_op_cursor=None,
-                     log_view_start=0):
+                     log_view_start=0, current_op_namespace=""):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -2846,6 +2938,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_filter_total=filter_total,
         current_op_view=current_op_view,
         current_op_raw=current_op_raw,
+        current_op_namespace=current_op_namespace,
     )
 
     if server_status_active:
@@ -2943,10 +3036,23 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         log_filter_total=filter_total,
         current_op_view=current_op_view,
         current_op_raw=current_op_raw,
+        current_op_namespace=current_op_namespace,
     )
 
     if zoom_pane:
-        zoom_title, zoom_lines = panels[zoom_pane]
+        if zoom_pane == "logs" and current_op_view:
+            state = "Raw" if current_op_raw else "Formatted"
+            zoom_title = "Current Ops (%s)" % state
+            if current_op_namespace:
+                zoom_title += " ns %s" % current_op_namespace
+            zoom_lines = format_current_op_lines(
+                current_ops,
+                cursor=current_op_cursor,
+                height=max(rows - 2, 1),
+                raw=current_op_raw,
+            )
+        else:
+            zoom_title, zoom_lines = panels[zoom_pane]
         frame = make_panel(
             zoom_title, zoom_lines, columns, rows, focused=True,
             header_color=PANE_HEADER_COLORS.get(zoom_pane))
@@ -2959,11 +3065,10 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
 
     activity_content_height = max(rows - 2, 1)
     if current_op_view:
-        activity_title = "Current Ops"
-        if current_op_raw:
-            activity_title += " (Raw)"
-        else:
-            activity_title += " (Formatted)"
+        state = "Raw" if current_op_raw else "Formatted"
+        activity_title = "Current Ops (%s)" % state
+        if current_op_namespace:
+            activity_title += " ns %s" % current_op_namespace
         log_content = format_current_op_lines(
             current_ops,
             cursor=current_op_cursor,
@@ -3162,6 +3267,7 @@ class Monitor:
         self.cpu_current_op_view = False
         self.current_op_cursor = None
         self.current_op_raw = False
+        self.current_op_namespace = ""
         self.status_message = ""
         self.yanked_cursor = None
         self.log_view_start = 0
@@ -3196,6 +3302,9 @@ class Monitor:
                 self.stdout.flush()
                 return 0
             action = self._run_dashboard(logpaths)
+            if action == "select-currentop-namespace":
+                self._select_current_op_namespace()
+                continue
             if action != "reselect":
                 return 0
             processes = self._discover_processes_or_report()
@@ -3258,6 +3367,7 @@ class Monitor:
                         current_ops=snapshot.current_ops,
                         current_op_raw=self.current_op_raw,
                         current_op_cursor=self.current_op_cursor,
+                        current_op_namespace=self.current_op_namespace,
                         log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
@@ -3270,6 +3380,8 @@ class Monitor:
                         snapshot.processes, current_ops=snapshot.current_ops,
                         timeout=wait_timeout)
                     if action in ("quit", "reselect"):
+                        return action
+                    if action == "select-currentop-namespace":
                         return action
                     if action == "resample":
                         force_sample = True
@@ -3302,7 +3414,8 @@ class Monitor:
         current_ops = None
         if self.cpu_current_op_view:
             current_ops = self.current_op_sampler.sample(
-                processes, role_metrics)
+                processes, role_metrics,
+                namespace=self.current_op_namespace)
             self.current_op_cursor = clamp_current_op_cursor(
                 current_ops, self.current_op_cursor)
         disk_metrics = read_disk_metrics(processes)
@@ -3471,6 +3584,11 @@ class Monitor:
                     self._jump_to_latest(log_lines)
                     return "redraw"
                 if self.cpu_current_op_view:
+                    if key == "n":
+                        return "select-currentop-namespace"
+                    if key == "c":
+                        self._clear_current_op_namespace()
+                        return "resample"
                     if key in ("p", "P", "y", " ", "/", "c"):
                         self.status_message = "press o to return to logs"
                         return "redraw"
@@ -3579,6 +3697,48 @@ class Monitor:
             return
         self.status_message = "highlighted currentOp entry %i" % (
             self.current_op_cursor + 1)
+
+    def _select_current_op_namespace(self):
+        namespaces = []
+        try:
+            processes = self._discover_processes()
+            role_metrics = self.role_sampler.sample(processes)
+            snapshot = self.current_op_sampler.sample(
+                processes, role_metrics, limit=200, namespace="")
+            namespaces = current_op_namespaces(snapshot)
+        except (KeyboardInterrupt, ProcessDiscoveryError):
+            self.status_message = "currentOp namespace unchanged"
+            return
+
+        try:
+            namespace = choose_current_op_namespace(
+                namespaces, self.input_func, self.stdout)
+        except KeyboardInterrupt:
+            self.stdout.write("\n")
+            self.stdout.flush()
+            self.status_message = "currentOp namespace unchanged"
+            return
+
+        if namespace is None:
+            self.status_message = "currentOp namespace unchanged"
+            return
+
+        self.current_op_namespace = namespace
+        self.current_op_cursor = None
+        self.cpu_current_op_view = True
+        self.focused_pane = "logs"
+        if namespace:
+            self.status_message = "currentOp namespace %s" % namespace
+        else:
+            self.status_message = "currentOp namespace filter cleared"
+
+    def _clear_current_op_namespace(self):
+        if not self.current_op_namespace:
+            self.status_message = "no currentOp namespace filter active"
+            return
+        self.current_op_namespace = ""
+        self.current_op_cursor = None
+        self.status_message = "currentOp namespace filter cleared"
 
     def _start_log_filter_prompt(self):
         if self.pretty_lines is not None:
@@ -3737,6 +3897,7 @@ class Monitor:
         self.cpu_current_op_view = False
         self.current_op_cursor = None
         self.current_op_raw = False
+        self.current_op_namespace = ""
         self.zoom_pane = None
         self.zoom_logs = False
         self.follow_tail = True

@@ -19,8 +19,11 @@ from mrun.monitor import (
     build_monitor_tls_kwargs,
     build_osc52_sequence,
     clamp_pretty_scroll,
+    choose_current_op_namespace,
     colorize_pretty_json_line,
     CurrentOpEntry,
+    current_op_namespaces,
+    current_op_raw_json,
     CurrentOpSampler,
     CurrentOpSnapshot,
     dashboard_snapshot_due,
@@ -59,6 +62,7 @@ from mrun.monitor import (
     next_pane,
     network_status_label,
     parse_escape_sequence,
+    parse_current_op_namespace_selection,
     parse_log_selection,
     pretty_json_palette,
     process_to_info,
@@ -531,10 +535,11 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "t toggles thread view" in flat_output
     assert "o toggles currentOp activity" in flat_output
     assert "O toggles currentOp raw/format" in flat_output
+    assert "n selects currentOp namespace" in flat_output
     assert "g latest log line" in flat_output
     assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
-    assert "/ filter logs, c clear filter" in flat_output
+    assert "/ filter logs, c clear filter/ns" in flat_output
     assert "space pause/resume log streaming" in flat_output
     assert "s cycle refresh 1s/5s/10s" in flat_output
 
@@ -584,6 +589,30 @@ def test_parse_log_selection_accepts_indexes_ports_and_all():
     assert parse_log_selection("all", candidates) == [27017, 27018]
     assert parse_log_selection("1,27018", candidates) == [27017, 27018]
     assert parse_log_selection("999", candidates) == []
+
+
+def test_parse_current_op_namespace_selection_accepts_index_clear_and_name():
+    namespaces = ["admin.$cmd", "test.orders"]
+
+    assert parse_current_op_namespace_selection("", namespaces) is None
+    assert parse_current_op_namespace_selection("1", namespaces) == "admin.$cmd"
+    assert parse_current_op_namespace_selection("all", namespaces) == ""
+    assert parse_current_op_namespace_selection("test.users", namespaces) == "test.users"
+    assert parse_current_op_namespace_selection("9", namespaces) is None
+
+
+def test_choose_current_op_namespace_prompts_with_detected_namespaces():
+    stdout = io.StringIO()
+
+    choice = choose_current_op_namespace(
+        ["admin.$cmd", "test.orders"],
+        input_func=lambda: "2",
+        stdout=stdout,
+    )
+
+    assert choice == "test.orders"
+    assert "[1] admin.$cmd" in stdout.getvalue()
+    assert "[2] test.orders" in stdout.getvalue()
 
 
 class FakeClient:
@@ -730,15 +759,18 @@ def test_role_sampler_reports_password_required_without_connecting():
 
 
 class FakeCurrentOpClient:
-    def __init__(self, response):
+    def __init__(self, response, expected_command=None):
         self.response = response
+        self.expected_command = expected_command
         self.admin = self
         self.commands = []
         self.closed = False
 
     def command(self, command):
         self.commands.append(command)
-        assert command == {"currentOp": 1, "$all": True, "active": True}
+        expected = self.expected_command or {
+            "currentOp": 1, "$all": True, "active": True}
+        assert command == expected
         return self.response
 
     def close(self):
@@ -795,6 +827,55 @@ def test_current_op_sampler_sorts_and_limits_top_entries():
     assert snapshot.entries[0].secs_running == 13
     assert snapshot.entries[0].role == "Secondary"
     assert snapshot.entries[-1].secs_running == 4
+
+
+def test_current_op_sampler_passes_namespace_filter_and_filters_results():
+    response = {
+        "inprog": [
+            {
+                "active": True,
+                "secs_running": 4,
+                "op": "query",
+                "ns": "test.keep",
+                "client": "127.0.0.1",
+            },
+            {
+                "active": True,
+                "secs_running": 9,
+                "op": "query",
+                "ns": "test.drop",
+                "client": "127.0.0.1",
+            },
+        ],
+    }
+    clients = []
+
+    def client_factory(host, **kwargs):
+        client = FakeCurrentOpClient(
+            response,
+            expected_command={
+                "currentOp": 1,
+                "$all": True,
+                "active": True,
+                "ns": "test.keep",
+            },
+        )
+        clients.append(client)
+        return client
+
+    sampler = CurrentOpSampler(client_factory=client_factory)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    snapshot = sampler.sample([process], namespace="test.keep")
+
+    assert snapshot.available is True
+    assert [entry.ns for entry in snapshot.entries] == ["test.keep"]
+    assert clients[0].commands == [{
+        "currentOp": 1,
+        "$all": True,
+        "active": True,
+        "ns": "test.keep",
+    }]
 
 
 def test_current_op_sampler_reports_password_required_without_connecting():
@@ -1057,6 +1138,25 @@ def test_metric_formatters_include_role_column():
     assert "Primary" in strip_ansi(disk[1])
 
 
+def test_metric_formatters_pad_left_like_cpu_rows():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
+    roles = {27017: RoleMetrics(True, "Primary")}
+
+    memory = format_memory_lines(
+        [process], {10: ProcessMetrics(12.5, 1024 * 1024, "running")}, roles)
+    network = format_network_lines(
+        [process], {27017: NetworkMetrics(True, 1, 2, 3)}, roles)
+    disk = format_disk_lines(
+        [process], {27017: DiskMetrics(True, 2048, 512)}, roles)
+
+    assert strip_ansi(memory[0]).startswith("  PORT")
+    assert strip_ansi(memory[1]).startswith("  27017")
+    assert strip_ansi(network[0]).startswith("  PORT")
+    assert strip_ansi(network[1]).startswith("  27017")
+    assert strip_ansi(disk[0]).startswith("  PORT")
+    assert strip_ansi(disk[1]).startswith("  27017")
+
+
 def test_format_cpu_lines_shows_password_required_role():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
 
@@ -1116,6 +1216,70 @@ def test_format_current_op_lines_can_show_raw_documents():
     assert '"op": "query"' in strip_ansi(lines[1])
 
 
+def test_current_op_raw_json_stringifies_bson_like_values():
+    class FakeObjectId:
+        def __str__(self):
+            return "507f1f77bcf86cd799439011"
+
+    class FakeDate:
+        def isoformat(self):
+            return "2026-05-07T12:00:00"
+
+    raw = {
+        "_id": FakeObjectId(),
+        "when": FakeDate(),
+        "command": {"find": "coll", "lsid": {"id": FakeObjectId()}},
+    }
+
+    text = current_op_raw_json(raw)
+
+    assert "507f1f77bcf86cd799439011" in text
+    assert "2026-05-07T12:00:00" in text
+
+
+def test_format_current_op_lines_raw_mode_does_not_crash_on_bson_values():
+    class FakeObjectId:
+        def __str__(self):
+            return "507f1f77bcf86cd799439011"
+
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                12.4,
+                "query",
+                "test.coll",
+                "127.0.0.1",
+                "find coll",
+                "op1",
+                raw={"op": "query", "objectId": FakeObjectId()},
+            ),
+        ],
+    )
+
+    lines = format_current_op_lines(snapshot, raw=True)
+
+    assert "507f1f77bcf86cd799439011" in strip_ansi(lines[1])
+
+
+def test_current_op_namespaces_returns_sorted_unique_names():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017, "Primary", 1.0, "query", "test.b", "", ""),
+            CurrentOpEntry(
+                27017, "Primary", 2.0, "query", "test.a", "", ""),
+            CurrentOpEntry(
+                27017, "Primary", 3.0, "query", "test.b", "", ""),
+        ],
+    )
+
+    assert current_op_namespaces(snapshot) == ["test.a", "test.b"]
+
+
 def test_render_dashboard_current_op_view_uses_right_activity_pane():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     snapshot = CurrentOpSnapshot(
@@ -1172,10 +1336,12 @@ def test_render_dashboard_current_op_raw_view_uses_right_activity_pane():
         terminal_size=os.terminal_size((120, 24)),
         current_op_view=True,
         current_op_raw=True,
+        current_op_namespace="test.coll",
         current_ops=snapshot,
     )
 
     assert "Current Ops (Raw)" in rendered
+    assert "ns test.coll" in rendered
     assert '"op": "query"' in rendered
 
 
@@ -2229,6 +2395,29 @@ def test_monitor_upper_o_toggles_current_op_raw_mode():
     assert action == "redraw"
     assert monitor.current_op_raw is True
     assert monitor.status_message == "currentOp raw view"
+
+
+def test_monitor_n_requests_current_op_namespace_selection():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+
+    action = monitor._wait_for_action(FakeTerminal("n"), time.time(), [])
+
+    assert action == "select-currentop-namespace"
+
+
+def test_monitor_c_clears_current_op_namespace_filter():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+    monitor.current_op_namespace = "test.orders"
+
+    action = monitor._wait_for_action(FakeTerminal("c"), time.time(), [])
+
+    assert action == "resample"
+    assert monitor.current_op_namespace == ""
+    assert monitor.status_message == "currentOp namespace filter cleared"
 
 
 def test_monitor_cpu_selection_resamples_when_thread_view_is_active():
