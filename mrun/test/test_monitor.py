@@ -20,10 +20,12 @@ from mrun.monitor import (
     ANSI_YELLOW,
     AUTH_REQUIRED_STATUS,
     build_monitor_tls_kwargs,
+    build_mongosh_command,
     build_osc52_sequence,
     clamp_pretty_scroll,
     choose_current_op_limit,
     choose_current_op_namespace,
+    choose_mongosh_target,
     colorize_pretty_json_line,
     CurrentOpEntry,
     current_op_namespaces,
@@ -46,10 +48,14 @@ from mrun.monitor import (
     filter_mrun_processes,
     LogTailer,
     load_monitor_auth_config,
+    load_monitor_replset_name,
     load_monitor_tls_kwargs,
     load_mrun_process_specs,
     make_panel,
     MonitorAuthConfig,
+    MongoshTarget,
+    mongosh_target_options,
+    mongosh_tls_args,
     Monitor,
     MongoProcessInfo,
     NetworkMetrics,
@@ -69,6 +75,7 @@ from mrun.monitor import (
     parse_escape_sequence,
     parse_current_op_namespace_selection,
     parse_current_op_limit_selection,
+    parse_mongosh_target_selection,
     parse_log_selection,
     pretty_json_palette,
     process_to_info,
@@ -345,6 +352,20 @@ def test_monitor_loads_tls_kwargs_from_startup_file(tmp_path):
     }
 
 
+def test_load_monitor_replset_name_reads_replicaset_name(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "parsed_args": {
+            "replicaset": True,
+            "name": "rs0",
+        },
+        "startup_info": {},
+    }))
+
+    assert load_monitor_replset_name(str(tmp_path)) == "rs0"
+
+
 def test_monitor_network_sampler_combines_tls_and_auth_kwargs(tmp_path):
     startup_file = tmp_path / ".mrun_startup"
     startup_file.write_text(json.dumps({
@@ -552,6 +573,7 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "/ filter logs, c clear filter/ns" in flat_output
     assert "space pause/resume log streaming" in flat_output
     assert "s cycle refresh 1s/5s/10s" in flat_output
+    assert "M launches mongosh admin shell" in flat_output
 
 
 def test_monitor_reports_when_no_mongo_processes():
@@ -645,6 +667,120 @@ def test_choose_current_op_limit_prompts_with_current_limit():
 
     assert limit == 50
     assert "press Enter to keep 25" in stdout.getvalue()
+
+
+def test_mongosh_target_options_prefers_primary_selected_and_seed():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "/tmp/b.log", "", []),
+    ]
+    roles = {
+        27017: RoleMetrics(True, "Secondary"),
+        27018: RoleMetrics(True, "Primary"),
+    }
+
+    targets = mongosh_target_options(
+        processes,
+        roles,
+        selected=processes[0],
+        replset_name="rs0",
+    )
+
+    assert targets[0] == MongoshTarget(
+        "primary port 27018", "mongodb://localhost:27018/admin", "primary")
+    assert targets[1] == MongoshTarget(
+        "selected port 27017", "mongodb://localhost:27017/admin", "selected")
+    assert targets[2] == MongoshTarget(
+        "seed list replica set rs0",
+        "mongodb://localhost:27017,localhost:27018/admin?replicaSet=rs0",
+        "seed",
+    )
+    assert targets[-1].kind == "custom"
+
+
+def test_parse_mongosh_target_selection_accepts_default_index_kind_and_uri():
+    targets = [
+        MongoshTarget("primary port 27018", "mongodb://localhost:27018/admin", "primary"),
+        MongoshTarget("custom URI", "", "custom"),
+    ]
+
+    assert parse_mongosh_target_selection("", targets) == targets[0]
+    assert parse_mongosh_target_selection("1", targets) == targets[0]
+    assert parse_mongosh_target_selection("primary", targets) == targets[0]
+    typed = parse_mongosh_target_selection(
+        "mongodb://localhost:27017/admin", targets)
+    assert typed.uri == "mongodb://localhost:27017/admin"
+    assert typed.kind == "typed"
+    assert parse_mongosh_target_selection("9", targets) is None
+
+
+def test_choose_mongosh_target_prompts_for_custom_uri():
+    stdout = io.StringIO()
+    answers = iter(["2", "mongodb://localhost:27019/admin"])
+
+    target = choose_mongosh_target(
+        [
+            MongoshTarget(
+                "primary port 27018",
+                "mongodb://localhost:27018/admin",
+                "primary",
+            ),
+            MongoshTarget("custom URI", "", "custom"),
+        ],
+        input_func=lambda: next(answers),
+        stdout=stdout,
+    )
+
+    assert target == MongoshTarget(
+        "custom URI", "mongodb://localhost:27019/admin", "custom")
+    assert "Launch mongosh" in stdout.getvalue()
+
+
+def test_build_mongosh_command_includes_auth_and_tls_without_password_value():
+    command = build_mongosh_command(
+        "mongodb://localhost:27018/admin",
+        MonitorAuthConfig(
+            enabled=True,
+            username="monitoruser",
+            password="monitorpass",
+            auth_db="admin",
+            initial_user=True,
+        ),
+        {
+            "tls": True,
+            "tlsCAFile": "/tmp/ca.pem",
+            "tlsAllowInvalidCertificates": True,
+        },
+        executable="/usr/local/bin/mongosh",
+    )
+
+    assert command == [
+        "/usr/local/bin/mongosh",
+        "mongodb://localhost:27018/admin",
+        "--tls",
+        "--tlsCAFile",
+        "/tmp/ca.pem",
+        "--tlsAllowInvalidCertificates",
+        "--username",
+        "monitoruser",
+        "--authenticationDatabase",
+        "admin",
+        "--password",
+    ]
+    assert "monitorpass" not in command
+
+
+def test_mongosh_tls_args_maps_bool_and_value_flags():
+    assert mongosh_tls_args({
+        "tls": True,
+        "tlsCertificateKeyFile": "/tmp/client.pem",
+        "tlsAllowInvalidHostnames": True,
+    }) == [
+        "--tls",
+        "--tlsCertificateKeyFile",
+        "/tmp/client.pem",
+        "--tlsAllowInvalidHostnames",
+    ]
 
 
 class FakeClient:
@@ -2555,6 +2691,14 @@ def test_monitor_l_requests_current_op_limit_selection():
     assert action == "select-currentop-limit"
 
 
+def test_monitor_m_requests_mongosh_launch():
+    monitor = Monitor(stdout=io.StringIO())
+
+    action = monitor._wait_for_action(FakeTerminal("M"), time.time(), [])
+
+    assert action == "launch-mongosh"
+
+
 def test_monitor_select_current_op_limit_updates_limit():
     stdout = io.StringIO()
     monitor = Monitor(stdout=stdout, input_func=lambda: "50")
@@ -2623,6 +2767,67 @@ def test_monitor_dashboard_snapshot_passes_current_op_limit():
 
     assert current_ops.limit == 50
     assert current_ops.namespace == "test.orders"
+
+
+def test_monitor_launch_mongosh_runs_selected_target():
+    process = FakeProcess(
+        10,
+        "mongod",
+        ["mongod", "--port", "27017"],
+    )
+    calls = []
+
+    class FakeRoleSampler:
+        def sample(self, processes):
+            return {27017: RoleMetrics(True, "Primary")}
+
+    monitor = Monitor(
+        process_iter=lambda: [process],
+        include_all=True,
+        stdout=io.StringIO(),
+        input_func=lambda: "1",
+        mongosh_runner=lambda command: calls.append(command) or 0,
+        which_func=lambda executable: "/usr/bin/mongosh",
+    )
+    monitor.role_sampler = FakeRoleSampler()
+
+    monitor._launch_mongosh_admin_shell()
+
+    assert calls == [[
+        "/usr/bin/mongosh",
+        "mongodb://localhost:27017/admin",
+    ]]
+    assert monitor.status_message == "mongosh exited"
+
+
+def test_monitor_launch_mongosh_reports_missing_executable():
+    monitor = Monitor(
+        stdout=io.StringIO(),
+        which_func=lambda executable: None,
+    )
+
+    monitor._launch_mongosh_admin_shell()
+
+    assert monitor.status_message == "mongosh not found in PATH"
+
+
+def test_monitor_launch_mongosh_requires_credentials_when_missing():
+    monitor = Monitor(
+        stdout=io.StringIO(),
+        which_func=lambda executable: "/usr/bin/mongosh",
+    )
+    monitor.auth_config = MonitorAuthConfig(
+        enabled=True,
+        username="monitoruser",
+        password="",
+        auth_db="admin",
+        initial_user=True,
+    )
+
+    monitor._launch_mongosh_admin_shell()
+
+    assert monitor.status_message == (
+        "mongosh requires credentials for this deployment")
 
 
 def test_monitor_c_clears_current_op_namespace_filter():

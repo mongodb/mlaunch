@@ -255,6 +255,7 @@ class MRunTool(BaseCmdLineTool):
                                           '/ filter logs, c clear filter/ns, '
                                           'space pause/resume log streaming, '
                                           'E toggles expanded server status, '
+                                          'M launches mongosh admin shell, '
                                           's cycle refresh 1s/5s/10s.'))
         self.argparser.add_argument('--all', action='store_true',
                                     default=False,

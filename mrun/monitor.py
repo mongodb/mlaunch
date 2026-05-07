@@ -8,6 +8,7 @@ import re
 import select
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 from collections import deque
@@ -268,6 +269,15 @@ class TableColumn:
 
 
 @dataclass
+class MongoshTarget:
+    """One selectable mongosh launch target."""
+
+    label: str
+    uri: str
+    kind: str = ""
+
+
+@dataclass
 class LogFilterMatch:
     """Result of applying a filter query to a single log line."""
 
@@ -514,6 +524,14 @@ def load_monitor_tls_kwargs(data_dir):
     """Load PyMongo TLS kwargs from datadir/.mrun_startup parsed args."""
     startup_config = load_mrun_startup_config(data_dir)
     return build_monitor_tls_kwargs(startup_config.get("parsed_args", {}))
+
+
+def load_monitor_replset_name(data_dir):
+    """Load the configured replica-set name when available."""
+    parsed_args = load_mrun_startup_config(data_dir).get("parsed_args", {})
+    if parsed_args.get("replicaset"):
+        return parsed_args.get("name") or "replset"
+    return ""
 
 
 def filter_mrun_processes(processes, specs):
@@ -1439,6 +1457,172 @@ def choose_current_op_namespace(namespaces, input_func=input, stdout=None):
         "Enter index or namespace, 'all' to clear, or press Enter to cancel: ")
     stdout.flush()
     return parse_current_op_namespace_selection(input_func(), namespaces)
+
+
+def _mongo_uri(hosts, database="admin", replset_name=""):
+    database = str(database or "admin").strip("/") or "admin"
+    uri = "mongodb://%s/%s" % (hosts, database)
+    if replset_name:
+        uri += "?replicaSet=%s" % replset_name
+    return uri
+
+
+def _process_mongo_uri(process, database="admin"):
+    return _mongo_uri("localhost:%i" % process.port, database)
+
+
+def _append_mongosh_target(targets, label, uri, kind):
+    if not uri:
+        return
+    if any(target.uri == uri and target.kind != "custom" for target in targets):
+        return
+    targets.append(MongoshTarget(label, uri, kind))
+
+
+def mongosh_target_options(processes, role_metrics=None, selected=None,
+                           replset_name=""):
+    """Build selectable mongosh targets from visible MongoDB processes."""
+    processes = sorted(processes or [], key=lambda p: (p.port, p.name, p.pid))
+    role_metrics = role_metrics or {}
+    targets = []
+    primary = None
+    for process in processes:
+        role = role_display(role_metrics.get(process.port)).lower()
+        if role == "primary":
+            primary = process
+            break
+    if primary is not None:
+        _append_mongosh_target(
+            targets,
+            "primary port %s" % primary.port,
+            _process_mongo_uri(primary),
+            "primary",
+        )
+
+    if selected is not None:
+        _append_mongosh_target(
+            targets,
+            "selected port %s" % selected.port,
+            _process_mongo_uri(selected),
+            "selected",
+        )
+
+    if len(processes) > 1:
+        hosts = ",".join("localhost:%i" % process.port for process in processes)
+        label = "seed list"
+        if replset_name:
+            label += " replica set %s" % replset_name
+        _append_mongosh_target(
+            targets,
+            label,
+            _mongo_uri(hosts, replset_name=replset_name),
+            "seed",
+        )
+
+    if processes:
+        first = processes[0]
+        _append_mongosh_target(
+            targets,
+            "first visible port %s" % first.port,
+            _process_mongo_uri(first),
+            "first",
+        )
+
+    targets.append(MongoshTarget("custom URI", "", "custom"))
+    return targets
+
+
+def parse_mongosh_target_selection(selection, targets):
+    """Return a selected mongosh target, default target, custom marker, or None."""
+    targets = list(targets or [])
+    if not targets:
+        return None
+    selection = str(selection or "").strip()
+    if selection == "":
+        for target in targets:
+            if target.kind != "custom":
+                return target
+        return targets[0]
+    if selection.startswith("mongodb://") or selection.startswith("mongodb+srv://"):
+        return MongoshTarget("typed URI", selection, "typed")
+    try:
+        index = int(selection)
+    except (TypeError, ValueError):
+        lowered = selection.lower()
+        for target in targets:
+            if lowered in (target.kind.lower(), target.label.lower()):
+                return target
+        return None
+    if 1 <= index <= len(targets):
+        return targets[index - 1]
+    return None
+
+
+def choose_mongosh_target(targets, input_func=input, stdout=None):
+    """Prompt for the mongosh target to open."""
+    stdout = stdout or sys.stdout
+    targets = list(targets or [])
+    stdout.write("\nLaunch mongosh:\n")
+    for index, target in enumerate(targets, start=1):
+        suffix = "  %s" % target.uri if target.uri else ""
+        stdout.write("  [%i] %s%s\n" % (index, target.label, suffix))
+    stdout.write(
+        "Enter target index/name, URI, or press Enter for the first target: ")
+    stdout.flush()
+    target = parse_mongosh_target_selection(input_func(), targets)
+    if target is None:
+        return None
+    if target.kind != "custom":
+        return target
+
+    stdout.write("Enter MongoDB URI for mongosh, or press Enter to cancel: ")
+    stdout.flush()
+    uri = str(input_func() or "").strip()
+    if not uri:
+        return None
+    return MongoshTarget("custom URI", uri, "custom")
+
+
+def mongosh_tls_args(tls_kwargs):
+    """Translate monitor PyMongo TLS kwargs into mongosh command flags."""
+    tls_kwargs = tls_kwargs or {}
+    args = []
+    if tls_kwargs.get("tls"):
+        args.append("--tls")
+    value_flags = {
+        "tlsCertificateKeyFile": "--tlsCertificateKeyFile",
+        "tlsCertificateKeyFilePassword": "--tlsCertificateKeyFilePassword",
+        "tlsCAFile": "--tlsCAFile",
+        "tlsCRLFile": "--tlsCRLFile",
+    }
+    for key, flag in value_flags.items():
+        value = tls_kwargs.get(key)
+        if value:
+            args.extend([flag, str(value)])
+    bool_flags = {
+        "tlsAllowInvalidCertificates": "--tlsAllowInvalidCertificates",
+        "tlsAllowInvalidHostnames": "--tlsAllowInvalidHostnames",
+    }
+    for key, flag in bool_flags.items():
+        if tls_kwargs.get(key):
+            args.append(flag)
+    return args
+
+
+def build_mongosh_command(uri, auth_config=None, tls_kwargs=None,
+                          executable="mongosh"):
+    """Build a shell-free mongosh argv list for an interactive handoff."""
+    args = [executable, uri]
+    args.extend(mongosh_tls_args(tls_kwargs))
+    auth_config = auth_config or MonitorAuthConfig()
+    if auth_config.has_credentials():
+        args.extend(["--username", auth_config.username])
+        args.extend(["--authenticationDatabase", auth_config.auth_db])
+        if auth_config.auth_db == "$external":
+            args.extend(["--authenticationMechanism", "MONGODB-X509"])
+        elif auth_config.password:
+            args.append("--password")
+    return args
 
 
 def choose_logpaths(processes, input_func=input, stdout=None):
@@ -3020,6 +3204,7 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
         "z quad" if zoom_pane else "z zoom",
         "r",
         "E",
+        "M shell",
         process_scope,
         scope_toggle,
         "s%s" % format_seconds(refresh_interval),
@@ -3501,7 +3686,8 @@ class Monitor:
                  process_iter=None, stdout=None, stdin=None, input_func=None,
                  data_dir="./data", include_all=False,
                  monitor_username=None, monitor_password=None,
-                 monitor_auth_db=None):
+                 monitor_auth_db=None, mongosh_runner=None,
+                 mongosh_executable="mongosh", which_func=None):
         self.client_factory = client_factory
         self.refresh_interval = (
             refresh_interval if refresh_interval in REFRESH_INTERVALS
@@ -3518,8 +3704,13 @@ class Monitor:
             auth_db=monitor_auth_db,
         )
         network_client_kwargs = load_monitor_tls_kwargs(data_dir)
+        self.monitor_tls_kwargs = dict(network_client_kwargs)
         network_client_kwargs.update(self.auth_config.client_kwargs())
         self.monitor_client_kwargs = dict(network_client_kwargs)
+        self.replset_name = load_monitor_replset_name(data_dir)
+        self.mongosh_runner = mongosh_runner or subprocess.call
+        self.mongosh_executable = mongosh_executable
+        self.which_func = which_func or shutil.which
         self.network_sampler = NetworkSampler(
             client_factory=client_factory,
             client_kwargs=self.monitor_client_kwargs,
@@ -3594,6 +3785,9 @@ class Monitor:
                 continue
             if action == "select-currentop-limit":
                 self._select_current_op_limit()
+                continue
+            if action == "launch-mongosh":
+                self._launch_mongosh_admin_shell()
                 continue
             if action != "reselect":
                 return 0
@@ -3679,6 +3873,8 @@ class Monitor:
                     if action == "select-currentop-namespace":
                         return action
                     if action == "select-currentop-limit":
+                        return action
+                    if action == "launch-mongosh":
                         return action
                     if action == "resample":
                         force_sample = True
@@ -3832,6 +4028,8 @@ class Monitor:
             if key == "s":
                 self._cycle_refresh_interval()
                 return "redraw"
+            if key == "M":
+                return "launch-mongosh"
             if key == "o":
                 self._toggle_cpu_current_op_view()
                 return "resample"
@@ -4094,6 +4292,65 @@ class Monitor:
         self.current_op_yanked_cursor = None
         self._clear_current_op_pretty()
         self.status_message = "currentOp namespace filter cleared"
+
+    def _launch_mongosh_admin_shell(self):
+        executable = self.which_func(self.mongosh_executable)
+        if not executable:
+            self.status_message = "mongosh not found in PATH"
+            return
+        if self.auth_config.requires_credentials():
+            self.status_message = "mongosh requires credentials for this deployment"
+            return
+
+        try:
+            processes = self._discover_processes()
+        except ProcessDiscoveryError as exc:
+            self.status_message = str(exc)
+            return
+        if not processes:
+            self.status_message = "no MongoDB process available for mongosh"
+            return
+
+        role_metrics = self.role_sampler.sample(processes)
+        selected = selected_process(processes, self.cpu_cursor)
+        targets = mongosh_target_options(
+            processes,
+            role_metrics,
+            selected=selected,
+            replset_name=self.replset_name,
+        )
+        try:
+            target = choose_mongosh_target(
+                targets, self.input_func, self.stdout)
+        except KeyboardInterrupt:
+            self.stdout.write("\n")
+            self.stdout.flush()
+            self.status_message = "mongosh launch cancelled"
+            return
+        if target is None:
+            self.status_message = "mongosh launch cancelled"
+            return
+
+        command = build_mongosh_command(
+            target.uri,
+            self.auth_config,
+            self.monitor_tls_kwargs,
+            executable,
+        )
+        self.stdout.write(
+            "\nLaunching mongosh for %s. Exit mongosh to return to monitor.\n" %
+            target.label)
+        self.stdout.flush()
+        try:
+            result = self.mongosh_runner(command)
+        except OSError as exc:
+            self.status_message = "mongosh failed: %s" % exc
+            return
+
+        if result in (None, 0):
+            self.status_message = "mongosh exited"
+        else:
+            self.status_message = "mongosh exited with status %s" % result
 
     def _start_log_filter_prompt(self):
         if self.pretty_lines is not None:
