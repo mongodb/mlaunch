@@ -89,6 +89,8 @@ STYLE_ROLE_SECONDARY = "\x00role:secondary\x00"
 STYLE_ROLE_WARNING = "\x00role:warning\x00"
 STYLE_ROLE_DIM = "\x00role:dim\x00"
 REFRESH_INTERVALS = (1.0, 5.0, 10.0)
+DEFAULT_CURRENT_OP_LIMIT = 10
+MAX_CURRENT_OP_LIMIT = 500
 ESCAPE_READ_TIMEOUT = 0.03
 KEY_POLL_INTERVAL = 0.01
 PANE_ORDER = ("cpu", "memory", "network", "disk", "logs")
@@ -1392,6 +1394,35 @@ def parse_current_op_namespace_selection(selection, namespaces):
     if 1 <= index <= len(namespaces):
         return namespaces[index - 1]
     return None
+
+
+def parse_current_op_limit_selection(selection, current=DEFAULT_CURRENT_OP_LIMIT,
+                                     maximum=MAX_CURRENT_OP_LIMIT):
+    """Return a valid currentOp top-N limit, or None for invalid input."""
+    if selection is None:
+        return None
+    selection = str(selection).strip()
+    if selection == "":
+        return int(current or DEFAULT_CURRENT_OP_LIMIT)
+    try:
+        value = int(selection)
+    except (TypeError, ValueError):
+        return None
+    if value < 1:
+        return None
+    return min(value, int(maximum or MAX_CURRENT_OP_LIMIT))
+
+
+def choose_current_op_limit(current=DEFAULT_CURRENT_OP_LIMIT,
+                            input_func=input, stdout=None,
+                            maximum=MAX_CURRENT_OP_LIMIT):
+    """Prompt for the number of active currentOp rows to sample and display."""
+    stdout = stdout or sys.stdout
+    stdout.write(
+        "\nEnter currentOp top-N limit (1-%i), or press Enter to keep %i: " % (
+            maximum, current))
+    stdout.flush()
+    return parse_current_op_limit_selection(input_func(), current, maximum)
 
 
 def choose_current_op_namespace(namespaces, input_func=input, stdout=None):
@@ -2970,7 +3001,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      log_filter_match_count=None, log_filter_total=None,
                      current_op_view=False, current_op_raw=False,
                      current_op_namespace="",
-                     current_op_pretty_active=False):
+                     current_op_pretty_active=False,
+                     current_op_limit=DEFAULT_CURRENT_OP_LIMIT):
     focused_pane = normalize_pane(focused_pane)
     stream_control = "space resume" if stream_paused else "space pause"
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
@@ -3007,6 +3039,7 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                 "O %s" % ("formatted" if current_op_raw else "raw"),
                 "p %s" % ("list" if current_op_pretty_active else "pretty"),
                 "y",
+                "L top %i" % current_op_limit,
                 "n ns",
             ])
             if current_op_namespace:
@@ -3122,7 +3155,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      log_view_start=0, current_op_namespace="",
                      current_op_pretty_lines=None,
                      current_op_pretty_scroll=0,
-                     current_op_yanked_cursor=None):
+                     current_op_yanked_cursor=None,
+                     current_op_limit=DEFAULT_CURRENT_OP_LIMIT):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -3155,6 +3189,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_raw=current_op_raw,
         current_op_namespace=current_op_namespace,
         current_op_pretty_active=current_op_pretty_active,
+        current_op_limit=current_op_limit,
     )
 
     if server_status_active:
@@ -3259,6 +3294,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_raw=current_op_raw,
         current_op_namespace=current_op_namespace,
         current_op_pretty_active=current_op_pretty_active,
+        current_op_limit=current_op_limit,
     )
 
     if zoom_pane:
@@ -3266,7 +3302,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
             state = (
                 "Pretty" if current_op_pretty_active
                 else ("Raw" if current_op_raw else "Formatted"))
-            zoom_title = "Current Ops (%s)" % state
+            zoom_title = "Current Ops (%s, top %i)" % (
+                state, current_op_limit)
             if current_op_namespace:
                 zoom_title += " ns %s" % current_op_namespace
             if current_op_pretty_active:
@@ -3300,7 +3337,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         state = (
             "Pretty" if current_op_pretty_active
             else ("Raw" if current_op_raw else "Formatted"))
-        activity_title = "Current Ops (%s)" % state
+        activity_title = "Current Ops (%s, top %i)" % (
+            state, current_op_limit)
         if current_op_namespace:
             activity_title += " ns %s" % current_op_namespace
         if current_op_pretty_active:
@@ -3513,6 +3551,7 @@ class Monitor:
         self.current_op_pretty_lines = None
         self.current_op_pretty_scroll = 0
         self.current_op_yanked_cursor = None
+        self.current_op_limit = DEFAULT_CURRENT_OP_LIMIT
         self.status_message = ""
         self.yanked_cursor = None
         self.log_view_start = 0
@@ -3539,9 +3578,12 @@ class Monitor:
             self.stdout.flush()
             return 1
 
+        logpaths = None
         while True:
             try:
-                logpaths = choose_logpaths(processes, self.input_func, self.stdout)
+                if logpaths is None:
+                    logpaths = choose_logpaths(
+                        processes, self.input_func, self.stdout)
             except KeyboardInterrupt:
                 self.stdout.write("\n")
                 self.stdout.flush()
@@ -3550,8 +3592,12 @@ class Monitor:
             if action == "select-currentop-namespace":
                 self._select_current_op_namespace()
                 continue
+            if action == "select-currentop-limit":
+                self._select_current_op_limit()
+                continue
             if action != "reselect":
                 return 0
+            logpaths = None
             processes = self._discover_processes_or_report()
             if processes is None:
                 return 1
@@ -3616,6 +3662,7 @@ class Monitor:
                         current_op_pretty_lines=self.current_op_pretty_lines,
                         current_op_pretty_scroll=self.current_op_pretty_scroll,
                         current_op_yanked_cursor=self.current_op_yanked_cursor,
+                        current_op_limit=self.current_op_limit,
                         log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
@@ -3630,6 +3677,8 @@ class Monitor:
                     if action in ("quit", "reselect"):
                         return action
                     if action == "select-currentop-namespace":
+                        return action
+                    if action == "select-currentop-limit":
                         return action
                     if action == "resample":
                         force_sample = True
@@ -3663,6 +3712,7 @@ class Monitor:
         if self.cpu_current_op_view:
             current_ops = self.current_op_sampler.sample(
                 processes, role_metrics,
+                limit=self.current_op_limit,
                 namespace=self.current_op_namespace)
             self.current_op_cursor = clamp_current_op_cursor(
                 current_ops, self.current_op_cursor)
@@ -3790,6 +3840,8 @@ class Monitor:
                 return "redraw"
             if self.cpu_current_op_view and key == "n":
                 return "select-currentop-namespace"
+            if self.cpu_current_op_view and key == "L":
+                return "select-currentop-limit"
             if self.cpu_current_op_view and key == "c":
                 self._clear_current_op_namespace()
                 return "resample"
@@ -3949,7 +4001,8 @@ class Monitor:
             self.cpu_thread_view = False
             self.focused_pane = "logs"
             self.current_op_cursor = None
-            self.status_message = "currentOp top 10 view"
+            self.status_message = "currentOp top %i view" % (
+                self.current_op_limit)
         else:
             self._clear_current_op_pretty()
             self.status_message = "CPU process list"
@@ -4009,6 +4062,28 @@ class Monitor:
             self.status_message = "currentOp namespace %s" % namespace
         else:
             self.status_message = "currentOp namespace filter cleared"
+
+    def _select_current_op_limit(self):
+        self._clear_current_op_pretty()
+        try:
+            limit = choose_current_op_limit(
+                self.current_op_limit, self.input_func, self.stdout)
+        except KeyboardInterrupt:
+            self.stdout.write("\n")
+            self.stdout.flush()
+            self.status_message = "currentOp limit unchanged"
+            return
+
+        if limit is None:
+            self.status_message = "currentOp limit unchanged"
+            return
+
+        self.current_op_limit = limit
+        self.current_op_cursor = None
+        self.current_op_yanked_cursor = None
+        self.cpu_current_op_view = True
+        self.focused_pane = "logs"
+        self.status_message = "currentOp top %i view" % limit
 
     def _clear_current_op_namespace(self):
         if not self.current_op_namespace:
@@ -4205,6 +4280,7 @@ class Monitor:
         self.current_op_raw = False
         self.current_op_namespace = ""
         self.current_op_yanked_cursor = None
+        self.current_op_limit = DEFAULT_CURRENT_OP_LIMIT
         self.zoom_pane = None
         self.zoom_logs = False
         self.follow_tail = True

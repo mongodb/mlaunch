@@ -244,6 +244,7 @@ class MRunTool(BaseCmdLineTool):
                                           'o toggles currentOp activity, '
                                           'O toggles currentOp raw/format, '
                                           'n selects currentOp namespace, '
+                                          'L sets currentOp top-N limit, '
                                           'currentOp p pretty JSON, '
                                           'currentOp y yank selected op, '
                                           'logs pane j/k or arrows move, '

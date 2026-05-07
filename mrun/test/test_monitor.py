@@ -22,6 +22,7 @@ from mrun.monitor import (
     build_monitor_tls_kwargs,
     build_osc52_sequence,
     clamp_pretty_scroll,
+    choose_current_op_limit,
     choose_current_op_namespace,
     colorize_pretty_json_line,
     CurrentOpEntry,
@@ -67,6 +68,7 @@ from mrun.monitor import (
     network_status_label,
     parse_escape_sequence,
     parse_current_op_namespace_selection,
+    parse_current_op_limit_selection,
     parse_log_selection,
     pretty_json_palette,
     process_to_info,
@@ -540,10 +542,12 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "o toggles currentOp activity" in flat_output
     assert "O toggles currentOp raw/format" in flat_output
     assert "n selects currentOp namespace" in flat_output
+    assert "L sets currentOp top-N limit" in flat_output
     assert "currentOp p pretty JSON" in flat_output
     assert "currentOp y yank selected op" in flat_output
     assert "g latest log line" in flat_output
-    assert "p prettify highlighted log line as syntax-colored JSON" in flat_output
+    assert "p prettify highlighted log line as syntax-" in flat_output
+    assert "colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
     assert "/ filter logs, c clear filter/ns" in flat_output
     assert "space pause/resume log streaming" in flat_output
@@ -619,6 +623,28 @@ def test_choose_current_op_namespace_prompts_with_detected_namespaces():
     assert choice == "test.orders"
     assert "[1] admin.$cmd" in stdout.getvalue()
     assert "[2] test.orders" in stdout.getvalue()
+
+
+def test_parse_current_op_limit_selection_accepts_and_clamps_values():
+    assert parse_current_op_limit_selection("", current=25) == 25
+    assert parse_current_op_limit_selection("50") == 50
+    assert parse_current_op_limit_selection("0") is None
+    assert parse_current_op_limit_selection("-1") is None
+    assert parse_current_op_limit_selection("abc") is None
+    assert parse_current_op_limit_selection("999", maximum=500) == 500
+
+
+def test_choose_current_op_limit_prompts_with_current_limit():
+    stdout = io.StringIO()
+
+    limit = choose_current_op_limit(
+        25,
+        input_func=lambda: "50",
+        stdout=stdout,
+    )
+
+    assert limit == 50
+    assert "press Enter to keep 25" in stdout.getvalue()
 
 
 class FakeClient:
@@ -1353,7 +1379,7 @@ def test_render_dashboard_current_op_view_uses_right_activity_pane():
         current_ops=snapshot,
     )
 
-    assert "Current Ops (Formatted)" in rendered
+    assert "Current Ops (Formatted, top 10)" in rendered
     assert "test.coll" in rendered
     assert "CPU Usage" in rendered
     assert "o logs" in rendered or "o currentOps" in rendered
@@ -1390,9 +1416,35 @@ def test_render_dashboard_current_op_raw_view_uses_right_activity_pane():
         current_ops=snapshot,
     )
 
-    assert "Current Ops (Raw)" in rendered
+    assert "Current Ops (Raw, top 10)" in rendered
     assert "ns test.coll" in rendered
     assert '"op": "query"' in rendered
+
+
+def test_render_dashboard_current_op_view_shows_custom_limit():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017, "Primary", 12.4, "query", "test.coll",
+                "127.0.0.1", "find coll", "op1"),
+        ],
+    )
+
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        terminal_size=os.terminal_size((120, 24)),
+        current_op_view=True,
+        current_ops=snapshot,
+        current_op_limit=50,
+    )
+
+    assert "Current Ops (Formatted, top 50)" in rendered
+    assert "L top 50" in rendered
 
 
 def test_render_dashboard_current_op_pretty_view_uses_activity_pane():
@@ -1426,7 +1478,7 @@ def test_render_dashboard_current_op_pretty_view_uses_activity_pane():
             snapshot.entries[0].raw),
     )
 
-    assert "Current Ops (Pretty)" in rendered
+    assert "Current Ops (Pretty, top 10)" in rendered
     assert '"op"' in strip_ansi(rendered)
     assert "p list" in rendered
 
@@ -2491,6 +2543,86 @@ def test_monitor_n_requests_current_op_namespace_selection():
     action = monitor._wait_for_action(FakeTerminal("n"), time.time(), [])
 
     assert action == "select-currentop-namespace"
+
+
+def test_monitor_l_requests_current_op_limit_selection():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+
+    action = monitor._wait_for_action(FakeTerminal("L"), time.time(), [])
+
+    assert action == "select-currentop-limit"
+
+
+def test_monitor_select_current_op_limit_updates_limit():
+    stdout = io.StringIO()
+    monitor = Monitor(stdout=stdout, input_func=lambda: "50")
+    monitor.current_op_limit = 10
+    monitor.current_op_cursor = 3
+    monitor.current_op_yanked_cursor = 3
+    monitor.current_op_pretty_lines = ["{"]
+
+    monitor._select_current_op_limit()
+
+    assert monitor.current_op_limit == 50
+    assert monitor.current_op_cursor is None
+    assert monitor.current_op_yanked_cursor is None
+    assert monitor.current_op_pretty_lines is None
+    assert monitor.cpu_current_op_view is True
+    assert monitor.focused_pane == "logs"
+    assert monitor.status_message == "currentOp top 50 view"
+
+
+def test_monitor_dashboard_snapshot_passes_current_op_limit():
+    process = FakeProcess(
+        10,
+        "mongod",
+        ["mongod", "--port", "27017"],
+    )
+
+    class FakeProcessSampler:
+        def sample(self, processes):
+            return {
+                processes[0].pid: ProcessMetrics(1.0, 1024, "running"),
+            }
+
+    class FakeRoleSampler:
+        def sample(self, processes):
+            return {27017: RoleMetrics(True, "Primary")}
+
+    class FakeNetworkSampler:
+        def sample(self, processes):
+            return {}
+
+    class RecordingCurrentOpSampler:
+        def __init__(self):
+            self.limit = None
+            self.namespace = None
+
+        def sample(self, processes, role_metrics=None, limit=10, namespace=""):
+            self.limit = limit
+            self.namespace = namespace
+            return CurrentOpSnapshot(True, [])
+
+    current_ops = RecordingCurrentOpSampler()
+    monitor = Monitor(
+        process_iter=lambda: [process],
+        include_all=True,
+        stdout=io.StringIO(),
+    )
+    monitor.process_sampler = FakeProcessSampler()
+    monitor.role_sampler = FakeRoleSampler()
+    monitor.network_sampler = FakeNetworkSampler()
+    monitor.current_op_sampler = current_ops
+    monitor.cpu_current_op_view = True
+    monitor.current_op_limit = 50
+    monitor.current_op_namespace = "test.orders"
+
+    monitor._read_dashboard_snapshot(LogTailer({}), {})
+
+    assert current_ops.limit == 50
+    assert current_ops.namespace == "test.orders"
 
 
 def test_monitor_c_clears_current_op_namespace_filter():
