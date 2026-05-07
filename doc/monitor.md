@@ -33,6 +33,10 @@ Monitor.run()
 terminal monitor
 ```
 
+While the dashboard is running, pressing `M` temporarily leaves the TUI and
+launches `mongosh` with inherited stdio. Exiting `mongosh` returns to the
+monitor dashboard.
+
 ## Module responsibilities
 
 ```text
@@ -61,7 +65,13 @@ mrun/monitor.py
 |   +-- CurrentOpSampler
 |   +-- samples active currentOp entries only while the activity pane shows currentOp
 |   +-- passes an optional namespace filter into currentOp
-|   +-- sorts active ops by secs_running and keeps the top 10
+|   +-- sorts active ops by secs_running and keeps the configured top-N limit
+|   +-- default currentOp limit is 10, selectable with L, capped at 500
+|
++-- mongosh shell handoff
+|   +-- builds target choices from primary, selected process, seed list, first process, and custom URI
+|   +-- reuses monitor auth and TLS metadata from .mrun_startup or monitor overrides
+|   +-- launches mongosh without shell=True and never places password values in argv
 |
 +-- network metrics
 |   +-- NetworkSampler
@@ -110,6 +120,7 @@ mrun/monitor.py
     +-- CPU focus: t toggles process-list and selected-process thread views
     +-- o toggles the right activity pane between logs and top currentOp views
     +-- O toggles formatted/raw currentOp documents while currentOp is active
+    +-- L selects the currentOp top-N limit while currentOp is active
     +-- n opens currentOp namespace selection while currentOp is active
     +-- currentOp c clears the active currentOp namespace filter
     +-- currentOp p toggles Pretty JSON for the highlighted operation
@@ -121,6 +132,7 @@ mrun/monitor.py
     +-- logs focus: p prettifies the highlighted row as JSON
     +-- logs focus: y yanks the highlighted raw log line with OSC 52
     +-- logs focus: space pauses or resumes log streaming
+    +-- M launches an interactive mongosh administration shell
     +-- s cycles refresh through 1s, 5s, and 10s
 ```
 
@@ -163,10 +175,11 @@ flowchart TD
     Q -- CPU t --> V[Toggle selected-process thread view]
     Q -- o --> V2[Toggle right activity currentOp view]
     Q -- O --> V3[Toggle formatted/raw currentOp]
-    Q -- currentOp n --> V4[Select currentOp namespace]
-    Q -- currentOp c --> V5[Clear currentOp namespace]
-    Q -- currentOp p --> V6[Toggle currentOp Pretty JSON]
-    Q -- currentOp y --> V7[Yank highlighted currentOp]
+    Q -- currentOp L --> V4[Select currentOp top-N limit]
+    Q -- currentOp n --> V5[Select currentOp namespace]
+    Q -- currentOp c --> V6[Clear currentOp namespace]
+    Q -- currentOp p --> V7[Toggle currentOp Pretty JSON]
+    Q -- currentOp y --> V8[Yank highlighted currentOp]
     Q -- logs j/k/arrows --> W[Move highlighted row]
     Q -- currentOp j/k/arrows --> W2[Move highlighted currentOp row]
     Q -- logs g --> X[Jump to newest row and follow]
@@ -174,6 +187,7 @@ flowchart TD
     Q -- logs y --> Z[Yank raw highlighted line]
     Q -- logs space --> AA[Pause or resume log streaming]
     Q -- s --> AB[Cycle refresh interval]
+    Q -- M --> AC[Launch mongosh shell and return]
     S --> L
     T --> L
     U --> L
@@ -184,6 +198,7 @@ flowchart TD
     V5 --> L
     V6 --> L
     V7 --> L
+    V8 --> L
     W --> L
     W2 --> L
     X --> L
@@ -191,6 +206,7 @@ flowchart TD
     Z --> L
     AA --> L
     AB --> L
+    AC --> L
     Q -- none --> L
 ```
 
@@ -220,7 +236,7 @@ CPU thread mode, toggled with t while CPU is focused
 
 activity-pane currentOp mode, toggled with o
 
-+ CPU Usage -------------++ [Current Ops (Formatted)] -------+
++ CPU Usage -------------++ [Current Ops (Formatted, top 10)]-+
 | PORT PID ROLE PROCESS   || PORT ROLE SECS OP NS CLIENT DESC |
 | 27017 123 Primary ...   ||>27017 Primary 12 query app 127.0 |
 + Memory/Network/Disk ----+| 27018 Secondary 4 command admin |
@@ -228,7 +244,7 @@ activity-pane currentOp mode, toggled with o
 
 raw currentOp mode, toggled with O while currentOp is active
 
-+ CPU Usage -------------++ [Current Ops (Raw)] -------------+
++ CPU Usage -------------++ [Current Ops (Raw, top 10)] -----+
 | PORT PID ROLE PROCESS   || RAW CURRENTOP DOCUMENTS          |
 | 27017 123 Primary ...   ||>27017 Primary {"op":"query",...} |
 +-------------------------++----------------------------------+
@@ -303,18 +319,29 @@ CPU thread view and currentOp view are intentionally not the default. When the
 CPU pane is focused, `j`/`k` or the up/down arrows select a MongoDB process row.
 Pressing `t` toggles the CPU pane from the process CPU list to threads for the
 selected process. Pressing `o` from any pane toggles the right activity pane
-from log tail to the top 10 active currentOp entries across visible processes.
-Pressing `O` while currentOp is active toggles formatted rows and raw currentOp
-documents derived from `db.currentOp()`. Raw rendering is BSON-safe: ObjectId,
-Timestamp, datetime, and other non-JSON values are converted to readable text
-before terminal rendering. Pressing `p` opens the highlighted currentOp raw
-document as scrollable syntax-colored Pretty JSON; pressing `p` again returns
-to the list. Pressing `y` yanks the highlighted currentOp as the active
-formatted row, raw JSON, or Pretty JSON document. Pressing `n` while currentOp
-is active opens a namespace selector built from active currentOp namespaces,
-and typed namespaces are also accepted. Pressing `c` while currentOp is active
-clears that namespace filter. Pressing `o` again returns the activity pane to
-the log tail.
+from log tail to the active currentOp entries across visible processes. The
+default limit is 10. Pressing `L` while currentOp is active opens a top-N prompt
+that accepts positive integers and caps large values at 500. Pressing `O` while
+currentOp is active toggles formatted rows and raw currentOp documents derived
+from `db.currentOp()`. Raw rendering is BSON-safe: ObjectId, Timestamp,
+datetime, and other non-JSON values are converted to readable text before
+terminal rendering. Pressing `p` opens the highlighted currentOp raw document
+as scrollable syntax-colored Pretty JSON; pressing `p` again returns to the
+list. Pressing `y` yanks the highlighted currentOp as the active formatted row,
+raw JSON, or Pretty JSON document. Pressing `n` while currentOp is active opens
+a namespace selector built from active currentOp namespaces, and typed
+namespaces are also accepted. Pressing `c` while currentOp is active clears
+that namespace filter. Pressing `o` again returns the activity pane to the log
+tail.
+
+Pressing `M` launches a `mongosh` administration shell. The monitor offers
+target choices for the detected primary, the selected process, a replica-set
+seed list, the first visible process, and a custom URI. Stored auth/TLS
+metadata and monitor credential overrides are reused. Password values are not
+placed on the command line; the generated argv passes `--password` without a
+value so `mongosh` prompts securely. If `mongosh` is missing, or an
+auth-enabled deployment requires credentials that monitor does not have, the
+footer reports the problem and the dashboard keeps running.
 
 All metric panes include a `ROLE` column. The monitor reads
 `serverStatus().repl.stateStr` first and falls back to
@@ -436,6 +463,19 @@ monitor credentials are available, metric-pane `ROLE` columns show
 
 ```text
 currentOp unavailable: Password Required
+```
+
+In the same auth-missing state, the `M` shell handoff refuses to launch and
+reports:
+
+```text
+mongosh requires credentials for this deployment
+```
+
+If `mongosh` is not installed or not on `PATH`, the handoff reports:
+
+```text
+mongosh not found in PATH
 ```
 
 ## Fault-injection test helper

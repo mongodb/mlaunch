@@ -50,8 +50,8 @@ Monitor
    CPU usage, memory usage, network activity, disk consumption, and a
    selectable live log tail with severity colors and local filtering. The left
    side stacks CPU, memory, network, and disk metrics; the right side shows the
-   log tail or a top-10 active ``currentOp`` activity view. CPU, memory,
-   network, disk, and currentOp rows include a ``ROLE`` column for
+   log tail or a configurable top-N active ``currentOp`` activity view. CPU,
+   memory, network, disk, and currentOp rows include a ``ROLE`` column for
    primary/secondary state. Role values use muted, non-bold semantic colors
    that do not compete with pane headers. Pane borders stay neutral, while pane
    titles and table headers are bold and color-coded by pane. CPU, memory,
@@ -67,9 +67,10 @@ Monitor
 
 ``--monitor-username USER``, ``--monitor-password PASSWORD``,
 ``--monitor-auth-db DB``
-   optional credential overrides used only by ``--monitor`` network sampling.
-   By default, monitor mode loads credentials from ``.mrun_startup`` when an
-   authenticated **mrun** deployment created an initial user.
+   optional credential overrides used only by ``--monitor`` samplers and the
+   ``mongosh`` handoff. By default, monitor mode loads credentials from
+   ``.mrun_startup`` when an authenticated **mrun** deployment created an
+   initial user.
 
    Monitor controls:
 
@@ -84,11 +85,14 @@ Monitor
    -  In the CPU pane, ``t`` toggles between the default process CPU list and
       a thread view for the selected process. Thread view is never shown by
       default.
-   -  ``o`` toggles the right activity pane between the log tail and the top 10
-      active ``currentOp`` entries across visible MongoDB processes.
+   -  ``o`` toggles the right activity pane between the log tail and the active
+      ``currentOp`` entries across visible MongoDB processes. The default limit
+      is 10 entries.
    -  ``O`` toggles formatted and raw ``currentOp`` documents while the
       currentOp activity view is active. Raw mode displays BSON-safe text
       derived from ``db.currentOp()`` output.
+   -  ``L`` opens a currentOp top-N prompt while currentOp is active. Values
+      lower than 1 are rejected, and large values are capped at 500 entries.
    -  ``n`` opens a currentOp namespace selector while currentOp is active.
       The selector lists active namespaces and also accepts a typed namespace.
    -  ``c`` clears the currentOp namespace filter while currentOp is active,
@@ -117,6 +121,11 @@ Monitor
    -  Space pauses or resumes log streaming. While paused, the current log
       buffer stays frozen; resuming catches up from the same file offset.
    -  ``s`` cycles the refresh interval through 1, 5, and 10 seconds.
+   -  ``M`` launches an interactive ``mongosh`` administration shell, when the
+      executable is available. The monitor offers primary, selected-node,
+      seed-list, first-visible-node, and custom URI targets, reuses stored
+      auth/TLS metadata, and passes ``--password`` without the password value
+      so ``mongosh`` prompts securely.
    -  Log lines are color coded by severity: fatal uses red inverse, errors
       use red, warnings use yellow, info uses muted teal, and debug uses dim
       gray. Selection uses inverse video so it remains visible without hiding
@@ -131,7 +140,8 @@ Monitor
    When authentication metadata exists but monitor credentials are unavailable,
    role and currentOp views show ``Password Required``. Stored credentials from
    ``.mrun_startup`` or explicit monitor credential overrides are used when
-   available.
+   available. The ``M`` shell handoff also refuses to launch for auth-enabled
+   deployments when credentials are required but unavailable.
 
 Verbosity
 ---------
