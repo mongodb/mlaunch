@@ -59,6 +59,7 @@ mrun/monitor.py
 |   +-- falls back to Process.num_threads() when thread details are denied
 |   +-- CurrentOpSampler
 |   +-- samples active currentOp entries only while the activity pane shows currentOp
+|   +-- passes an optional namespace filter into currentOp
 |   +-- sorts active ops by secs_running and keeps the top 10
 |
 +-- network metrics
@@ -85,6 +86,7 @@ mrun/monitor.py
 |   +-- ANSI-aware truncation and padding so colors do not shift borders
 |   +-- format_log_lines()
 |   +-- log cursor has an independent viewport start and scrolls only at edges
+|   +-- raw currentOp documents use BSON-safe JSON-like rendering
 |   +-- detect_log_severity()
 |   +-- fatal/error/warning/info/debug log rows receive severity colors
 |   +-- selected log row uses inverse video over severity color
@@ -104,6 +106,8 @@ mrun/monitor.py
     +-- CPU focus: t toggles process-list and selected-process thread views
     +-- o toggles the right activity pane between logs and top currentOp views
     +-- O toggles formatted/raw currentOp documents while currentOp is active
+    +-- n opens currentOp namespace selection while currentOp is active
+    +-- currentOp c clears the active currentOp namespace filter
     +-- logs focus: j/k or arrows move the highlighted log row
     +-- currentOp activity focus: j/k or arrows move the highlighted currentOp row
     +-- Pretty JSON focus: j/k or arrows scroll expanded JSON
@@ -153,6 +157,8 @@ flowchart TD
     Q -- CPU t --> V[Toggle selected-process thread view]
     Q -- o --> V2[Toggle right activity currentOp view]
     Q -- O --> V3[Toggle formatted/raw currentOp]
+    Q -- currentOp n --> V4[Select currentOp namespace]
+    Q -- currentOp c --> V5[Clear currentOp namespace]
     Q -- logs j/k/arrows --> W[Move highlighted row]
     Q -- currentOp j/k/arrows --> W2[Move highlighted currentOp row]
     Q -- logs g --> X[Jump to newest row and follow]
@@ -166,6 +172,8 @@ flowchart TD
     V --> L
     V2 --> L
     V3 --> L
+    V4 --> L
+    V5 --> L
     W --> L
     W2 --> L
     X --> L
@@ -285,7 +293,12 @@ Pressing `t` toggles the CPU pane from the process CPU list to threads for the
 selected process. Pressing `o` from any pane toggles the right activity pane
 from log tail to the top 10 active currentOp entries across visible processes.
 Pressing `O` while currentOp is active toggles formatted rows and raw currentOp
-documents. Pressing `o` again returns the activity pane to the log tail.
+documents derived from `db.currentOp()`. Raw rendering is BSON-safe: ObjectId,
+Timestamp, datetime, and other non-JSON values are converted to readable text
+before terminal rendering. Pressing `n` while currentOp is active opens a
+namespace selector built from active currentOp namespaces, and typed namespaces
+are also accepted. Pressing `c` while currentOp is active clears that namespace
+filter. Pressing `o` again returns the activity pane to the log tail.
 
 All metric panes include a `ROLE` column. The monitor reads
 `serverStatus().repl.stateStr` first and falls back to

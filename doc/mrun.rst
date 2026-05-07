@@ -86,7 +86,12 @@ Monitor
    -  ``o`` toggles the right activity pane between the log tail and the top 10
       active ``currentOp`` entries across visible MongoDB processes.
    -  ``O`` toggles formatted and raw ``currentOp`` documents while the
-      currentOp activity view is active.
+      currentOp activity view is active. Raw mode displays BSON-safe text
+      derived from ``db.currentOp()`` output.
+   -  ``n`` opens a currentOp namespace selector while currentOp is active.
+      The selector lists active namespaces and also accepts a typed namespace.
+   -  ``c`` clears the currentOp namespace filter while currentOp is active,
+      or clears the log filter while the logs pane is active.
    -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
       cursor. The text stays still while the cursor moves inside the visible
       window and scrolls only when the cursor reaches the visible edge.
