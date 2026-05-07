@@ -41,6 +41,8 @@ The monitor shows:
   `serverStatus()` subsystem summaries.
 - Zoomed log view.
 - Scrollable syntax-colored Pretty JSON view for a highlighted log line.
+- Bold, pane-colored titles and table headers with consistent inner padding
+  across all monitor panes.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
 No new terminal UI dependency is introduced. Rendering and keyboard input use
@@ -53,20 +55,21 @@ mongorun.
 ```text
 feature-monitor branch
 |
-+-- mrun/mrun.py (lines 208-741)
++-- mrun/mrun.py (lines 208-737)
 |   +-- adds top-level --monitor, --all, and --dir handling (lines 223-267)
 |   +-- adds --monitor-username, --monitor-password, --monitor-auth-db
-|   +-- routes monitor requests before normal command dispatch (line 684)
-|   +-- constructs Monitor with data_dir and include_all options (lines 726-741)
+|   +-- routes monitor requests before normal command dispatch (line 685)
+|   +-- constructs Monitor with data_dir and include_all options (lines 726-737)
 |
-+-- mrun/monitor.py (lines 1-3286)
-|   +-- new interactive monitor implementation (lines 2684-3286)
-|   +-- process discovery (lines 475-499), metrics sampling (lines 603-949), log tailing (lines 951-1014), filtering (lines 1271-1578), rendering (lines 1960-2604), key input (lines 2614-2683)
-|   +-- auth and TLS metadata loading for network sampling (lines 367-473)
++-- mrun/monitor.py (lines 1-3308)
+|   +-- new interactive monitor implementation (lines 2706-3308)
+|   +-- process discovery (lines 478-499), metrics sampling (lines 507-950), log tailing (lines 954-1043), filtering (lines 1228-1593), rendering (lines 1974-2594), key input (lines 2617-2703)
+|   +-- auth and TLS metadata loading for network sampling (lines 370-460)
 |   +-- pane focus, focused-pane zoom, CPU process selection, thread sampling
-|   +-- ProcessSampler preserves psutil CPU state across refreshes (lines 603-690)
-|   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 769-949)
+|   +-- ProcessSampler preserves psutil CPU state across refreshes (lines 606-653)
+|   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 772-950)
 |   +-- log filter prompt, fuzzy scoring, structured filters, and hit highlighting
+|   +-- ANSI-aware panel renderer, bold pane titles, colored table headers, and content padding (lines 1145-1202, 1978-2039)
 |
 +-- mrun/fault_inject_collection_scans.py
 |   +-- local-only PyMongo workload for monitor troubleshooting
@@ -116,13 +119,13 @@ user command
     |
     |  mrun --monitor [--all] [--dir DIR]
     v
-MRunTool.run() (lines 208-684)
+MRunTool.run() (lines 208-685)
     |
     +--> parse top-level monitor flags (lines 223-267)
     |
-    +--> MRunTool.monitor() (lines 725-736)
+    +--> MRunTool.monitor() (lines 726-737)
          |
-         +--> Monitor(...).run() (lines 2086-2114)
+         +--> Monitor(...).run() (lines 2756-2786)
               |
               +--> interactive terminal dashboard
 ```
@@ -152,14 +155,14 @@ sequenceDiagram
     User->>CLI: mrun --monitor
     CLI->>Tool: MRunTool.run() [mrun/mrun.py:208]
     Tool->>Tool: argparse parses --monitor [mrun/mrun.py:223]
-    Tool->>Tool: skip default init routing [mrun/mrun.py:684]
-    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run() [mrun/mrun.py:726]
-    Monitor->>FS: load ./data/.mrun_startup [mrun/monitor.py:340]
-    Monitor->>PS: discover local mongod/mongos [mrun/monitor.py:475]
-    Monitor->>Monitor: keep only startup ports [mrun/monitor.py:457]
-    Monitor-->>User: prompt for logs to tail [mrun/monitor.py:1040]
-    User-->>Monitor: select log indexes or ports [mrun/monitor.py:1016]
-    Monitor-->>User: render dashboard until quit [mrun/monitor.py:2766]
+    Tool->>Tool: skip default init routing [mrun/mrun.py:685]
+    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run() [mrun/mrun.py:730]
+    Monitor->>FS: load ./data/.mrun_startup [mrun/monitor.py:330]
+    Monitor->>PS: discover local mongod/mongos [mrun/monitor.py:478]
+    Monitor->>Monitor: keep only startup ports [mrun/monitor.py:460]
+    Monitor-->>User: prompt for logs to tail [mrun/monitor.py:1043]
+    User-->>Monitor: select log indexes or ports [mrun/monitor.py:1019]
+    Monitor-->>User: render dashboard until quit [mrun/monitor.py:2788]
 ```
 
 ## All-process mode sequence
@@ -172,12 +175,12 @@ sequenceDiagram
     participant PS as psutil
 
     User->>Tool: mrun --monitor --all
-    Tool->>Monitor: Monitor(include_all=true).run() [mrun/mrun.py:726]
-    Monitor->>PS: discover all local mongod/mongos [mrun/monitor.py:475]
-    Monitor-->>User: prompt for logs from all discovered processes [mrun/monitor.py:1040]
-    User-->>Monitor: press a [mrun/monitor.py:2914]
-    Monitor->>Monitor: toggle process_scope to mrun [mrun/monitor.py:3198]
-    Monitor-->>User: reselect logs using mrun-managed scope [mrun/monitor.py:2914]
+    Tool->>Monitor: Monitor(include_all=true).run() [mrun/mrun.py:730]
+    Monitor->>PS: discover all local mongod/mongos [mrun/monitor.py:478]
+    Monitor-->>User: prompt for logs from all discovered processes [mrun/monitor.py:1043]
+    User-->>Monitor: press a [mrun/monitor.py:2936]
+    Monitor->>Monitor: toggle process_scope to mrun [mrun/monitor.py:3221]
+    Monitor-->>User: reselect logs using mrun-managed scope [mrun/monitor.py:2936]
 ```
 
 ## Auth and TLS network sequence
@@ -189,14 +192,14 @@ sequenceDiagram
     participant Sampler as NetworkSampler
     participant Mongo as MongoDB
 
-    Monitor->>FS: load parsed_args [mrun/monitor.py:340]
+    Monitor->>FS: load parsed_args [mrun/monitor.py:330]
     FS-->>Monitor: auth, username, password, auth_db, TLS/SSL fields
-    Monitor->>Monitor: apply monitor credential overrides if present [mrun/monitor.py:2701]
-    Monitor->>Monitor: build PyMongo kwargs [mrun/monitor.py:380]
-    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required) [mrun/monitor.py:692]
-    Sampler->>Mongo: admin.command(serverStatus) [mrun/monitor.py:748]
+    Monitor->>Monitor: apply monitor credential overrides if present [mrun/monitor.py:2721]
+    Monitor->>Monitor: build PyMongo kwargs [mrun/monitor.py:383]
+    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required) [mrun/monitor.py:695]
+    Sampler->>Mongo: admin.command(serverStatus) [mrun/monitor.py:747]
     Mongo-->>Sampler: network counters or auth/TLS error
-    Sampler-->>Monitor: NetworkMetrics [mrun/monitor.py:722]
+    Sampler-->>Monitor: NetworkMetrics [mrun/monitor.py:723]
 ```
 
 ## Runtime dashboard loop
@@ -249,21 +252,21 @@ flowchart TD
 
 Implementation mapping for the dashboard loop:
 
-- **Loop Start**: `Monitor._run_dashboard()` [mrun/monitor.py:2766]
-- **Discover Processes**: `Monitor._discover_processes_or_report()` [mrun/monitor.py:2895]
-- **Read CPU/Memory**: `ProcessSampler.sample()` [mrun/monitor.py:619]
-- **Sample Network**: `NetworkSampler.sample()` [mrun/monitor.py:703]
-- **Read Disk Sizes**: `read_disk_metrics()` [mrun/monitor.py:676]
-- **Poll Logs**: `LogTailer.poll()` [mrun/monitor.py:978]
-- **Render Frame**: `render_dashboard()` [mrun/monitor.py:2397]
-- **Key Actions**: `Monitor._wait_for_action()` [mrun/monitor.py:2914]
-- **Pane Focus**: `Monitor._focus_next_pane()` [mrun/monitor.py:3020]
-- **Zoom Pane**: `Monitor._toggle_focused_zoom()` [mrun/monitor.py:3030]
-- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()` [mrun/monitor.py:3054]
-- **Log Filter Prompt**: `Monitor._start_log_filter_prompt()` [mrun/monitor.py:3069]
-- **Pretty JSON**: `Monitor._toggle_pretty_log_line()` [mrun/monitor.py:3228]
-- **Yank Log**: `Monitor._yank_log_line()` [mrun/monitor.py:3267]
-- **Expanded Status**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:3013]
+- **Loop Start**: `Monitor._run_dashboard()` [mrun/monitor.py:2788]
+- **Discover Processes**: `Monitor._discover_processes_or_report()` [mrun/monitor.py:2917]
+- **Read CPU/Memory**: `ProcessSampler.sample()` [mrun/monitor.py:622]
+- **Sample Network**: `NetworkSampler.sample()` [mrun/monitor.py:706]
+- **Read Disk Sizes**: `read_disk_metrics()` [mrun/monitor.py:679]
+- **Poll Logs**: `LogTailer.poll()` [mrun/monitor.py:981]
+- **Render Frame**: `render_dashboard()` [mrun/monitor.py:2419]
+- **Key Actions**: `Monitor._wait_for_action()` [mrun/monitor.py:2936]
+- **Pane Focus**: `Monitor._focus_next_pane()` [mrun/monitor.py:3042]
+- **Zoom Pane**: `Monitor._toggle_focused_zoom()` [mrun/monitor.py:3052]
+- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()` [mrun/monitor.py:3076]
+- **Log Filter Prompt**: `Monitor._start_log_filter_prompt()` [mrun/monitor.py:3091]
+- **Pretty JSON**: `Monitor._toggle_pretty_log_line()` [mrun/monitor.py:3250]
+- **Yank Log**: `Monitor._yank_log_line()` [mrun/monitor.py:3289]
+- **Expanded Status**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:3035]
 ```
 
 ## Terminal layout
@@ -285,6 +288,15 @@ The monitor uses visual cues to indicate focus and severity:
   - **Network Usage**: Yellow
   - **Disk Usage**: Red
   - **Log Tail**: Teal
+- **Pane title styling**: Every pane title is bold. The title uses the pane
+  color, then the renderer resets back to the border color so the border line
+  remains continuous and aligned.
+- **Table header styling**: Table header rows are bold and use the same color
+  as their pane border. Body rows keep severity or selection styling where
+  applicable.
+- **Internal padding**: Non-empty content rows receive one cell of left padding
+  after the border. This keeps CPU, memory, network, disk, thread, and status
+  tables visually aligned with the colored pane frame.
 - **Log severity**: MongoDB log lines are colored by severity (Fatal: red
   inverse, Error: red, Warning: yellow, Info: teal, Debug: dim gray).
 
@@ -340,6 +352,70 @@ Pretty JSON mode also uses the full log view:
 +-----------------------------------------------------------------+
 ```
 
+## Panel rendering and header styling
+
+The terminal frame is rendered without a UI framework. `make_panel()` is the
+single panel primitive used by the dashboard, focused zoom panes, Pretty JSON
+views, and the expanded `serverStatus()` layout. The helper is deliberately
+ANSI-aware so color codes do not change visible widths or push borders out of
+alignment.
+
+```text
+---------------- render_dashboard() ----------------+
+| split terminal into pane rectangles                |
+|                                                    |
+|  +--> make_panel("CPU Usage", cpu_lines, ...)      |
+|  +--> make_panel("Memory Usage", memory_lines, ...)|
+|  +--> make_panel("Network Usage", network_lines,..)|
+|  +--> make_panel("Disk Usage", disk_lines, ...)    |
+|  +--> make_panel("Log Tail", log_lines, ...)       |
++----------------------------------------------------+
+               |
+               v
++---------------- make_panel() ----------------------+
+| title row: ANSI_BOLD + pane color + title          |
+| border row: restore border color after title reset |
+| content: add one-cell padding after left border    |
+| header: STYLE_TABLE_HEADER -> bold + pane color    |
+| width: _truncate_ansi() + _pad_ansi()              |
++----------------------------------------------------+
+```
+
+Table header rows are marked before rendering. The formatter functions return
+plain strings for normal rows and a private `STYLE_TABLE_HEADER` marker for
+header rows. `make_panel()` strips that marker, applies bold and the pane's
+header color, then pads and clips the visible text to the panel width.
+
+```text
+format_cpu_lines()
+    |
+    +-- _table_header("  PORT   PID ...")
+    |
+    v
+make_panel(header_color=ANSI_TEAL)
+    |
+    +-- _style_ansi([STYLE_TABLE_HEADER], header_color)
+    |
+    v
+bold teal table header inside a teal CPU pane
+```
+
+Implementation mapping for panel rendering:
+
+- **Bold Escape Constant**: `ANSI_BOLD` [mrun/monitor.py:51]
+- **Table Header Marker**: `STYLE_TABLE_HEADER` [mrun/monitor.py:82]
+- **Panel Content Padding**: `_panel_content_padding()` [mrun/monitor.py:1145]
+- **Table Header Wrapper**: `_table_header()` [mrun/monitor.py:1158]
+- **Style to ANSI Conversion**: `_style_ansi()` [mrun/monitor.py:1179]
+- **Panel Renderer**: `make_panel()` [mrun/monitor.py:1978]
+- **CPU Header Source**: `format_cpu_lines()` [mrun/monitor.py:2044]
+- **Memory Header Source**: `format_memory_lines()` [mrun/monitor.py:2070]
+- **Network Header Source**: `format_network_lines()` [mrun/monitor.py:2086]
+- **Disk Header Source**: `format_disk_lines()` [mrun/monitor.py:2108]
+- **Subsystem Header Source**: `format_subsystem_status_lines()` [mrun/monitor.py:2247]
+- **Thread Header Source**: `format_thread_lines()` [mrun/monitor.py:2270]
+- **Renderer Regression Test**: `test_make_panel_bolds_title_and_pads_table_header()` [mrun/test/test_monitor.py:1154]
+
 ## Expanded Server Status View
 
 The expanded status view is triggered by `E` and provides a deeper view into
@@ -369,20 +445,20 @@ sequenceDiagram
     participant StatusSampler
     participant Mongo as MongoDB
 
-    User->>Monitor: Press 'E' [mrun/monitor.py:2914]
-    Monitor->>Monitor: Set server_status_active = True [mrun/monitor.py:3013]
+    User->>Monitor: Press 'E' [mrun/monitor.py:2936]
+    Monitor->>Monitor: Set server_status_active = True [mrun/monitor.py:3035]
     loop Refresh Loop
-        Monitor->>StatusSampler: sample(process) [mrun/monitor.py:2868]
-        StatusSampler->>Mongo: runCommand({serverStatus: 1}) [mrun/monitor.py:831]
+        Monitor->>StatusSampler: sample(process) [mrun/monitor.py:2894]
+        StatusSampler->>Mongo: runCommand({serverStatus: 1}) [mrun/monitor.py:834]
         Mongo-->>StatusSampler: Full BSON Response
-        StatusSampler->>StatusSampler: Summarize every top-level subsystem [mrun/monitor.py:922]
-        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details [mrun/monitor.py:834]
-        StatusSampler-->>Monitor: ServerStatusSnapshot [mrun/monitor.py:810]
-        Monitor->>Monitor: render_server_status_view() [mrun/monitor.py:2353]
-        Monitor-->>User: Refresh 4-panel UI [mrun/monitor.py:2353]
+        StatusSampler->>StatusSampler: Summarize every top-level subsystem [mrun/monitor.py:925]
+        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details [mrun/monitor.py:836]
+        StatusSampler-->>Monitor: ServerStatusSnapshot [mrun/monitor.py:813]
+        Monitor->>Monitor: render_server_status_view() [mrun/monitor.py:2375]
+        Monitor-->>User: Refresh 4-panel UI [mrun/monitor.py:2375]
     end
-    User->>Monitor: Press 'E' or 'Esc' [mrun/monitor.py:2914]
-    Monitor->>Monitor: Set server_status_active = False [mrun/monitor.py:3013]
+    User->>Monitor: Press 'E' or 'Esc' [mrun/monitor.py:2936]
+    Monitor->>Monitor: Set server_status_active = False [mrun/monitor.py:3035]
 ```
 
 ### ASCII Layout (Expanded View)
@@ -406,16 +482,16 @@ E exit status view | s refresh 1s | q quit
 
 Implementation mapping for expanded status view:
 
-- **Status Snapshot Model**: `ServerStatusSnapshot` [mrun/monitor.py:251]
-- **Status Sampler**: `StatusSampler.sample()` [mrun/monitor.py:810]
-- **Subsystem Summaries**: `StatusSampler._extract_subsystems()` [mrun/monitor.py:922]
-- **Disk Formatting**: `format_disk_status_lines()` [mrun/monitor.py:2126]
-- **Network Formatting**: `format_network_status_lines()` [mrun/monitor.py:2158]
-- **Storage Formatting**: `format_storage_status_lines()` [mrun/monitor.py:2186]
-- **Other Subsystems Formatting**: `format_subsystem_status_lines()` [mrun/monitor.py:2225]
-- **Four-Panel Renderer**: `render_server_status_view()` [mrun/monitor.py:2353]
-- **Boundary Color Rendering**: `make_panel()` [mrun/monitor.py:1960]
-- **Toggle Handling**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:3013]
+- **Status Snapshot Model**: `ServerStatusSnapshot` [mrun/monitor.py:253]
+- **Status Sampler**: `StatusSampler.sample()` [mrun/monitor.py:813]
+- **Subsystem Summaries**: `StatusSampler._extract_subsystems()` [mrun/monitor.py:925]
+- **Disk Formatting**: `format_disk_status_lines()` [mrun/monitor.py:2148]
+- **Network Formatting**: `format_network_status_lines()` [mrun/monitor.py:2180]
+- **Storage Formatting**: `format_storage_status_lines()` [mrun/monitor.py:2208]
+- **Other Subsystems Formatting**: `format_subsystem_status_lines()` [mrun/monitor.py:2247]
+- **Four-Panel Renderer**: `render_server_status_view()` [mrun/monitor.py:2375]
+- **Boundary Color Rendering**: `make_panel()` [mrun/monitor.py:1978]
+- **Toggle Handling**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:3035]
 
 ### Logical flow
 
@@ -760,17 +836,17 @@ No log lines match filter: slowop
 
 Implementation mapping for log filtering:
 
-- **Filter Match Result**: `LogFilterMatch` [mrun/monitor.py:233]
-- **Filtered View Model**: `LogFilterView` [mrun/monitor.py:242]
-- **Fuzzy Scorer**: `score_log_filter()` [mrun/monitor.py:1271]
-- **Structured Filter Match**: `match_log_filter()` [mrun/monitor.py:1504]
-- **View Builder**: `filter_log_lines()` [mrun/monitor.py:1538]
-- **Filtered Cursor Clamp**: `clamp_filtered_log_cursor()` [mrun/monitor.py:1557]
-- **Filtered Cursor Move**: `move_filtered_log_cursor()` [mrun/monitor.py:1575]
-- **Hit Highlight Rendering**: `format_log_lines()` [mrun/monitor.py:1708]
-- **Filter Prompt Keys**: `Monitor._handle_log_filter_prompt_key()` [mrun/monitor.py:3077]
-- **Apply Filter**: `Monitor._apply_log_filter()` [mrun/monitor.py:3102]
-- **Clear Filter**: `Monitor._clear_log_filter()` [mrun/monitor.py:3122]
+- **Filter Match Result**: `LogFilterMatch` [mrun/monitor.py:235]
+- **Filtered View Model**: `LogFilterView` [mrun/monitor.py:244]
+- **Fuzzy Scorer**: `score_log_filter()` [mrun/monitor.py:1289]
+- **Structured Filter Match**: `match_log_filter()` [mrun/monitor.py:1522]
+- **View Builder**: `filter_log_lines()` [mrun/monitor.py:1556]
+- **Filtered Cursor Clamp**: `clamp_filtered_log_cursor()` [mrun/monitor.py:1575]
+- **Filtered Cursor Move**: `move_filtered_log_cursor()` [mrun/monitor.py:1593]
+- **Hit Highlight Rendering**: `format_log_lines()` [mrun/monitor.py:1726]
+- **Filter Prompt Keys**: `Monitor._handle_log_filter_prompt_key()` [mrun/monitor.py:3099]
+- **Apply Filter**: `Monitor._apply_log_filter()` [mrun/monitor.py:3124]
+- **Clear Filter**: `Monitor._clear_log_filter()` [mrun/monitor.py:3144]
 
 ## Log colors and highlight priority
 
@@ -846,8 +922,8 @@ COLORFGBG                 auto-detect when the terminal exports it
 fallback                  dark-background palette
 ```
 
-Panel clipping and padding are ANSI-aware, so token colors do not corrupt panel
-widths or borders.
+Panel clipping, padding, and table-header styling are ANSI-aware, so token
+colors and pane colors do not corrupt panel widths or borders.
 
 Pretty JSON is scrollable. The monitor tracks a separate pretty-scroll offset,
 so `j`/Down and `k`/Up move through long slow-operation JSON without changing
@@ -1130,6 +1206,7 @@ without terminating the monitor.
 | FM-MON-PRETTY-002| user   | scrollable Pretty JSON log view   | f42c9ec | Implemented |
 | FM-MON-STATUS-001| user   | expanded serverStatus subsystems  | c8553aa | Implemented |
 | FM-MON-FILTER-001| user   | fuzzy/structured log filtering    | b2f6f61 | Implemented |
+| FM-MON-UI-001    | user   | pane header padding/style         | 56fa23c | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -1158,6 +1235,7 @@ without terminating the monitor.
 | f42c9ec | Scroll zoomed Pretty JSON log view             | FM-MON-PRETTY-002 | monitor.py, test_monitor.py   |
 | c8553aa | Expand serverStatus subsystem view             | FM-MON-STATUS-001 | monitor.py, docs, tests       |
 | b2f6f61 | Add fuzzy and structured log filtering         | FM-MON-FILTER-001 | monitor.py, docs, tests       |
+| 56fa23c | Align pane headers and content padding         | FM-MON-UI-001     | monitor.py, test_monitor.py   |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -1171,6 +1249,7 @@ Reading order for reviewers:
 5. Review a626f03 for the optional local workload helper.
 6. Review c8553aa for the expanded serverStatus subsystem UI.
 7. Review b2f6f61 for fuzzy and structured log filtering.
+8. Review 56fa23c for bold pane titles, colored table headers, and panel padding.
 ```
 
 ## Testing added by the branch
@@ -1218,6 +1297,8 @@ The focused monitor test module covers:
 - `y` yank behavior.
 - severity color detection and rendering.
 - selected/yanked color priority.
+- bold pane title and table-header rendering.
+- pane-colored header rows with stable internal padding.
 - dashboard and zoom rendering.
 - pane focus cycling.
 - CPU process cursor movement.
@@ -1257,6 +1338,9 @@ Use this list for manual review:
 [ ] CPU percentages update during the fault injector or another CPU stress workload.
 [ ] Network panel reports rates or unavailable status.
 [ ] Disk panel reports dbpath and log file size.
+[ ] Pane titles are bold and keep the pane border color aligned across the top border.
+[ ] CPU, memory, network, disk, thread, and status table headers are bold and pane-colored.
+[ ] Non-empty pane rows have consistent left padding after the border.
 [ ] Log tail prefixes each line with the MongoDB port.
 [ ] Info logs are muted teal.
 [ ] Warnings are yellow.

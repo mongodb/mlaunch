@@ -48,9 +48,11 @@ Monitor
    opens a live terminal monitor for running **mrun** managed ``mongod`` and
    ``mongos`` processes from the selected data directory. The monitor shows
    CPU usage, memory usage, network activity, disk consumption, and a
-   selectable live log tail with severity colors and local filtering. If no
-   **mrun** managed MongoDB server processes are running, **mrun** will print a
-   message and exit.
+   selectable live log tail with severity colors and local filtering. Pane
+   titles and table headers are bold and color-coded by pane, with consistent
+   padding for CPU, memory, network, disk, status, thread, and log views. If
+   no **mrun** managed MongoDB server processes are running, **mrun** will
+   print a message and exit.
 
 ``--all``
    used with ``--monitor`` to include all local ``mongod`` and ``mongos``

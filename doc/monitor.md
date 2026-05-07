@@ -75,6 +75,8 @@ mrun/monitor.py
 +-- rendering
 |   +-- render_dashboard()
 |   +-- make_panel()
+|   +-- bold pane titles, pane-colored table headers, and left-padded rows
+|   +-- ANSI-aware truncation and padding so colors do not shift borders
 |   +-- format_log_lines()
 |   +-- detect_log_severity()
 |   +-- fatal/error/warning/info/debug log rows receive severity colors
@@ -159,12 +161,13 @@ flowchart TD
 four-panel mode
 
 + [CPU Usage] ---------++ Memory Usage --------+
-| port pid process cpu || port pid process rss |
+|  PORT PID PROCESS CPU|| PORT PID PROCESS RSS |
+| 27017 123 mongod 4.1 || 27017 123 mongod 1GB |
 +----------------------++----------------------+
 + Network Usage -------++ Log Tail -----------+
-| port in out req/s    ||  info log line       |  muted teal text
+| PORT IN OUT REQ/s    ||  info log line       |  muted teal text
 + Disk Usage ----------+|  warning log line    |  yellow text
-| port db size log size|| > yanked log line    |  green inverse
+| PORT DB SIZE LOG SIZE|| > yanked log line    |  green inverse
 +----------------------++----------------------+
 
 CPU thread mode, toggled with t while CPU is focused
@@ -201,6 +204,26 @@ use dim gray. Selection uses inverse video on top of the severity color, so the
 selected row remains visible without making warnings, errors, and info rows
 look the same. `y` copies the raw log line, without ANSI escape sequences and
 without the visual cursor marker.
+
+## Panel title and table-header styling
+
+All panes are rendered through `make_panel()`. The panel renderer owns three
+alignment rules:
+
+```text
+---------------- make_panel() ----------------+
+| top border title: bold + pane color          |
+| table header row: bold + pane color          |
+| non-empty content row: one leading cell      |
+| clipping/padding: visible width ignores ANSI |
++----------------------------------------------+
+```
+
+The table formatters mark header rows with an internal style token before the
+panel is rendered. `make_panel()` removes that token, applies the pane header
+color and bold text, then clips and pads using ANSI-aware helpers. This keeps
+CPU, memory, network, disk, thread, Pretty JSON, and expanded server-status
+panes aligned even when the title, header, or body row contains color escapes.
 
 ## Pane focus and CPU threads
 
