@@ -7,6 +7,7 @@ import psutil
 import pytest
 
 from mrun.monitor import (
+    ANSI_BOLD,
     ANSI_GREEN,
     ANSI_INVERSE,
     ANSI_RED,
@@ -24,6 +25,7 @@ from mrun.monitor import (
     detect_log_severity,
     DiskMetrics,
     filter_log_lines,
+    format_cpu_lines,
     format_pretty_log_lines,
     format_log_lines,
     filter_mrun_processes,
@@ -1147,6 +1149,29 @@ def test_make_panel_colors_unfocused_header_boundaries():
     assert "Network Usage" in panel[0]
     assert panel[1].startswith(ANSI_YELLOW + "|")
     assert all(visible_width(line) == 40 for line in panel)
+
+
+def test_make_panel_bolds_title_and_pads_table_header():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    panel = make_panel(
+        "CPU Usage",
+        format_cpu_lines(
+            [process],
+            {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+            cursor=0,
+            show_cursor=True,
+        ),
+        64,
+        6,
+        focused=True,
+        header_color=ANSI_TEAL,
+    )
+
+    assert ANSI_BOLD in panel[0]
+    assert ANSI_BOLD + ANSI_TEAL in panel[1]
+    assert strip_ansi(panel[1]).startswith("|   PORT")
+    assert strip_ansi(panel[2]).startswith("| > 27017")
+    assert all(visible_width(line) == 64 for line in panel)
 
 
 def test_render_dashboard_marks_yanked_log_line_green():

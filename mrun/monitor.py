@@ -48,6 +48,7 @@ ANSI_RED = "\033[31m"
 ANSI_TEAL = "\033[38;5;44m"
 ANSI_DIM = "\033[2m"
 ANSI_INVERSE = "\033[7m"
+ANSI_BOLD = "\033[1m"
 ANSI_DEFAULT = "\033[39m"
 PANE_HEADER_COLORS = {
     "cpu": ANSI_TEAL,
@@ -78,6 +79,7 @@ STYLE_SEVERITY_ERROR = "\x00severity:error\x00"
 STYLE_SEVERITY_WARNING = "\x00severity:warning\x00"
 STYLE_SEVERITY_INFO = "\x00severity:info\x00"
 STYLE_SEVERITY_DEBUG = "\x00severity:debug\x00"
+STYLE_TABLE_HEADER = "\x00table-header\x00"
 REFRESH_INTERVALS = (1.0, 5.0, 10.0)
 ESCAPE_READ_TIMEOUT = 0.03
 KEY_POLL_INTERVAL = 0.01
@@ -97,6 +99,7 @@ STYLE_MARKERS = (
     STYLE_SEVERITY_WARNING,
     STYLE_SEVERITY_INFO,
     STYLE_SEVERITY_DEBUG,
+    STYLE_TABLE_HEADER,
 )
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
@@ -1139,10 +1142,21 @@ def _pad_ansi(text, width, fillchar=" "):
     return text + fillchar * padding
 
 
+def _panel_content_padding(text, width):
+    """Add one-cell left padding for non-empty panel content."""
+    if not text or width <= 1:
+        return text
+    return " " + text
+
+
 def _styled_line(styles, text):
     if isinstance(styles, str):
         styles = [styles]
     return "".join(styles) + text
+
+
+def _table_header(text):
+    return _styled_line(STYLE_TABLE_HEADER, text)
 
 
 def _split_style(text):
@@ -1162,9 +1176,13 @@ def _split_style(text):
     return styles, text
 
 
-def _style_ansi(styles):
+def _style_ansi(styles, header_color=None):
+    prefix = ""
+    if STYLE_TABLE_HEADER in styles:
+        prefix = ANSI_BOLD + (header_color or "")
+
     if STYLE_YANKED in styles:
-        return ANSI_GREEN + ANSI_INVERSE
+        return prefix + ANSI_GREEN + ANSI_INVERSE
 
     color = ""
     if STYLE_SEVERITY_FATAL in styles:
@@ -1179,8 +1197,8 @@ def _style_ansi(styles):
         color = ANSI_DIM
 
     if STYLE_SELECTED in styles:
-        return color + ANSI_INVERSE
-    return color
+        return prefix + color + ANSI_INVERSE
+    return prefix + color
 
 
 def clamp_log_cursor(log_lines, cursor, follow_tail):
@@ -1973,7 +1991,9 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
     if border_color:
         header_content = title_text
         if title_color:
-            header_content = title_color + title_text + border_color
+            header_content = (
+                ANSI_BOLD + title_color + title_text + ANSI_RESET +
+                border_color)
         top_border_middle = _pad_ansi(
             _truncate_ansi(header_content, inner_width),
             inner_width,
@@ -1985,8 +2005,9 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
         for index in range(inner_height):
             text = lines[index] if index < len(lines) else ""
             styles, text = _split_style(text)
+            text = _panel_content_padding(text, inner_width)
             row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
-            ansi = _style_ansi(styles)
+            ansi = _style_ansi(styles, header_color=header_color)
 
             if ansi:
                 rows.append(
@@ -2008,6 +2029,7 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
         for index in range(inner_height):
             text = lines[index] if index < len(lines) else ""
             styles, text = _split_style(text)
+            text = _panel_content_padding(text, inner_width)
             row_text = _pad_ansi(_truncate_ansi(text, inner_width), inner_width)
             ansi = _style_ansi(styles)
             if ansi:
@@ -2021,7 +2043,7 @@ def make_panel(title, lines, width, height, focused=False, header_color=None):
 
 def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False):
     """Format CPU process rows, optionally marking the selected process."""
-    lines = ["  PORT   PID      PROCESS  CPU%   STATUS"]
+    lines = [_table_header("  PORT   PID      PROCESS  CPU%   STATUS")]
     selected_index = clamp_process_cursor(processes, cursor)
     if not processes:
         lines.append("  No MongoDB processes found.")
@@ -2047,7 +2069,7 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False)
 
 def format_memory_lines(processes, process_metrics):
     """Format memory rows for process RSS usage."""
-    lines = ["PORT   PID      PROCESS  RSS"]
+    lines = [_table_header("PORT   PID      PROCESS  RSS")]
     if not processes:
         lines.append("No MongoDB processes found.")
         return lines
@@ -2063,7 +2085,7 @@ def format_memory_lines(processes, process_metrics):
 
 def format_network_lines(processes, network_metrics):
     """Format MongoDB network counter rates."""
-    lines = ["PORT   IN       OUT      REQ/s   STATUS"]
+    lines = [_table_header("PORT   IN       OUT      REQ/s   STATUS")]
     if not processes:
         lines.append("No MongoDB processes found.")
         return lines
@@ -2085,7 +2107,7 @@ def format_network_lines(processes, network_metrics):
 
 def format_disk_lines(processes, disk_metrics):
     """Format dbpath and logpath disk consumption."""
-    lines = ["PORT   DB SIZE   LOG SIZE  STATUS"]
+    lines = [_table_header("PORT   DB SIZE   LOG SIZE  STATUS")]
     if not processes:
         lines.append("No MongoDB processes found.")
         return lines
@@ -2229,7 +2251,7 @@ def format_subsystem_status_lines(snapshot):
 
     lines = [
         "Top-level serverStatus keys:",
-        "SUBSYSTEM              SUMMARY",
+        _table_header("SUBSYSTEM              SUMMARY"),
     ]
     subsystems = snapshot.subsystems or {}
     if not subsystems:
@@ -2261,7 +2283,7 @@ def format_thread_lines(process, thread_metrics, thread_error="",
         lines.append(thread_error)
         return lines
 
-    lines.append("TID        CPU%    USER     SYSTEM   TOTAL")
+    lines.append(_table_header("TID        CPU%    USER     SYSTEM   TOTAL"))
     if not thread_metrics:
         lines.append("No thread samples available yet.")
         return lines
