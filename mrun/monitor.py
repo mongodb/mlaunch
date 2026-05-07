@@ -1443,6 +1443,110 @@ def choose_current_op_limit(current=DEFAULT_CURRENT_OP_LIMIT,
     return parse_current_op_limit_selection(input_func(), current, maximum)
 
 
+def _process_role_text(process, role_metrics=None):
+    role_metrics = role_metrics or {}
+    return role_display(role_metrics.get(process.port))
+
+
+def _current_op_source_ports(processes, ports):
+    """Return currentOp source processes filtered by selected ports."""
+    processes = list(processes or [])
+    if not ports:
+        return processes
+    wanted = {int(port) for port in ports}
+    return [process for process in processes if process.port in wanted]
+
+
+def current_op_source_label(processes, ports, role_metrics=None):
+    """Return a compact label for the active currentOp source selection."""
+    processes = list(processes or [])
+    if not ports:
+        return "all"
+    selected = _current_op_source_ports(processes, ports)
+    if not selected or len(selected) == len(processes):
+        return "all"
+    if len(selected) == 1:
+        process = selected[0]
+        role = _process_role_text(process, role_metrics)
+        if role and role not in ("unknown", "unavailable"):
+            return "%s %s" % (role.lower(), process.port)
+        return "port %s" % process.port
+    return "ports " + ",".join(str(process.port) for process in selected)
+
+
+def parse_current_op_source_selection(selection, processes, role_metrics=None):
+    """Parse a currentOp source selector into ordered process ports.
+
+    The selector accepts comma- or space-separated indexes, ports, and role
+    names such as primary or secondary. Empty input and all select every visible
+    process.
+    """
+    processes = list(processes or [])
+    if not processes:
+        return []
+    role_metrics = role_metrics or {}
+    selection = "" if selection is None else str(selection).strip()
+    all_ports = [process.port for process in processes]
+    if not selection or selection.lower() == "all":
+        return all_ports
+
+    tokens = [token for token in re.split(r"[\s,]+", selection) if token]
+    selected = []
+    by_port = {process.port: process for process in processes}
+    for token in tokens:
+        normalized = token.lower()
+        token_ports = []
+        if normalized in ("primary", "primaries"):
+            token_ports = [
+                process.port for process in processes
+                if _process_role_text(process, role_metrics).lower() == "primary"
+            ]
+        elif normalized in ("secondary", "secondaries"):
+            token_ports = [
+                process.port for process in processes
+                if _process_role_text(process, role_metrics).lower() == "secondary"
+            ]
+        else:
+            try:
+                value = int(token)
+            except ValueError:
+                return None
+            if 1 <= value <= len(processes):
+                token_ports = [processes[value - 1].port]
+            elif value in by_port:
+                token_ports = [value]
+            else:
+                return None
+        if not token_ports:
+            return None
+        for port in token_ports:
+            if port not in selected:
+                selected.append(port)
+    return selected
+
+
+def choose_current_op_sources(processes, role_metrics=None, input_func=input,
+                              stdout=None):
+    """Prompt for currentOp source processes by index, port, or role."""
+    stdout = stdout or sys.stdout
+    processes = list(processes or [])
+    role_metrics = role_metrics or {}
+    stdout.write("\nSelect currentOp sources:\n")
+    if processes:
+        for index, process in enumerate(processes, start=1):
+            role = _process_role_text(process, role_metrics)
+            stdout.write(
+                "  [%i] %-17s port %s pid %s %s\n" % (
+                    index, role, process.port, process.pid, process.name))
+    else:
+        stdout.write("  No MongoDB processes detected.\n")
+    stdout.write(
+        "Enter indexes, ports, primary, secondary, all, or press Enter for all: ")
+    stdout.flush()
+    return parse_current_op_source_selection(
+        input_func(), processes, role_metrics)
+
+
 def choose_current_op_namespace(namespaces, input_func=input, stdout=None):
     """Prompt for a currentOp namespace filter."""
     stdout = stdout or sys.stdout
@@ -3186,7 +3290,9 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      current_op_view=False, current_op_raw=False,
                      current_op_namespace="",
                      current_op_pretty_active=False,
-                     current_op_limit=DEFAULT_CURRENT_OP_LIMIT):
+                     current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
+                     current_op_paused=False,
+                     current_op_source_label_text="all"):
     focused_pane = normalize_pane(focused_pane)
     stream_control = "space resume" if stream_paused else "space pause"
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
@@ -3218,15 +3324,22 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
             "logs" if current_op_view else "currentOps"))
     elif focused_pane == "logs":
         if current_op_view:
+            current_op_stream_control = (
+                "space resume ops" if current_op_paused
+                else "space pause ops")
             controls.extend([
                 "op pretty j/k" if current_op_pretty_active else "op j/k",
                 "o logs",
                 "O %s" % ("formatted" if current_op_raw else "raw"),
+                "L top %i" % current_op_limit,
                 "p %s" % ("list" if current_op_pretty_active else "pretty"),
                 "y",
-                "L top %i" % current_op_limit,
+                current_op_stream_control,
+                "r sources",
                 "n ns",
             ])
+            if current_op_source_label_text and current_op_source_label_text != "all":
+                controls.append("src %s" % current_op_source_label_text)
             if current_op_namespace:
                 controls.append("ns %s" % current_op_namespace)
                 controls.append("c clear ns")
@@ -3341,7 +3454,9 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      current_op_pretty_lines=None,
                      current_op_pretty_scroll=0,
                      current_op_yanked_cursor=None,
-                     current_op_limit=DEFAULT_CURRENT_OP_LIMIT):
+                     current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
+                     current_op_paused=False,
+                     current_op_source_ports=None):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -3355,6 +3470,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     filter_total = len(log_lines or []) if filter_active else None
     current_op_pretty_active = (
         current_op_view and current_op_pretty_lines is not None)
+    current_op_source_label_text = current_op_source_label(
+        processes, current_op_source_ports, role_metrics)
 
     controls = _footer_controls(
         focused_pane,
@@ -3375,6 +3492,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_namespace=current_op_namespace,
         current_op_pretty_active=current_op_pretty_active,
         current_op_limit=current_op_limit,
+        current_op_paused=current_op_paused,
+        current_op_source_label_text=current_op_source_label_text,
     )
 
     if server_status_active:
@@ -3480,6 +3599,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_namespace=current_op_namespace,
         current_op_pretty_active=current_op_pretty_active,
         current_op_limit=current_op_limit,
+        current_op_paused=current_op_paused,
+        current_op_source_label_text=current_op_source_label_text,
     )
 
     if zoom_pane:
@@ -3489,6 +3610,13 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                 else ("Raw" if current_op_raw else "Formatted"))
             zoom_title = "Current Ops (%s, top %i)" % (
                 state, current_op_limit)
+            title_states = []
+            if current_op_source_label_text != "all":
+                title_states.append(current_op_source_label_text)
+            if current_op_paused:
+                title_states.append("paused")
+            if title_states:
+                zoom_title += ", " + ", ".join(title_states)
             if current_op_namespace:
                 zoom_title += " ns %s" % current_op_namespace
             if current_op_pretty_active:
@@ -3524,6 +3652,13 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
             else ("Raw" if current_op_raw else "Formatted"))
         activity_title = "Current Ops (%s, top %i)" % (
             state, current_op_limit)
+        title_states = []
+        if current_op_source_label_text != "all":
+            title_states.append(current_op_source_label_text)
+        if current_op_paused:
+            title_states.append("paused")
+        if title_states:
+            activity_title += ", " + ", ".join(title_states)
         if current_op_namespace:
             activity_title += " ns %s" % current_op_namespace
         if current_op_pretty_active:
@@ -3743,6 +3878,9 @@ class Monitor:
         self.current_op_pretty_scroll = 0
         self.current_op_yanked_cursor = None
         self.current_op_limit = DEFAULT_CURRENT_OP_LIMIT
+        self.current_op_paused = False
+        self.current_op_paused_snapshot = None
+        self.current_op_source_ports = []
         self.status_message = ""
         self.yanked_cursor = None
         self.log_view_start = 0
@@ -3785,6 +3923,9 @@ class Monitor:
                 continue
             if action == "select-currentop-limit":
                 self._select_current_op_limit()
+                continue
+            if action == "select-currentop-sources":
+                self._select_current_op_sources()
                 continue
             if action == "launch-mongosh":
                 self._launch_mongosh_admin_shell()
@@ -3857,6 +3998,8 @@ class Monitor:
                         current_op_pretty_scroll=self.current_op_pretty_scroll,
                         current_op_yanked_cursor=self.current_op_yanked_cursor,
                         current_op_limit=self.current_op_limit,
+                        current_op_paused=self.current_op_paused,
+                        current_op_source_ports=self.current_op_source_ports,
                         log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
@@ -3873,6 +4016,8 @@ class Monitor:
                     if action == "select-currentop-namespace":
                         return action
                     if action == "select-currentop-limit":
+                        return action
+                    if action == "select-currentop-sources":
                         return action
                     if action == "launch-mongosh":
                         return action
@@ -3906,10 +4051,20 @@ class Monitor:
         network_metrics = self.network_sampler.sample(processes)
         current_ops = None
         if self.cpu_current_op_view:
-            current_ops = self.current_op_sampler.sample(
-                processes, role_metrics,
-                limit=self.current_op_limit,
-                namespace=self.current_op_namespace)
+            current_op_processes = _current_op_source_ports(
+                processes, self.current_op_source_ports)
+            if self.current_op_paused and self.current_op_paused_snapshot is not None:
+                current_ops = self.current_op_paused_snapshot
+            elif not current_op_processes:
+                current_ops = CurrentOpSnapshot(
+                    False, [], error="selected currentOp sources unavailable")
+                self.current_op_paused_snapshot = current_ops
+            else:
+                current_ops = self.current_op_sampler.sample(
+                    current_op_processes, role_metrics,
+                    limit=self.current_op_limit,
+                    namespace=self.current_op_namespace)
+                self.current_op_paused_snapshot = current_ops
             self.current_op_cursor = clamp_current_op_cursor(
                 current_ops, self.current_op_cursor)
             self.current_op_yanked_cursor = clamp_optional_current_op_cursor(
@@ -4012,6 +4167,8 @@ class Monitor:
             if key == "r":
                 self._clear_pretty_log_line(restore_zoom=False)
                 self._clear_current_op_pretty()
+                if self.cpu_current_op_view:
+                    return "select-currentop-sources"
                 return "reselect"
             if key == "a":
                 self._toggle_process_scope()
@@ -4043,6 +4200,10 @@ class Monitor:
             if self.cpu_current_op_view and key == "c":
                 self._clear_current_op_namespace()
                 return "resample"
+            if self.cpu_current_op_view and key == " ":
+                was_paused = self.current_op_paused
+                self._toggle_current_op_sampling(current_ops)
+                return "resample" if was_paused else "redraw"
 
             if key in ("e", "E"):
                 self._toggle_server_status_view()
@@ -4112,7 +4273,7 @@ class Monitor:
                     if key == "y":
                         self._yank_current_op(current_ops)
                         return "redraw"
-                    if key in (" ", "/"):
+                    if key == "/":
                         self.status_message = "press o to return to logs"
                         return "redraw"
                 if key in ("p", "P"):
@@ -4188,6 +4349,8 @@ class Monitor:
         self.cpu_thread_view = not self.cpu_thread_view
         if self.cpu_thread_view:
             self.cpu_current_op_view = False
+            self.current_op_paused = False
+            self.current_op_paused_snapshot = None
             self.status_message = "thread view for port %s pid %s" % (
                 process.port, process.pid)
         else:
@@ -4199,10 +4362,14 @@ class Monitor:
             self.cpu_thread_view = False
             self.focused_pane = "logs"
             self.current_op_cursor = None
+            self.current_op_paused = False
+            self.current_op_paused_snapshot = None
             self.status_message = "currentOp top %i view" % (
                 self.current_op_limit)
         else:
             self._clear_current_op_pretty()
+            self.current_op_paused = False
+            self.current_op_paused_snapshot = None
             self.status_message = "CPU process list"
 
     def _toggle_current_op_raw(self):
@@ -4231,6 +4398,8 @@ class Monitor:
         try:
             processes = self._discover_processes()
             role_metrics = self.role_sampler.sample(processes)
+            processes = _current_op_source_ports(
+                processes, self.current_op_source_ports)
             snapshot = self.current_op_sampler.sample(
                 processes, role_metrics, limit=200, namespace="")
             namespaces = current_op_namespaces(snapshot)
@@ -4254,6 +4423,8 @@ class Monitor:
         self.current_op_namespace = namespace
         self.current_op_cursor = None
         self.current_op_yanked_cursor = None
+        self.current_op_paused = False
+        self.current_op_paused_snapshot = None
         self.cpu_current_op_view = True
         self.focused_pane = "logs"
         if namespace:
@@ -4279,9 +4450,55 @@ class Monitor:
         self.current_op_limit = limit
         self.current_op_cursor = None
         self.current_op_yanked_cursor = None
+        self.current_op_paused = False
+        self.current_op_paused_snapshot = None
         self.cpu_current_op_view = True
         self.focused_pane = "logs"
         self.status_message = "currentOp top %i view" % limit
+
+    def _select_current_op_sources(self):
+        self._clear_current_op_pretty()
+        try:
+            processes = self._discover_processes()
+        except ProcessDiscoveryError as exc:
+            self.status_message = str(exc)
+            return
+        if not processes:
+            self.status_message = "no MongoDB processes available for currentOp"
+            return
+
+        role_metrics = self.role_sampler.sample(processes)
+        try:
+            ports = choose_current_op_sources(
+                processes, role_metrics, self.input_func, self.stdout)
+        except KeyboardInterrupt:
+            self.stdout.write("\n")
+            self.stdout.flush()
+            self.status_message = "currentOp source selection cancelled"
+            return
+        if ports is None:
+            self.status_message = "invalid currentOp source selection"
+            return
+
+        self.current_op_source_ports = ports
+        self.current_op_cursor = None
+        self.current_op_yanked_cursor = None
+        self.current_op_paused = False
+        self.current_op_paused_snapshot = None
+        self.cpu_current_op_view = True
+        self.focused_pane = "logs"
+        label = current_op_source_label(processes, ports, role_metrics)
+        self.status_message = "currentOp sources: %s" % label
+
+    def _toggle_current_op_sampling(self, current_ops):
+        self.current_op_paused = not self.current_op_paused
+        if self.current_op_paused:
+            if current_ops is not None:
+                self.current_op_paused_snapshot = current_ops
+            self.status_message = "currentOp sampling paused"
+        else:
+            self.current_op_paused_snapshot = None
+            self.status_message = "currentOp sampling resumed"
 
     def _clear_current_op_namespace(self):
         if not self.current_op_namespace:
@@ -4290,6 +4507,8 @@ class Monitor:
         self.current_op_namespace = ""
         self.current_op_cursor = None
         self.current_op_yanked_cursor = None
+        self.current_op_paused = False
+        self.current_op_paused_snapshot = None
         self._clear_current_op_pretty()
         self.status_message = "currentOp namespace filter cleared"
 
@@ -4538,6 +4757,9 @@ class Monitor:
         self.current_op_namespace = ""
         self.current_op_yanked_cursor = None
         self.current_op_limit = DEFAULT_CURRENT_OP_LIMIT
+        self.current_op_paused = False
+        self.current_op_paused_snapshot = None
+        self.current_op_source_ports = []
         self.zoom_pane = None
         self.zoom_logs = False
         self.follow_tail = True

@@ -25,12 +25,14 @@ from mrun.monitor import (
     clamp_pretty_scroll,
     choose_current_op_limit,
     choose_current_op_namespace,
+    choose_current_op_sources,
     choose_mongosh_target,
     colorize_pretty_json_line,
     CurrentOpEntry,
     current_op_namespaces,
     current_op_raw_json,
     current_op_pretty_json_lines,
+    current_op_source_label,
     CurrentOpSampler,
     CurrentOpSnapshot,
     dashboard_snapshot_due,
@@ -75,6 +77,7 @@ from mrun.monitor import (
     parse_escape_sequence,
     parse_current_op_namespace_selection,
     parse_current_op_limit_selection,
+    parse_current_op_source_selection,
     parse_mongosh_target_selection,
     parse_log_selection,
     pretty_json_palette,
@@ -571,7 +574,7 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "colored JSON" in flat_output
     assert "y yank highlighted log line" in flat_output
     assert "/ filter logs, c clear filter/ns" in flat_output
-    assert "space pause/resume log streaming" in flat_output
+    assert "space pause/resume log or currentOp streaming" in flat_output
     assert "s cycle refresh 1s/5s/10s" in flat_output
     assert "M launches mongosh admin shell" in flat_output
 
@@ -667,6 +670,66 @@ def test_choose_current_op_limit_prompts_with_current_limit():
 
     assert limit == 50
     assert "press Enter to keep 25" in stdout.getvalue()
+
+
+def test_parse_current_op_source_selection_accepts_index_port_and_role():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+        MongoProcessInfo(12, "mongod", 27019, "", "", []),
+    ]
+    roles = {
+        27017: RoleMetrics(True, "Secondary"),
+        27018: RoleMetrics(True, "Primary"),
+        27019: RoleMetrics(True, "Secondary"),
+    }
+
+    assert parse_current_op_source_selection("", processes, roles) == [
+        27017, 27018, 27019]
+    assert parse_current_op_source_selection("1,27019", processes, roles) == [
+        27017, 27019]
+    assert parse_current_op_source_selection("primary", processes, roles) == [
+        27018]
+    assert parse_current_op_source_selection("secondary", processes, roles) == [
+        27017, 27019]
+    assert parse_current_op_source_selection("999", processes, roles) is None
+    assert parse_current_op_source_selection("primary,27017", processes, roles) == [
+        27018, 27017]
+
+
+def test_choose_current_op_sources_prompts_with_roles():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+    roles = {
+        27017: RoleMetrics(True, "Secondary"),
+        27018: RoleMetrics(True, "Primary"),
+    }
+    stdout = io.StringIO()
+
+    ports = choose_current_op_sources(
+        processes, roles, input_func=lambda: "primary", stdout=stdout)
+
+    assert ports == [27018]
+    assert "[1] Secondary" in stdout.getvalue()
+    assert "[2] Primary" in stdout.getvalue()
+
+
+def test_current_op_source_label_describes_selected_source():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+    roles = {
+        27017: RoleMetrics(True, "Secondary"),
+        27018: RoleMetrics(True, "Primary"),
+    }
+
+    assert current_op_source_label(processes, [], roles) == "all"
+    assert current_op_source_label(processes, [27018], roles) == "primary 27018"
+    assert current_op_source_label(
+        processes, [27017, 27018], roles) == "all"
 
 
 def test_mongosh_target_options_prefers_primary_selected_and_seed():
@@ -2691,6 +2754,53 @@ def test_monitor_l_requests_current_op_limit_selection():
     assert action == "select-currentop-limit"
 
 
+def test_monitor_r_requests_current_op_source_selection_in_current_op_view():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+
+    action = monitor._wait_for_action(FakeTerminal("r"), time.time(), [])
+
+    assert action == "select-currentop-sources"
+
+
+def test_monitor_space_pauses_current_op_sampling():
+    snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27018,
+                "Primary",
+                3.0,
+                "query",
+                "test.orders",
+                "client",
+                "desc",
+                raw={"active": True},
+            )
+        ],
+    )
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.cpu_current_op_view = True
+    monitor.focused_pane = "logs"
+
+    action = monitor._wait_for_action(
+        FakeTerminal(" "), time.time(), [], current_ops=snapshot)
+
+    assert action == "redraw"
+    assert monitor.current_op_paused is True
+    assert monitor.current_op_paused_snapshot == snapshot
+    assert monitor.status_message == "currentOp sampling paused"
+
+    action = monitor._wait_for_action(
+        FakeTerminal(" "), time.time(), [], current_ops=snapshot)
+
+    assert action == "resample"
+    assert monitor.current_op_paused is False
+    assert monitor.current_op_paused_snapshot is None
+    assert monitor.status_message == "currentOp sampling resumed"
+
+
 def test_monitor_m_requests_mongosh_launch():
     monitor = Monitor(stdout=io.StringIO())
 
@@ -2716,6 +2826,38 @@ def test_monitor_select_current_op_limit_updates_limit():
     assert monitor.cpu_current_op_view is True
     assert monitor.focused_pane == "logs"
     assert monitor.status_message == "currentOp top 50 view"
+
+
+def test_monitor_select_current_op_sources_updates_selected_ports():
+    processes = [
+        FakeProcess(10, "mongod", ["mongod", "--port", "27017"]),
+        FakeProcess(11, "mongod", ["mongod", "--port", "27018"]),
+    ]
+
+    class FakeRoleSampler:
+        def sample(self, processes):
+            return {
+                27017: RoleMetrics(True, "Secondary"),
+                27018: RoleMetrics(True, "Primary"),
+            }
+
+    monitor = Monitor(
+        process_iter=lambda: processes,
+        include_all=True,
+        stdout=io.StringIO(),
+        input_func=lambda: "primary",
+    )
+    monitor.role_sampler = FakeRoleSampler()
+    monitor.current_op_paused = True
+    monitor.current_op_paused_snapshot = CurrentOpSnapshot(True, [])
+
+    monitor._select_current_op_sources()
+
+    assert monitor.current_op_source_ports == [27018]
+    assert monitor.current_op_paused is False
+    assert monitor.current_op_paused_snapshot is None
+    assert monitor.cpu_current_op_view is True
+    assert monitor.status_message == "currentOp sources: primary 27018"
 
 
 def test_monitor_dashboard_snapshot_passes_current_op_limit():
@@ -2767,6 +2909,114 @@ def test_monitor_dashboard_snapshot_passes_current_op_limit():
 
     assert current_ops.limit == 50
     assert current_ops.namespace == "test.orders"
+
+
+def test_monitor_dashboard_snapshot_filters_current_op_sources():
+    processes = [
+        FakeProcess(10, "mongod", ["mongod", "--port", "27017"]),
+        FakeProcess(11, "mongod", ["mongod", "--port", "27018"]),
+    ]
+
+    class FakeProcessSampler:
+        def sample(self, processes):
+            return {
+                process.pid: ProcessMetrics(1.0, 1024, "running")
+                for process in processes
+            }
+
+    class FakeRoleSampler:
+        def sample(self, processes):
+            return {
+                27017: RoleMetrics(True, "Secondary"),
+                27018: RoleMetrics(True, "Primary"),
+            }
+
+    class FakeNetworkSampler:
+        def sample(self, processes):
+            return {}
+
+    class RecordingCurrentOpSampler:
+        def __init__(self):
+            self.ports = None
+
+        def sample(self, processes, role_metrics=None, limit=10, namespace=""):
+            self.ports = [process.port for process in processes]
+            return CurrentOpSnapshot(True, [])
+
+    current_ops = RecordingCurrentOpSampler()
+    monitor = Monitor(
+        process_iter=lambda: processes,
+        include_all=True,
+        stdout=io.StringIO(),
+    )
+    monitor.process_sampler = FakeProcessSampler()
+    monitor.role_sampler = FakeRoleSampler()
+    monitor.network_sampler = FakeNetworkSampler()
+    monitor.current_op_sampler = current_ops
+    monitor.cpu_current_op_view = True
+    monitor.current_op_source_ports = [27018]
+
+    monitor._read_dashboard_snapshot(LogTailer({}), {})
+
+    assert current_ops.ports == [27018]
+
+
+def test_monitor_dashboard_snapshot_reuses_paused_current_ops():
+    process = FakeProcess(
+        10,
+        "mongod",
+        ["mongod", "--port", "27017"],
+    )
+
+    class FakeProcessSampler:
+        def sample(self, processes):
+            return {
+                processes[0].pid: ProcessMetrics(1.0, 1024, "running"),
+            }
+
+    class FakeRoleSampler:
+        def sample(self, processes):
+            return {27017: RoleMetrics(True, "Primary")}
+
+    class FakeNetworkSampler:
+        def sample(self, processes):
+            return {}
+
+    class FailingCurrentOpSampler:
+        def sample(self, processes, role_metrics=None, limit=10, namespace=""):
+            raise AssertionError("paused currentOp should not resample")
+
+    paused_snapshot = CurrentOpSnapshot(
+        True,
+        [
+            CurrentOpEntry(
+                27017,
+                "Primary",
+                1.0,
+                "query",
+                "test.orders",
+                "client",
+                "desc",
+                raw={"active": True},
+            )
+        ],
+    )
+    monitor = Monitor(
+        process_iter=lambda: [process],
+        include_all=True,
+        stdout=io.StringIO(),
+    )
+    monitor.process_sampler = FakeProcessSampler()
+    monitor.role_sampler = FakeRoleSampler()
+    monitor.network_sampler = FakeNetworkSampler()
+    monitor.current_op_sampler = FailingCurrentOpSampler()
+    monitor.cpu_current_op_view = True
+    monitor.current_op_paused = True
+    monitor.current_op_paused_snapshot = paused_snapshot
+
+    snapshot = monitor._read_dashboard_snapshot(LogTailer({}), {})
+
+    assert snapshot.current_ops == paused_snapshot
 
 
 def test_monitor_launch_mongosh_runs_selected_target():
