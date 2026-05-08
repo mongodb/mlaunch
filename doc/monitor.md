@@ -54,6 +54,7 @@ mrun/monitor.py
 |   +-- ProcessSampler
 |   +-- reads CPU percent, RSS memory, and process status from psutil
 |   +-- preserves psutil.Process objects by pid so CPU percent has history
+|   +-- keeps raw process CPU and normalized CPU where 100% means all CPUs
 |   +-- RoleSampler
 |   +-- reads serverStatus().repl role data for Primary/Secondary labels
 |   +-- roles are rendered in CPU, memory, network, disk, and currentOp rows
@@ -119,6 +120,7 @@ mrun/monitor.py
     +-- Tab and Shift+Tab cycle focused panes
     +-- z zooms the focused pane
     +-- CPU focus: j/k or arrows select a MongoDB process
+    +-- CPU focus: C toggles normalized and raw process CPU
     +-- CPU focus: t toggles process-list and selected-process thread views
     +-- o toggles the right activity pane between logs and top currentOp views
     +-- O toggles formatted/raw currentOp documents while currentOp is active
@@ -176,6 +178,7 @@ flowchart TD
     Q -- Tab or Shift+Tab --> S[Move pane focus]
     Q -- z --> T[Toggle focused-pane zoom]
     Q -- CPU j/k/arrows --> U[Select MongoDB process]
+    Q -- CPU C --> U2[Toggle normalized/raw CPU]
     Q -- CPU t --> V[Toggle selected-process thread view]
     Q -- o --> V2[Toggle right activity currentOp view]
     Q -- O --> V3[Toggle formatted/raw currentOp]
@@ -197,6 +200,7 @@ flowchart TD
     S --> L
     T --> L
     U --> L
+    U2 --> L
     V --> L
     V2 --> L
     V3 --> L
@@ -223,7 +227,7 @@ flowchart TD
 ```text
 dashboard mode
 
-+ [CPU Usage] ----------++ Log Tail -------------------------+
++ [CPU Usage (normalized)] ++ Log Tail ----------------------+
 |  PORT PID ROLE PROCESS ||  info log line                    |  muted teal text
 | 27017 123 Primary ...  ||  warning log line                 |  yellow text
 + Memory Usage ---------+| > selected error log line        |  red inverse
@@ -244,7 +248,7 @@ CPU thread mode, toggled with t while CPU is focused
 
 activity-pane currentOp mode, toggled with o
 
-+ CPU Usage -------------++ [Current Ops (Formatted, top 10)]-+
++ CPU Usage (normalized) -++ [Current Ops (Formatted, top 10)]-+
 | PORT PID ROLE PROCESS   || PORT ROLE SECS OP NS CLIENT DESC |
 | 27017 123 Primary ...   ||>27017 Primary 12 query app 127.0 |
 + Memory/Network/Disk ----+| 27018 Secondary 4 command admin |
@@ -252,7 +256,7 @@ activity-pane currentOp mode, toggled with o
 
 raw currentOp mode, toggled with O while currentOp is active
 
-+ CPU Usage -------------++ [Current Ops (Raw, top 10)] -----+
++ CPU Usage (normalized) -++ [Current Ops (Raw, top 10)] -----+
 | PORT PID ROLE PROCESS   || RAW CURRENTOP DOCUMENTS          |
 | 27017 123 Primary ...   ||>27017 Primary {"op":"query",...} |
 +-------------------------++----------------------------------+
@@ -325,11 +329,15 @@ focused pane; pressing `z` again returns to the two-column dashboard layout.
 
 CPU thread view and currentOp view are intentionally not the default. When the
 CPU pane is focused, `j`/`k` or the up/down arrows select a MongoDB process row.
-Pressing `t` toggles the CPU pane from the process CPU list to threads for the
-selected process. Pressing `o` from any pane toggles the right activity pane
-from log tail to the active currentOp entries across visible processes. The
-default limit is 10. Pressing `L` while currentOp is active opens a top-N prompt
-that accepts positive integers and caps large values at 500. Pressing `O` while
+The CPU pane defaults to normalized process CPU: the raw `psutil` process
+percentage is divided by the host logical CPU count, so 100% means all logical
+CPUs. Pressing `C` toggles to raw process CPU, which can exceed 100% on
+multi-core hosts, and pressing `C` again returns to normalized mode. Pressing
+`t` toggles the CPU pane from the process CPU list to threads for the selected
+process. Pressing `o` from any pane toggles the right activity pane from log
+tail to the active currentOp entries across visible processes. The default
+limit is 10. Pressing `L` while currentOp is active opens a top-N prompt that
+accepts positive integers and caps large values at 500. Pressing `O` while
 currentOp is active toggles formatted rows and raw currentOp documents derived
 from `db.currentOp()`. Raw rendering is BSON-safe: ObjectId, Timestamp,
 datetime, and other non-JSON values are converted to readable text before

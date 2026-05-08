@@ -56,7 +56,10 @@ Monitor
    that do not compete with pane headers. Pane borders stay neutral, while pane
    titles and table headers are bold and color-coded by pane. CPU, memory,
    network, disk, and currentOp rows share an ANSI-aware table formatter for
-   stable column alignment. If no
+   stable column alignment. The CPU pane defaults to normalized process CPU,
+   where 100% means all logical CPUs on the host. Press ``C`` while the CPU
+   pane is focused to toggle back to raw ``psutil`` process CPU, which can
+   exceed 100% on multi-core hosts. If no
    **mrun**
    managed MongoDB server processes are running, **mrun** will print a message
    and exit.
@@ -82,6 +85,8 @@ Monitor
       and logs panes.
    -  ``z`` toggles a full-screen view for the focused pane.
    -  In the CPU pane, ``j``/``k`` or up/down arrows select a MongoDB process.
+   -  In the CPU pane, ``C`` toggles the CPU column between normalized and raw
+      process CPU.
    -  In the CPU pane, ``t`` toggles between the default process CPU list and
       a thread view for the selected process. Thread view is never shown by
       default.
