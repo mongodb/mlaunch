@@ -290,11 +290,14 @@ class MRunTool(BaseCmdLineTool):
                                        'several singles or replica sets. '
                                        'Provide either list of shard names or '
                                        'number of shards.'))
-        init_parser.add_argument('--config', action='store', default=1,
+        init_parser.add_argument('--config', action='store', default=-1,
                                  type=int, metavar='NUM',
                                  help=('adds NUM config servers to sharded '
                                        'setup (requires --sharded, default=1)'))
-
+        
+        init_parser.add_argument('--embeddedcsrs', default=False, action='store_true',
+                                 help=('use embedded CSRS (only for MongoDB 8.0.0+), default=False'))
+        
         # As of MongoDB 3.6, all config servers must be CSRS
         init_parser.add_argument('--csrs', default=True, action='store_true',
                                  help=argparse.SUPPRESS)
@@ -513,7 +516,7 @@ class MRunTool(BaseCmdLineTool):
                                         'specified PATH.'))
 
         # stop command
-        helptext = ('stops running MongoDB instances. Example: "mlamrununch stop '
+        helptext = ('stops running MongoDB instances. Example: "mrun stop '
                     'shard 2 secondary" will stop all secondary nodes '
                     'of shard 2.')
         desc = ('stops running MongoDB instances with the shutdown command. '
@@ -663,13 +666,27 @@ class MRunTool(BaseCmdLineTool):
             sys.stderr.write('warning: server requires certificates but no'
                              ' --tlsClientCertificateKeyFile provided\n')
         # number of default config servers
-        if self.args['config'] == -1:
-            self.args['config'] = 1
+        if self.args['config'] == -1 and self.args["sharded"]:
+            if self.args['embeddedcsrs']:
+                print("Config members set to: " + str(self.args['nodes']))
+                self.args['config'] = self.args['nodes']
+            else:
+                print("Config members set to: 1")
+                self.args['config'] = 1
 
         # add the 'csrs' parameter as default for MongoDB >= 3.3.0
         if (version.parse(self.current_version) >= version.parse("3.3.0") or
                 version.parse(self.current_version) == version.parse("0.0.0")):
             self.args['csrs'] = True
+
+        if self.args['embeddedcsrs'] and version.parse(self.current_version) < version.parse("8.0.0"):
+            print("--embeddedcsrs can only be used with MongoDB 8.0.0+")
+            sys.exit(1)
+
+        # Check if embedded is used, if it's the case the number of shards should be decremented by 1
+        if self.args['embeddedcsrs'] and 'sharded' in self.args and self.args['sharded']:
+            if len(self.args['sharded']) == 1:
+                self.args['sharded'][0] = str(int(self.args['sharded'][0]) - 1)
 
         # construct startup strings
         self._construct_cmdlines()
@@ -794,6 +811,11 @@ class MRunTool(BaseCmdLineTool):
                                 print('Shard addition failed: ' + res + ' - will retry')
 
                     time.sleep(1)
+
+            if self.args['embeddedcsrs']:
+                print("Configuring embedded config servers")
+                con = self.client('localhost:%i' % mongos[0])
+                con.admin.command({'transitionFromDedicatedConfigServer': 1})
 
         elif self.args['single']:
             # just start node
@@ -1031,12 +1053,27 @@ class MRunTool(BaseCmdLineTool):
             print_docs.append(None)
 
         # configs
+        # configs
+        # temporary list used to find the list of running nodes
+        tmp_config_list = []
+        string_config = "config server"
         for node in sorted(self.get_tagged(['config'])):
-            doc = OrderedDict([('process', 'config server'),
+            if self.cluster_running[node]:
+                status = 'running'
+                if self._check_if_embeddedcsrs():
+                    string_config = "config shard"
+            else:
+                status = 'down'
+
+            doc = OrderedDict([('process', string_config),
                               ('port', node),
-                              ('status', 'running'
-                               if self.cluster_running[node] else 'down')])
-            print_docs.append(doc)
+                              ('status', status)])
+            tmp_config_list.append(doc)
+
+        # construct the final list with the right config type
+        for item in tmp_config_list:
+            item['process'] = string_config
+            print_docs.append(item)
 
         if len(self.get_tagged(['config'])) > 0:
             print_docs.append(None)
@@ -2206,6 +2243,20 @@ class MRunTool(BaseCmdLineTool):
         else:
             with open(keyfile, 'rb') as f:
                 return ''.join(f.readlines())
+
+    def _check_if_embeddedcsrs(self) -> bool:
+        """
+        Returns True if embedded CSRS is used
+        """
+        mongos = sorted(self.get_tagged(['mongos']))
+        con = self.client('localhost:%i' % mongos[0], readPreference="primaryPreferred")
+        try:
+            if con['config']['shards'].find_one({ '_id': 'config' }):
+                return True
+            return False
+        except OperationFailure:
+            print("WARNING: Unable to check if config server is embedded")
+            return False
 
 def main():
     tool = MRunTool()
