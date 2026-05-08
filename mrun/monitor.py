@@ -197,6 +197,7 @@ class ProcessMetrics:
     cpu_percent: float
     memory_rss: int
     status: str
+    normalized_cpu_percent: float = None
 
 
 @dataclass
@@ -592,6 +593,26 @@ def discover_mrun_processes(data_dir, process_iter=None):
     return filter_mrun_processes(discover_mongo_processes(process_iter), specs)
 
 
+def detected_cpu_count(cpu_count=None):
+    """Return a safe logical CPU count for process CPU normalization."""
+    if cpu_count is None:
+        cpu_count = psutil.cpu_count() or os.cpu_count()
+    try:
+        cpu_count = int(cpu_count)
+    except (TypeError, ValueError):
+        cpu_count = 1
+    return max(cpu_count, 1)
+
+
+def normalize_cpu_percent(cpu_percent, cpu_count=None):
+    """Normalize process CPU percent so 100% means all logical CPUs."""
+    try:
+        cpu_percent = float(cpu_percent)
+    except (TypeError, ValueError):
+        cpu_percent = 0.0
+    return cpu_percent / detected_cpu_count(cpu_count)
+
+
 def read_process_metrics(process_info, process_factory=None):
     """Read CPU and memory metrics for a discovered process."""
     if process_factory is None:
@@ -605,7 +626,12 @@ def read_process_metrics(process_info, process_factory=None):
     except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
         return ProcessMetrics(0.0, 0, "unavailable")
 
-    return ProcessMetrics(cpu_percent, memory_rss, status)
+    return ProcessMetrics(
+        cpu_percent,
+        memory_rss,
+        status,
+        normalize_cpu_percent(cpu_percent),
+    )
 
 
 def _thread_field(thread, name, index, default=0.0):
@@ -694,8 +720,9 @@ class ThreadSampler:
 class ProcessSampler:
     """Sample process metrics while preserving psutil CPU history."""
 
-    def __init__(self, process_factory=None):
+    def __init__(self, process_factory=None, cpu_count=None):
         self.process_factory = process_factory or psutil.Process
+        self.cpu_count = detected_cpu_count(cpu_count)
         self.processes = {}
 
     def prime(self, processes):
@@ -730,7 +757,12 @@ class ProcessSampler:
             self.processes.pop(process_info.pid, None)
             return ProcessMetrics(0.0, 0, "unavailable")
 
-        return ProcessMetrics(cpu_percent, memory_rss, status)
+        return ProcessMetrics(
+            cpu_percent,
+            memory_rss,
+            status,
+            normalize_cpu_percent(cpu_percent, self.cpu_count),
+        )
 
     def _process(self, pid):
         process = self.processes.get(pid)
@@ -3124,8 +3156,19 @@ def _row_selection_styles(index, cursor=None, yanked_cursor=None):
     return []
 
 
+def process_cpu_percent_for_display(metrics, normalized=True):
+    """Return raw or normalized process CPU percent for display."""
+    if metrics is None:
+        return 0.0
+    if normalized:
+        if metrics.normalized_cpu_percent is not None:
+            return metrics.normalized_cpu_percent
+        return metrics.cpu_percent
+    return metrics.cpu_percent
+
+
 def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
-                     role_metrics=None, width=None):
+                     role_metrics=None, width=None, normalized=True):
     """Format CPU process rows, optionally marking the selected process."""
     role_metrics = role_metrics or {}
     selected_index = clamp_process_cursor(processes, cursor)
@@ -3152,7 +3195,8 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
             "pid": str(process.pid),
             "role": colorize_role(role_display(role_metrics.get(process.port))),
             "process": process.name,
-            "cpu": "%.1f" % metrics.cpu_percent,
+            "cpu": "%.1f" % process_cpu_percent_for_display(
+                metrics, normalized=normalized),
             "status": metrics.status,
         })
         selected = show_cursor and index == selected_index
@@ -3513,7 +3557,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      current_op_pretty_active=False,
                      current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
                      current_op_paused=False,
-                     current_op_source_label_text="all"):
+                     current_op_source_label_text="all",
+                     cpu_normalized=True):
     focused_pane = normalize_pane(focused_pane)
     stream_control = "space resume" if stream_paused else "space pause"
     scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
@@ -3539,6 +3584,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
 
     if focused_pane == "cpu":
         controls.append("cpu j/k")
+        controls.append("C %s cpu" % (
+            "raw" if cpu_normalized else "norm"))
         controls.append("t %s threads" % (
             "list" if cpu_thread_view else "view"))
         controls.append("o %s" % (
@@ -3677,7 +3724,8 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      current_op_yanked_cursor=None,
                      current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
                      current_op_paused=False,
-                     current_op_source_ports=None):
+                     current_op_source_ports=None,
+                     cpu_normalized=True):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -3715,6 +3763,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_limit=current_op_limit,
         current_op_paused=current_op_paused,
         current_op_source_label_text=current_op_source_label_text,
+        cpu_normalized=cpu_normalized,
     )
 
     if server_status_active:
@@ -3757,11 +3806,13 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         cpu_lines = format_thread_lines(
             selected_cpu, thread_metrics, thread_error, thread_count)
     else:
-        cpu_title = "CPU Usage"
+        cpu_title = (
+            "CPU Usage (normalized)" if cpu_normalized
+            else "CPU Usage (raw)")
         metric_width = max((columns // 2) - 3, 1)
         cpu_lines = format_cpu_lines(
             processes, process_metrics, cpu_cursor, show_cpu_cursor,
-            role_metrics, width=metric_width)
+            role_metrics, width=metric_width, normalized=cpu_normalized)
 
     metric_width = max((columns // 2) - 3, 1)
     mem_lines = format_memory_lines(
@@ -3822,6 +3873,7 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_limit=current_op_limit,
         current_op_paused=current_op_paused,
         current_op_source_label_text=current_op_source_label_text,
+        cpu_normalized=cpu_normalized,
     )
 
     if zoom_pane:
@@ -4090,6 +4142,7 @@ class Monitor:
         self.zoom_pane = None
         self.focused_pane = "logs"
         self.cpu_cursor = 0
+        self.cpu_normalized = True
         self.cpu_thread_view = False
         self.cpu_current_op_view = False
         self.current_op_cursor = None
@@ -4221,6 +4274,7 @@ class Monitor:
                         current_op_limit=self.current_op_limit,
                         current_op_paused=self.current_op_paused,
                         current_op_source_ports=self.current_op_source_ports,
+                        cpu_normalized=self.cpu_normalized,
                         log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
@@ -4445,6 +4499,9 @@ class Monitor:
                     if self.cpu_thread_view:
                         return "resample"
                     return "redraw"
+                if key == "C":
+                    self._toggle_cpu_normalization()
+                    return "redraw"
                 if key in ("t", "T"):
                     self._toggle_cpu_thread_view(processes)
                     return "resample"
@@ -4558,6 +4615,12 @@ class Monitor:
         process = selected_process(processes, self.cpu_cursor)
         self.status_message = "selected port %s pid %s" % (
             process.port, process.pid)
+
+    def _toggle_cpu_normalization(self):
+        self.cpu_normalized = not self.cpu_normalized
+        self.status_message = (
+            "CPU normalized view" if self.cpu_normalized
+            else "CPU raw view")
 
     def _toggle_cpu_thread_view(self, processes):
         self.cpu_cursor = clamp_process_cursor(processes, self.cpu_cursor)

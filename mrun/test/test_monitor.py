@@ -66,8 +66,10 @@ from mrun.monitor import (
     NetworkSampler,
     NO_MRUN_PROCESSES_MESSAGE,
     NO_PROCESSES_MESSAGE,
+    normalize_cpu_percent,
     ProcessDiscoveryError,
     ProcessMetrics,
+    process_cpu_percent_for_display,
     ProcessSampler,
     read_disk_metrics,
     discover_mongo_processes,
@@ -565,6 +567,7 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "a toggle mrun/all processes" in flat_output
     assert "Tab switch panes" in flat_output
     assert "z zoom logs or focused pane" in flat_output
+    assert "C toggles raw/normalized CPU" in flat_output
     assert "t toggles thread view" in flat_output
     assert "o toggles currentOp activity" in flat_output
     assert "O toggles currentOp raw/format" in flat_output
@@ -1443,6 +1446,39 @@ def test_process_sampler_reuses_process_objects_for_cpu_deltas():
     assert second_metrics[10].status == "running"
 
 
+def test_normalize_cpu_percent_uses_safe_cpu_count():
+    assert normalize_cpu_percent(240.0, cpu_count=12) == 20.0
+    assert normalize_cpu_percent(25.0, cpu_count=0) == 25.0
+    assert normalize_cpu_percent("bad", cpu_count=8) == 0.0
+
+
+def test_process_cpu_display_can_use_raw_or_normalized_value():
+    metrics = ProcessMetrics(
+        240.0,
+        4096,
+        "running",
+        normalized_cpu_percent=20.0,
+    )
+
+    assert process_cpu_percent_for_display(metrics, normalized=True) == 20.0
+    assert process_cpu_percent_for_display(metrics, normalized=False) == 240.0
+
+
+def test_process_sampler_stores_normalized_cpu_percent():
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    def process_factory(pid):
+        assert pid == 10
+        return FakeCpuProcess([240.0])
+
+    sampler = ProcessSampler(process_factory=process_factory, cpu_count=12)
+
+    metrics = sampler.sample([process])
+
+    assert metrics[10].cpu_percent == 240.0
+    assert metrics[10].normalized_cpu_percent == 20.0
+
+
 def test_process_sampler_prime_uses_cached_process_for_first_dashboard_sample():
     process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
     created = []
@@ -1523,7 +1559,7 @@ def test_render_dashboard_marks_focused_cpu_process_selection():
         cpu_cursor=1,
     )
 
-    assert "[CPU Usage]" in rendered
+    assert "[CPU Usage (normalized)]" in rendered
     assert "> 27018" in rendered
     assert ANSI_INVERSE in rendered
     assert "t view threads" in rendered
@@ -1544,6 +1580,24 @@ def test_format_cpu_lines_includes_replica_role_column():
     assert "Primary" in strip_ansi(lines[1])
     assert ANSI_ROLE_PRIMARY in lines[1]
     assert ANSI_BOLD not in lines[1]
+
+
+def test_format_cpu_lines_can_show_normalized_or_raw_cpu():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [])
+    metrics = {
+        10: ProcessMetrics(
+            240.0,
+            1024 * 1024,
+            "running",
+            normalized_cpu_percent=20.0,
+        )
+    }
+
+    normalized = format_cpu_lines([process], metrics, normalized=True)
+    raw = format_cpu_lines([process], metrics, normalized=False)
+
+    assert "20.0" in strip_ansi(normalized[1])
+    assert "240.0" in strip_ansi(raw[1])
 
 
 def test_role_column_uses_muted_non_header_secondary_color():
@@ -2874,6 +2928,23 @@ def test_monitor_shift_tab_cycles_focus_backward():
     assert action == "redraw"
     assert monitor.focused_pane == "disk"
     assert monitor.status_message == "focus disk pane"
+
+
+def test_monitor_c_toggles_cpu_normalized_display_when_cpu_focused():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.focused_pane = "cpu"
+
+    action = monitor._wait_for_action(FakeTerminal("C"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.cpu_normalized is False
+    assert monitor.status_message == "CPU raw view"
+
+    action = monitor._wait_for_action(FakeTerminal("C"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.cpu_normalized is True
+    assert monitor.status_message == "CPU normalized view"
 
 
 def test_monitor_t_toggles_cpu_thread_view_only_when_cpu_focused():
