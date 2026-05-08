@@ -337,6 +337,17 @@ class ServerStatusSnapshot:
 
 
 @dataclass
+class MongoCommandCapabilities:
+    """Observed MongoDB command support for one monitor sampling path."""
+
+    server_status: bool = True
+    current_op: bool = True
+    hello: bool = True
+    version: str = ""
+    error: str = ""
+
+
+@dataclass
 class DiskMetrics:
     """Disk consumption for a MongoDB dbpath and log file."""
 
@@ -769,6 +780,79 @@ def read_disk_metrics(processes):
     return metrics
 
 
+def _as_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_at(document, *keys):
+    current = _as_dict(document)
+    for key in keys:
+        current = _as_dict(current.get(key))
+    return current
+
+
+def _safe_number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _counter_delta(current, previous, key, elapsed):
+    return (
+        _safe_number(current.get(key)) -
+        _safe_number(previous.get(key))
+    ) / elapsed
+
+
+def _mongo_error_text(exc):
+    text = str(exc).strip()
+    return text or exc.__class__.__name__
+
+
+def _is_auth_error_text(text):
+    lowered = str(text or "").lower()
+    return any(fragment in lowered for fragment in (
+        "auth required",
+        "authentication",
+        "not authorized",
+        "unauthorized",
+        "requires auth",
+        "requires authentication",
+    ))
+
+
+def _is_unsupported_command_text(text):
+    lowered = str(text or "").lower()
+    return any(fragment in lowered for fragment in (
+        "no such command",
+        "unknown command",
+        "unrecognized field",
+        "unknown field",
+        "unsupported",
+        "invalid field",
+        "badvalue",
+    ))
+
+
+def _compat_error_message(errors, command_name):
+    errors = [error for error in errors if error]
+    if not errors:
+        return "%s unavailable" % command_name
+    if any(_is_auth_error_text(error) for error in errors):
+        return ROLE_PASSWORD_REQUIRED
+    if all(_is_unsupported_command_text(error) for error in errors):
+        return "unsupported %s command" % command_name
+    return errors[-1]
+
+
 class NetworkSampler:
     """Sample MongoDB serverStatus network counters and expose per-second rates."""
 
@@ -826,15 +910,16 @@ class NetworkSampler:
                 **client_kwargs
             )
             status = client.admin.command("serverStatus")
-            network = status.get("network", {})
+            network = _dict_at(status, "network")
             counters = {
-                "bytesIn": int(network.get("bytesIn", 0)),
-                "bytesOut": int(network.get("bytesOut", 0)),
-                "numRequests": int(network.get("numRequests", 0)),
+                "bytesIn": _safe_int(network.get("bytesIn", 0)),
+                "bytesOut": _safe_int(network.get("bytesOut", 0)),
+                "numRequests": _safe_int(network.get("numRequests", 0)),
             }
             return counters, ""
         except Exception as exc:
-            return None, str(exc)
+            return None, _compat_error_message(
+                [_mongo_error_text(exc)], "serverStatus")
         finally:
             if client is not None and hasattr(client, "close"):
                 client.close()
@@ -854,6 +939,7 @@ class RoleSampler:
         self.client_factory = client_factory or self._default_client_factory
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
+        self.capabilities = {}
 
     def sample(self, processes):
         metrics = {}
@@ -880,10 +966,59 @@ class RoleSampler:
                 "localhost:%i" % process.port,
                 **client_kwargs
             )
-            status = client.admin.command("serverStatus")
-            return RoleMetrics(True, role=role_from_server_status(status))
+            errors = []
+            fallback_role = ""
+            try:
+                status = client.admin.command("serverStatus")
+                self.capabilities[process.port] = MongoCommandCapabilities(
+                    server_status=True,
+                    version=str(_as_dict(status).get("version") or ""),
+                )
+                role = role_from_server_status(status)
+                if role not in ("Standalone", "Replica Set"):
+                    return RoleMetrics(True, role=role)
+                fallback_role = role
+            except Exception as exc:
+                errors.append(_mongo_error_text(exc))
+
+            role, error = read_hello_role(client)
+            if role:
+                self.capabilities[process.port] = MongoCommandCapabilities(
+                    server_status=not errors,
+                    hello=True,
+                    error="; ".join(errors),
+                )
+                return RoleMetrics(True, role=role)
+            if error:
+                errors.append(error)
+            if fallback_role:
+                self.capabilities[process.port] = MongoCommandCapabilities(
+                    server_status=True,
+                    hello=False,
+                    error=error,
+                )
+                return RoleMetrics(True, role=fallback_role)
+            self.capabilities[process.port] = MongoCommandCapabilities(
+                server_status=not errors,
+                hello=False,
+                error=_compat_error_message(errors, "role"),
+            )
+            return RoleMetrics(
+                False,
+                role="unavailable",
+                error=_compat_error_message(errors, "role"),
+            )
         except Exception as exc:
-            return RoleMetrics(False, role="unavailable", error=str(exc))
+            self.capabilities[process.port] = MongoCommandCapabilities(
+                server_status=False,
+                hello=False,
+                error=_compat_error_message([_mongo_error_text(exc)], "role"),
+            )
+            return RoleMetrics(
+                False,
+                role="unavailable",
+                error=_compat_error_message([_mongo_error_text(exc)], "role"),
+            )
         finally:
             if client is not None and hasattr(client, "close"):
                 client.close()
@@ -903,6 +1038,7 @@ class CurrentOpSampler:
         self.client_factory = client_factory or self._default_client_factory
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
+        self.capabilities = {}
 
     def sample(self, processes, role_metrics=None, limit=10, namespace=""):
         if self.auth_required:
@@ -941,24 +1077,33 @@ class CurrentOpSampler:
                 "localhost:%i" % process.port,
                 **client_kwargs
             )
-            command = {
-                "currentOp": 1,
-                "$all": True,
-                "active": True,
-            }
-            if namespace:
-                command["ns"] = namespace
-            result = client.admin.command(command)
-            role = role_display(role_metrics.get(process.port))
-            entries = [
-                current_op_entry(process.port, role, raw)
-                for raw in result.get("inprog", [])
-                if raw.get("active", True)
-                and (not namespace or raw.get("ns") == namespace)
-            ]
-            return entries, ""
+            errors = []
+            for command in current_op_command_candidates(namespace):
+                try:
+                    result = client.admin.command(command)
+                    role = role_display(role_metrics.get(process.port))
+                    entries = [
+                        current_op_entry(process.port, role, raw)
+                        for raw in current_op_documents(result)
+                        if raw.get("active", True)
+                        and (not namespace or raw.get("ns") == namespace)
+                    ]
+                    self.capabilities[process.port] = MongoCommandCapabilities(
+                        current_op=True)
+                    return entries, ""
+                except Exception as exc:
+                    errors.append(_mongo_error_text(exc))
+            error = _compat_error_message(errors, "currentOp")
+            self.capabilities[process.port] = MongoCommandCapabilities(
+                current_op=False, error=error)
+            return [], error
         except Exception as exc:
-            return [], str(exc)
+            self.capabilities[process.port] = MongoCommandCapabilities(
+                current_op=False,
+                error=_compat_error_message(
+                    [_mongo_error_text(exc)], "currentOp"))
+            return [], _compat_error_message(
+                [_mongo_error_text(exc)], "currentOp")
         finally:
             if client is not None and hasattr(client, "close"):
                 client.close()
@@ -1010,6 +1155,7 @@ class StatusSampler:
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
         self.previous = {}
+        self.capabilities = {}
 
     def sample(self, process_info):
         """Execute serverStatus and segregate into Disk/Network/Storage."""
@@ -1032,30 +1178,34 @@ class StatusSampler:
                 "localhost:%i" % process_info.port,
                 **client_kwargs
             )
-            status = client.admin.command("serverStatus")
+            status = _as_dict(client.admin.command("serverStatus"))
+            self.capabilities[process_info.port] = MongoCommandCapabilities(
+                server_status=True,
+                version=str(status.get("version") or ""),
+            )
             subsystems = self._extract_subsystems(status)
 
             disk = {
-                "wt_block_manager": status.get(
-                    "wiredTiger", {}).get("block-manager", {}),
-                "wt_log": status.get("wiredTiger", {}).get("log", {}),
-                "backgroundFlushing": status.get("backgroundFlushing", {}),
+                "wt_block_manager": _dict_at(
+                    status, "wiredTiger", "block-manager"),
+                "wt_log": _dict_at(status, "wiredTiger", "log"),
+                "backgroundFlushing": _dict_at(status, "backgroundFlushing"),
                 "rates": {},
             }
             network_data = {
-                "network": status.get("network", {}),
-                "connections": status.get("connections", {}),
-                "opcounters": status.get("opcounters", {}),
-                "opcountersRepl": status.get("opcountersRepl", {}),
+                "network": _dict_at(status, "network"),
+                "connections": _dict_at(status, "connections"),
+                "opcounters": _dict_at(status, "opcounters"),
+                "opcountersRepl": _dict_at(status, "opcountersRepl"),
                 "rates": {},
             }
             storage = {
-                "wt_cache": status.get("wiredTiger", {}).get("cache", {}),
-                "wt_tickets": status.get(
-                    "wiredTiger", {}).get("concurrentTransactions", {}),
-                "globalLock": status.get("globalLock", {}),
-                "mem": status.get("mem", {}),
-                "extra_info": status.get("extra_info", {}),
+                "wt_cache": _dict_at(status, "wiredTiger", "cache"),
+                "wt_tickets": _dict_at(
+                    status, "wiredTiger", "concurrentTransactions"),
+                "globalLock": _dict_at(status, "globalLock"),
+                "mem": _dict_at(status, "mem"),
+                "extra_info": _dict_at(status, "extra_info"),
             }
 
             prev = self.previous.get(process_info.port)
@@ -1079,47 +1229,45 @@ class StatusSampler:
             )
 
         except Exception as exc:
+            self.capabilities[process_info.port] = MongoCommandCapabilities(
+                server_status=False,
+                error=_compat_error_message(
+                    [_mongo_error_text(exc)], "serverStatus"),
+            )
             return ServerStatusSnapshot(
                 False,
                 port=process_info.port,
-                error=str(exc),
+                error=_compat_error_message(
+                    [_mongo_error_text(exc)], "serverStatus"),
             )
         finally:
             if client is not None and hasattr(client, "close"):
                 client.close()
 
     def _calculate_disk_rates(self, current, previous, elapsed):
-        curr_wt = current.get("wiredTiger", {}).get("block-manager", {})
-        prev_wt = previous.get("wiredTiger", {}).get("block-manager", {})
+        curr_wt = _dict_at(current, "wiredTiger", "block-manager")
+        prev_wt = _dict_at(previous, "wiredTiger", "block-manager")
         return {
-            "bytes_read_per_sec": (
-                curr_wt.get("bytes read", 0) -
-                prev_wt.get("bytes read", 0)
-            ) / elapsed,
-            "bytes_written_per_sec": (
-                curr_wt.get("bytes written", 0) -
-                prev_wt.get("bytes written", 0)
-            ) / elapsed,
+            "bytes_read_per_sec": _counter_delta(
+                curr_wt, prev_wt, "bytes read", elapsed),
+            "bytes_written_per_sec": _counter_delta(
+                curr_wt, prev_wt, "bytes written", elapsed),
         }
 
     def _calculate_network_rates(self, current, previous, elapsed):
-        curr_net = current.get("network", {})
-        prev_net = previous.get("network", {})
-        curr_ops = current.get("opcounters", {})
-        prev_ops = previous.get("opcounters", {})
+        curr_net = _dict_at(current, "network")
+        prev_net = _dict_at(previous, "network")
+        curr_ops = _dict_at(current, "opcounters")
+        prev_ops = _dict_at(previous, "opcounters")
 
         rates = {
-            "bytes_in_per_sec": (
-                curr_net.get("bytesIn", 0) -
-                prev_net.get("bytesIn", 0)
-            ) / elapsed,
-            "bytes_out_per_sec": (
-                curr_net.get("bytesOut", 0) -
-                prev_net.get("bytesOut", 0)
-            ) / elapsed,
+            "bytes_in_per_sec": _counter_delta(
+                curr_net, prev_net, "bytesIn", elapsed),
+            "bytes_out_per_sec": _counter_delta(
+                curr_net, prev_net, "bytesOut", elapsed),
         }
         for op in ["insert", "query", "update", "delete", "getmore", "command"]:
-            rates[op] = (curr_ops.get(op, 0) - prev_ops.get(op, 0)) / elapsed
+            rates[op] = _counter_delta(curr_ops, prev_ops, op, elapsed)
         return rates
 
     @classmethod
@@ -1154,7 +1302,8 @@ class StatusSampler:
 
 def role_from_server_status(status):
     """Extract a human-readable node role from serverStatus()."""
-    repl = status.get("repl") or {}
+    status = _as_dict(status)
+    repl = _as_dict(status.get("repl"))
     state = str(repl.get("stateStr") or "").strip()
     if state:
         normalized = state.upper()
@@ -1177,6 +1326,39 @@ def role_from_server_status(status):
     if repl:
         return "Replica Set"
     return "Standalone"
+
+
+def role_from_hello(response):
+    """Extract a human-readable node role from hello/isMaster output."""
+    response = _as_dict(response)
+    if response.get("msg") == "isdbgrid":
+        return "Router"
+    if response.get("isWritablePrimary") is True:
+        return "Primary"
+    if response.get("ismaster") is True:
+        return "Primary"
+    if response.get("secondary") is True:
+        return "Secondary"
+    if response.get("arbiterOnly") is True:
+        return "Arbiter"
+    if response.get("hidden") is True:
+        return "Hidden"
+    if response.get("setName") or response.get("hosts"):
+        return "Replica Set"
+    return ""
+
+
+def read_hello_role(client):
+    """Read role from hello or legacy isMaster without requiring serverStatus."""
+    errors = []
+    for command_name in ("hello", "isMaster"):
+        try:
+            role = role_from_hello(client.admin.command(command_name))
+            if role:
+                return role, ""
+        except Exception as exc:
+            errors.append(_mongo_error_text(exc))
+    return "", _compat_error_message(errors, "hello")
 
 
 def role_display(role_metrics):
@@ -1214,6 +1396,45 @@ def _current_op_summary(raw):
             return "%s %s" % (key, value)
         return str(key)
     return raw.get("desc") or raw.get("msg") or ""
+
+
+def current_op_command_candidates(namespace=""):
+    """Return preferred-to-compatible db.currentOp command shapes."""
+    candidates = []
+    full_command = {
+        "currentOp": 1,
+        "$all": True,
+        "active": True,
+    }
+    if namespace:
+        with_namespace = dict(full_command)
+        with_namespace["ns"] = namespace
+        candidates.append(with_namespace)
+    candidates.append(full_command)
+    candidates.append({"currentOp": 1, "$all": True})
+    candidates.append({"currentOp": 1, "active": True})
+    candidates.append({"currentOp": 1})
+
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        marker = tuple(sorted(candidate.items()))
+        if marker not in seen:
+            unique.append(candidate)
+            seen.add(marker)
+    return unique
+
+
+def current_op_documents(result):
+    """Extract active-operation documents from common currentOp result shapes."""
+    if isinstance(result, list):
+        return [_as_dict(item) for item in result if isinstance(item, dict)]
+    result = _as_dict(result)
+    for key in ("inprog", "ops", "currentOps"):
+        value = result.get(key)
+        if isinstance(value, list):
+            return [_as_dict(item) for item in value if isinstance(item, dict)]
+    return []
 
 
 def current_op_entry(port, role, raw):

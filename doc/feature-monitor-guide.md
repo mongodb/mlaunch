@@ -673,7 +673,10 @@ mrun-managed to reduce terminal noise.
 
 The CPU, memory, network, disk, and currentOp rows include a `ROLE` column.
 The role is sampled from each node through `serverStatus()` using the same
-direct per-port client path as the network and expanded status samplers.
+direct per-port client path as the network and expanded status samplers. If a
+supported MongoDB version does not expose enough role data in `serverStatus()`,
+the sampler falls back to `hello`, then legacy `isMaster`, before marking the
+role unavailable.
 
 ```mermaid
 sequenceDiagram
@@ -682,13 +685,20 @@ sequenceDiagram
     participant Op as CurrentOpSampler
     participant Mongo as MongoDB Node
 
-    Loop->>Role: sample(processes) [mrun/monitor.py:858]
-    Role->>Mongo: admin.command(serverStatus) [mrun/monitor.py:883]
+    Loop->>Role: sample(processes) [mrun/monitor.py:941]
+    Role->>Mongo: admin.command(serverStatus) [mrun/monitor.py:968]
     Mongo-->>Role: repl.stateStr or repl.isWritablePrimary
+    opt serverStatus lacks role or is rejected
+        Role->>Mongo: admin.command(hello), then isMaster [mrun/monitor.py:1339]
+        Mongo-->>Role: isWritablePrimary/ismaster/secondary/msg
+    end
     Role-->>Loop: RoleMetrics by port
     alt activity-pane currentOp view active
-        Loop->>Op: sample(processes, role_metrics, limit, namespace) [mrun/monitor.py:907]
-        Op->>Mongo: admin.command({currentOp:1,$all:true,active:true,ns?}) [mrun/monitor.py:951]
+        Loop->>Op: sample(processes, role_metrics, limit, namespace) [mrun/monitor.py:1031]
+        Op->>Mongo: admin.command({currentOp:1,$all:true,active:true,ns?}) [mrun/monitor.py:1071]
+        opt optional currentOp field rejected
+            Op->>Mongo: retry simpler currentOp shapes [mrun/monitor.py:1389]
+        end
         Mongo-->>Op: inprog active operations
         Op-->>Loop: top-N entries sorted by secs_running
     end
@@ -701,6 +711,9 @@ serverStatus().repl.stateStr == PRIMARY    -> Primary
 serverStatus().repl.stateStr == SECONDARY  -> Secondary
 repl.isWritablePrimary == true             -> Primary
 repl.isWritablePrimary == false with repl   -> Secondary
+hello.isWritablePrimary == true            -> Primary
+hello.ismaster == true                     -> Primary
+hello.secondary == true                    -> Secondary
 process == mongos                          -> Router
 no repl data                               -> Standalone
 auth metadata without credentials          -> Password Required
@@ -732,10 +745,15 @@ Press `O` while currentOp is active to toggle between formatted rows and raw
 not JSON serializable are converted to readable text before rendering. Press
 `n` while currentOp is active to select a namespace filter from active
 namespaces, or type a namespace manually; press `c` to clear the currentOp
-namespace filter. Press `p` on the highlighted currentOp to open a scrollable
-syntax-colored Pretty JSON view of its raw `db.currentOp()` document. Press
-`y` to yank either the visible formatted row, raw JSON document, or active
-pretty JSON document depending on the current currentOp mode.
+namespace filter. The sampler prefers the richest command shape,
+`{currentOp: 1, $all: true, active: true, ns?: ...}`, then retries simpler
+forms if a supported MongoDB version rejects an optional field. The UI still
+filters returned documents client-side when a namespace is active, so older or
+newer command response shapes remain stable in the display. Press `p` on the
+highlighted currentOp to open a scrollable syntax-colored Pretty JSON view of
+its raw `db.currentOp()` document. Press `y` to yank either the visible
+formatted row, raw JSON document, or active pretty JSON document depending on
+the current currentOp mode.
 
 Press `r` while currentOp is active to choose which nodes receive `currentOp`
 commands. The selector accepts process indexes, ports, `primary`, `secondary`,
@@ -751,13 +769,18 @@ unnecessarily.
 Implementation mapping for roles and currentOp:
 
 - **Role Snapshot Model**: `RoleMetrics` [mrun/monitor.py:242]
+- **Command Capability Model**: `MongoCommandCapabilities` [mrun/monitor.py:340]
 - **CurrentOp Entry Model**: `CurrentOpEntry` [mrun/monitor.py:299]
 - **CurrentOp Snapshot Model**: `CurrentOpSnapshot` [mrun/monitor.py:314]
-- **Role Sampler**: `RoleSampler.sample()` [mrun/monitor.py:858]
-- **Role Extraction**: `role_from_server_status()` [mrun/monitor.py:1155]
-- **Role Formatting**: `format_role()` [mrun/monitor.py:1925]
-- **CurrentOp Sampler**: `CurrentOpSampler.sample()` [mrun/monitor.py:907]
-- **CurrentOp Normalization**: `current_op_entry()` [mrun/monitor.py:1219]
+- **Compatibility Error Mapping**: `_compat_error_message()` [mrun/monitor.py:842]
+- **Role Sampler**: `RoleSampler.sample()` [mrun/monitor.py:941]
+- **Role Extraction**: `role_from_server_status()` [mrun/monitor.py:1291]
+- **Hello Role Fallback**: `read_hello_role()` [mrun/monitor.py:1339]
+- **Role Formatting**: `format_role()` [mrun/monitor.py:2134]
+- **CurrentOp Sampler**: `CurrentOpSampler.sample()` [mrun/monitor.py:1031]
+- **CurrentOp Command Fallbacks**: `current_op_command_candidates()` [mrun/monitor.py:1389]
+- **CurrentOp Result Extraction**: `current_op_documents()` [mrun/monitor.py:1416]
+- **CurrentOp Normalization**: `current_op_entry()` [mrun/monitor.py:1428]
 - **CurrentOp Namespace List**: `current_op_namespaces()` [mrun/monitor.py:1234]
 - **BSON-Safe Raw Rendering**: `current_op_raw_json()` [mrun/monitor.py:1273]
 - **Pretty CurrentOp JSON**: `current_op_pretty_json_lines()` [mrun/monitor.py:1278]
@@ -1023,11 +1046,14 @@ computed with standard library file traversal: `os.walk()` and
 CurrentOp sampling is deliberately on-demand. It runs only while the right
 activity pane is in currentOp view and merges active operations from the
 visible MongoDB processes, sorted by `secs_running` descending and truncated to
-the configured top-N limit. Formatted mode shows compact columns; raw mode renders the original
-document captured by `CurrentOpEntry.raw` through a BSON-safe serializer. If a
-namespace filter is active, the sampler adds `ns` to the currentOp command and
-also filters the returned `inprog` documents client-side to keep the display
-stable across MongoDB versions.
+the configured top-N limit. Formatted mode shows compact columns; raw mode
+renders the original document captured by `CurrentOpEntry.raw` through a
+BSON-safe serializer. If a namespace filter is active, the sampler first tries
+to pass `ns` to the currentOp command, then retries without `ns` if the server
+rejects that optional field. The returned operation documents are still
+filtered client-side. The sampler also accepts common result containers such as
+`inprog`, `ops`, and `currentOps`, which keeps the pane usable when supported
+MongoDB versions vary response shape.
 
 When a currentOp source filter is active, the monitor filters the process list
 before calling `CurrentOpSampler.sample()`. Selecting `primary` means only the
@@ -1045,7 +1071,9 @@ Expanded status mode reuses the same MongoDB client configuration and calls
 `serverStatus()` for the selected CPU process. Detailed fields are split into
 Disk, Network, and Storage panels, while every top-level response key is also
 summarized in the Other Subsystems panel so version-specific subsystems are not
-silently hidden.
+silently hidden. Missing or non-dictionary subsystem fields are treated as empty
+sections instead of crashing the renderer, which lets the pane display cleanly
+across supported MongoDB versions.
 
 Thread metrics are sampled only when the CPU pane is in thread view. The
 monitor reads `psutil.Process(pid).threads()` for the selected process and
@@ -1693,6 +1721,9 @@ without terminating the monitor.
 | FM-MON-OP-010    | user   | currentOp sampling pause/resume   | 9f7cb69 | Implemented |
 | FM-MON-SHELL-001 | user   | mongosh admin shell handoff       | 1733a0c | Implemented |
 | FM-MON-SHELL-002 | user   | mongosh auth/TLS secure argv      | 1733a0c | Implemented |
+| FM-MON-COMPAT-001| user   | role fallback via hello/isMaster  | 47bd845 | Implemented |
+| FM-MON-COMPAT-002| user   | currentOp command shape fallback  | 47bd845 | Implemented |
+| FM-MON-COMPAT-003| user   | tolerant serverStatus parsing     | 47bd845 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -1730,6 +1761,7 @@ without terminating the monitor.
 | 2b4e2a3 | Support configurable currentOp limits          | FM-MON-OP-008     | monitor.py, mrun.py, tests    |
 | 1733a0c | Add mongosh admin shell handoff                | FM-MON-SHELL      | monitor.py, mrun.py, tests    |
 | 9f7cb69 | Pause and filter currentOps                    | FM-MON-OP-009/10  | monitor.py, mrun.py, tests    |
+| 47bd845 | Support monitor command compatibility          | FM-MON-COMPAT     | monitor.py, docs, tests       |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -1760,6 +1792,8 @@ Reading order for reviewers:
     auth/TLS-safe argv construction.
 16. Review 9f7cb69 for currentOp source filtering with `r` and currentOp
     sampling pause/resume with Space.
+17. Review 47bd845 for role fallback through `hello` / `isMaster`, currentOp
+    command fallback shapes, and tolerant serverStatus subsystem parsing.
 ```
 
 ## Testing added by the branch
@@ -1778,12 +1812,16 @@ The focused monitor test module covers:
 - CPU/memory metric helpers.
 - CPU process sampler preserving psutil CPU history across refreshes.
 - replica-set role extraction from `serverStatus().repl`.
+- role fallback from `serverStatus()` to `hello` / `isMaster` for compatible
+  MongoDB command surfaces.
 - auth-required `Password Required` role display.
 - muted role coloring for Primary, Secondary, and Password Required values.
 - role columns in CPU, memory, network, and disk formatters.
 - shared ANSI-aware table alignment for CPU, memory, network, disk, and
   currentOp rows.
 - currentOp active-operation sampling, sorting, and top-N truncation.
+- currentOp fallback from rich command shapes to simpler command shapes when a
+  supported server rejects optional fields.
 - formatted and raw currentOp rendering in the right activity pane.
 - BSON-safe raw currentOp rendering for ObjectId-like and datetime-like values.
 - BSON-safe Pretty JSON rendering for selected currentOp documents.
@@ -1798,6 +1836,8 @@ The focused monitor test module covers:
 - currentOp Space pause/resume behavior and cached-snapshot reuse while paused.
 - currentOp namespace command filtering and client-side result filtering.
 - currentOp namespace selector parsing and prompt output.
+- serverStatus parsing when optional version-specific subsystems are absent or
+  represented by unexpected non-dictionary values.
 - mongosh target option construction, target parsing, custom URI prompt,
   TLS-flag mapping, secure auth argv construction, launch success path, missing
   executable status, and missing-credentials status.

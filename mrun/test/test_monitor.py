@@ -29,6 +29,8 @@ from mrun.monitor import (
     choose_mongosh_target,
     colorize_pretty_json_line,
     CurrentOpEntry,
+    current_op_command_candidates,
+    current_op_documents,
     current_op_namespaces,
     current_op_raw_json,
     current_op_pretty_json_lines,
@@ -88,6 +90,7 @@ from mrun.monitor import (
     render_server_status_view,
     ROLE_PASSWORD_REQUIRED,
     role_from_server_status,
+    role_from_hello,
     RoleMetrics,
     RoleSampler,
     score_log_filter,
@@ -951,6 +954,14 @@ def test_role_from_server_status_falls_back_to_writable_primary():
     assert role_from_server_status({"process": "mongos"}) == "Router"
 
 
+def test_role_from_hello_maps_common_replica_roles():
+    assert role_from_hello({"isWritablePrimary": True}) == "Primary"
+    assert role_from_hello({"ismaster": True}) == "Primary"
+    assert role_from_hello({"secondary": True}) == "Secondary"
+    assert role_from_hello({"msg": "isdbgrid"}) == "Router"
+    assert role_from_hello({"setName": "rs0"}) == "Replica Set"
+
+
 def test_role_sampler_reads_roles_from_server_status():
     responses = {
         "localhost:27017": {"repl": {"stateStr": "PRIMARY"}},
@@ -970,6 +981,87 @@ def test_role_sampler_reads_roles_from_server_status():
 
     assert result[27017].role == "Primary"
     assert result[27018].role == "Secondary"
+
+
+def test_role_sampler_falls_back_to_hello_for_ambiguous_server_status():
+    class HelloFallbackClient:
+        def __init__(self):
+            self.admin = self
+            self.commands = []
+
+        def command(self, command_name):
+            self.commands.append(command_name)
+            if command_name == "serverStatus":
+                return {"version": "7.0.0"}
+            if command_name == "hello":
+                return {"secondary": True}
+            raise AssertionError(command_name)
+
+        def close(self):
+            pass
+
+    clients = []
+
+    def client_factory(host, **kwargs):
+        client = HelloFallbackClient()
+        clients.append(client)
+        return client
+
+    sampler = RoleSampler(client_factory=client_factory)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    result = sampler.sample([process])[27017]
+
+    assert result.available is True
+    assert result.role == "Secondary"
+    assert clients[0].commands == ["serverStatus", "hello"]
+    assert sampler.capabilities[27017].hello is True
+
+
+def test_role_sampler_uses_hello_when_server_status_is_rejected():
+    class HelloOnlyClient:
+        def __init__(self):
+            self.admin = self
+
+        def command(self, command_name):
+            if command_name == "serverStatus":
+                raise RuntimeError("no such command: serverStatus")
+            if command_name == "hello":
+                return {"isWritablePrimary": True}
+            raise AssertionError(command_name)
+
+        def close(self):
+            pass
+
+    sampler = RoleSampler(client_factory=lambda host, **kwargs: HelloOnlyClient())
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    result = sampler.sample([process])[27017]
+
+    assert result.available is True
+    assert result.role == "Primary"
+
+
+def test_role_sampler_keeps_standalone_when_hello_is_unavailable():
+    class StandaloneClient:
+        def __init__(self):
+            self.admin = self
+
+        def command(self, command_name):
+            if command_name == "serverStatus":
+                return {"version": "7.0.0"}
+            raise RuntimeError("no such command: %s" % command_name)
+
+        def close(self):
+            pass
+
+    sampler = RoleSampler(client_factory=lambda host, **kwargs: StandaloneClient())
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    result = sampler.sample([process])[27017]
+
+    assert result.available is True
+    assert result.role == "Standalone"
 
 
 def test_role_sampler_reports_password_required_without_connecting():
@@ -1006,6 +1098,26 @@ class FakeCurrentOpClient:
 
     def close(self):
         self.closed = True
+
+
+def test_current_op_command_candidates_degrade_from_rich_to_basic():
+    commands = current_op_command_candidates("test.keep")
+
+    assert commands[0] == {
+        "currentOp": 1,
+        "$all": True,
+        "active": True,
+        "ns": "test.keep",
+    }
+    assert commands[-1] == {"currentOp": 1}
+
+
+def test_current_op_documents_accepts_common_result_shapes():
+    assert current_op_documents({"inprog": [{"op": "query"}]}) == [
+        {"op": "query"}]
+    assert current_op_documents({"ops": [{"op": "command"}]}) == [
+        {"op": "command"}]
+    assert current_op_documents([{"op": "insert"}]) == [{"op": "insert"}]
 
 
 def test_current_op_sampler_sorts_and_limits_top_entries():
@@ -1060,6 +1172,44 @@ def test_current_op_sampler_sorts_and_limits_top_entries():
     assert snapshot.entries[-1].secs_running == 4
 
 
+def test_current_op_sampler_retries_simpler_command_when_full_shape_fails():
+    class RetryingClient:
+        def __init__(self):
+            self.admin = self
+            self.commands = []
+
+        def command(self, command):
+            self.commands.append(command)
+            if command != {"currentOp": 1}:
+                raise RuntimeError("unrecognized field active")
+            return {"inprog": [{
+                "active": True,
+                "secs_running": 4,
+                "op": "query",
+                "ns": "test.coll",
+            }]}
+
+        def close(self):
+            pass
+
+    clients = []
+
+    def client_factory(host, **kwargs):
+        client = RetryingClient()
+        clients.append(client)
+        return client
+
+    sampler = CurrentOpSampler(client_factory=client_factory)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    snapshot = sampler.sample([process])
+
+    assert snapshot.available is True
+    assert [entry.ns for entry in snapshot.entries] == ["test.coll"]
+    assert clients[0].commands[-1] == {"currentOp": 1}
+    assert sampler.capabilities[27017].current_op is True
+
+
 def test_current_op_sampler_passes_namespace_filter_and_filters_results():
     response = {
         "inprog": [
@@ -1107,6 +1257,64 @@ def test_current_op_sampler_passes_namespace_filter_and_filters_results():
         "active": True,
         "ns": "test.keep",
     }]
+
+
+def test_current_op_sampler_retries_without_namespace_and_filters_client_side():
+    class NamespaceFallbackClient:
+        def __init__(self):
+            self.admin = self
+            self.commands = []
+
+        def command(self, command):
+            self.commands.append(command)
+            if "ns" in command:
+                raise RuntimeError("unrecognized field ns")
+            return {"inprog": [
+                {"active": True, "secs_running": 1, "ns": "test.keep"},
+                {"active": True, "secs_running": 2, "ns": "test.drop"},
+            ]}
+
+        def close(self):
+            pass
+
+    clients = []
+
+    def client_factory(host, **kwargs):
+        client = NamespaceFallbackClient()
+        clients.append(client)
+        return client
+
+    sampler = CurrentOpSampler(client_factory=client_factory)
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    snapshot = sampler.sample([process], namespace="test.keep")
+
+    assert snapshot.available is True
+    assert [entry.ns for entry in snapshot.entries] == ["test.keep"]
+    assert clients[0].commands[0]["ns"] == "test.keep"
+    assert "ns" not in clients[0].commands[1]
+
+
+def test_current_op_sampler_reports_unsupported_when_all_shapes_fail():
+    class UnsupportedCurrentOpClient:
+        def __init__(self):
+            self.admin = self
+
+        def command(self, command):
+            raise RuntimeError("no such command: currentOp")
+
+        def close(self):
+            pass
+
+    sampler = CurrentOpSampler(
+        client_factory=lambda host, **kwargs: UnsupportedCurrentOpClient())
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    snapshot = sampler.sample([process])
+
+    assert snapshot.available is False
+    assert snapshot.error == "27017: unsupported currentOp command"
+    assert sampler.capabilities[27017].current_op is False
 
 
 def test_current_op_sampler_reports_password_required_without_connecting():
@@ -3329,6 +3537,45 @@ def test_status_sampler_segregates_metrics():
     assert snapshot.subsystems["version"] == "8.0.0"
     assert snapshot.subsystems["metrics"] == "1 fields"
     assert snapshot.subsystems["locks"] == "1 fields"
+
+
+def test_status_sampler_handles_missing_version_specific_sections():
+    responses = [
+        {
+            "version": "7.0.0",
+            "wiredTiger": None,
+            "network": "unavailable",
+            "connections": {"current": 3},
+            "opcounters": {"query": "2"},
+        },
+        {
+            "version": "7.0.0",
+            "wiredTiger": {"block-manager": {"bytes read": "1024"}},
+            "network": {"bytesIn": "512", "bytesOut": "256"},
+            "opcounters": {"query": "5"},
+        },
+    ]
+    times = [10.0, 12.0]
+
+    def client_factory(host, **kwargs):
+        return FakeClient(responses.pop(0))
+
+    sampler = StatusSampler(
+        client_factory=client_factory,
+        clock=lambda: times.pop(0),
+    )
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    first = sampler.sample(process)
+    second = sampler.sample(process)
+
+    assert first.available is True
+    assert first.disk["wt_block_manager"] == {}
+    assert first.network["network"] == {}
+    assert second.available is True
+    assert second.disk["rates"]["bytes_read_per_sec"] == 512
+    assert second.network["rates"]["query"] == 1.5
+    assert sampler.capabilities[27017].server_status is True
 
 
 def test_monitor_e_toggles_server_status_view():
