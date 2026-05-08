@@ -1721,9 +1721,9 @@ without terminating the monitor.
 | FM-MON-OP-010    | user   | currentOp sampling pause/resume   | 9f7cb69 | Implemented |
 | FM-MON-SHELL-001 | user   | mongosh admin shell handoff       | 1733a0c | Implemented |
 | FM-MON-SHELL-002 | user   | mongosh auth/TLS secure argv      | 1733a0c | Implemented |
-| FM-MON-COMPAT-001| user   | role fallback via hello/isMaster  | 47bd845 | Implemented |
-| FM-MON-COMPAT-002| user   | currentOp command shape fallback  | 47bd845 | Implemented |
-| FM-MON-COMPAT-003| user   | tolerant serverStatus parsing     | 47bd845 | Implemented |
+| FM-MON-COMPAT-001| user   | role fallback via hello/isMaster  | b362ef7 | Implemented |
+| FM-MON-COMPAT-002| user   | currentOp command shape fallback  | b362ef7 | Implemented |
+| FM-MON-COMPAT-003| user   | tolerant serverStatus parsing     | b362ef7 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -1761,7 +1761,7 @@ without terminating the monitor.
 | 2b4e2a3 | Support configurable currentOp limits          | FM-MON-OP-008     | monitor.py, mrun.py, tests    |
 | 1733a0c | Add mongosh admin shell handoff                | FM-MON-SHELL      | monitor.py, mrun.py, tests    |
 | 9f7cb69 | Pause and filter currentOps                    | FM-MON-OP-009/10  | monitor.py, mrun.py, tests    |
-| 47bd845 | Support monitor command compatibility          | FM-MON-COMPAT     | monitor.py, docs, tests       |
+| b362ef7 | Support monitor command compatibility          | FM-MON-COMPAT     | monitor.py, docs, tests       |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -1792,7 +1792,7 @@ Reading order for reviewers:
     auth/TLS-safe argv construction.
 16. Review 9f7cb69 for currentOp source filtering with `r` and currentOp
     sampling pause/resume with Space.
-17. Review 47bd845 for role fallback through `hello` / `isMaster`, currentOp
+17. Review b362ef7 for role fallback through `hello` / `isMaster`, currentOp
     command fallback shapes, and tolerant serverStatus subsystem parsing.
 ```
 
