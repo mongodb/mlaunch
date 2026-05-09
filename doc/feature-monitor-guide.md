@@ -50,6 +50,8 @@ The monitor shows:
 - Selectable live log tail with severity colors.
 - Vim-style log filtering with fuzzy matching, structured field filters, and
   highlighted hits.
+- Strict log and currentOp source selection prompts that accept visible
+  indexes or displayed ports and re-prompt on invalid input.
 - Focusable panes with full-pane zoom.
 - Selectable CPU process rows.
 - Optional CPU thread view for the selected process.
@@ -64,6 +66,8 @@ The monitor shows:
   currentOp rows so column starts stay stable across panes.
 - Log cursor movement that stays independent from the log viewport until the
   cursor reaches the visible window edge.
+- Highlighted footer key names with explicit labels for `r logs`,
+  `r op sources`, `scope:mrun`, `scope:all`, and the `a` scope action.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
 No new terminal UI dependency is introduced. Rendering and keyboard input use
@@ -83,22 +87,25 @@ feature-monitor branch
 |   +-- validates monitor-only flags (lines 709-738)
 |   +-- constructs Monitor with data_dir and include_all options (lines 740-750)
 |
-+-- mrun/monitor.py (lines 1-5171)
-|   +-- interactive Monitor implementation (lines 4090-5171)
-|   +-- process discovery (lines 424-595), metrics sampling (lines 720-1150), log tailing (lines 1561-1624), filtering (lines 2269-2579), rendering (lines 3020-3879), key input (lines 4424-4575)
++-- mrun/monitor.py (lines 1-5240)
+|   +-- interactive Monitor implementation (lines 4159-5240)
+|   +-- process discovery (lines 572-724), metrics sampling (lines 725-1154), log tailing (lines 1561-1624), filtering (lines 2269-2579), rendering (lines 3076-3879), key input (lines 4493-4660)
 |   +-- auth and TLS metadata loading for monitor samplers (lines 424-541)
 |   +-- pane focus, focused-pane zoom, CPU process selection, thread/currentOp sampling
 |   +-- normalized process CPU model and helpers (lines 200, 596-616, 3159-3167)
 |   +-- ProcessSampler preserves psutil CPU state and normalized CPU across refreshes (lines 720-766)
 |   +-- RoleSampler captures primary/secondary role from serverStatus (lines 966-1064)
 |   +-- CurrentOpSampler captures and namespace-filters top active currentOp entries (lines 1065-1149)
-|   +-- currentOp limit selection and validation, default 10 and max 500 (lines 1670-1699)
-|   +-- currentOp source selection by role, port, or index (lines 1713-1800, 4743-4775)
+|   +-- SelectionInputError for strict prompt validation (lines 129-130)
+|   +-- log selection by visible index or displayed port with invalid-input re-prompt (lines 1631-1659, 2022-2051)
+|   +-- currentOp limit selection and validation, default 10 and max 500 (lines 1682-1708)
+|   +-- currentOp source selection by role, port, or index with invalid-input re-prompt (lines 1711-1838, 4812-4846)
 |   +-- mongosh target selection, auth/TLS argv construction, and shell handoff helpers (lines 1839-2021, 4799-4856)
 |   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 1150-1334)
 |   +-- log filter prompt, fuzzy scoring, structured filters, and hit highlighting
 |   +-- BSON-safe raw/currentOp pretty serialization (lines 1526-1538)
 |   +-- muted role colors that do not reuse bold pane-header styling (lines 54-56, 2149-2183)
+|   +-- highlighted footer key helpers and disambiguated footer controls (lines 58, 2734-2743, 3606-3720)
 |   +-- neutral-border, ANSI-aware panel renderer, bold pane titles, colored table headers, and content padding (lines 2090-2183, 3020-3101)
 |   +-- shared table formatter for aligned metric/currentOp tables (lines 3103-3153)
 |   +-- two-column dashboard layout and right activity pane (lines 3698-3879)
@@ -262,7 +269,7 @@ flowchart TD
     L --> M{Key pressed?}
     M -- no --> A
     M -- q or Ctrl+C --> N[Exit]
-    M -- r --> O[Reselect logs]
+    M -- log r --> O[Reselect logs by index or displayed port]
     M -- a --> P[Toggle process scope and reselect logs]
     M -- Tab or Shift+Tab --> Q[Move pane focus]
     M -- z --> R[Toggle focused-pane zoom]
@@ -959,6 +966,7 @@ CurrentOp source filter
 +-- empty list means all visible MongoDB processes
 +-- r opens selector while currentOp view is active
 +-- accepts indexes, ports, primary, secondary, all, or Enter for all
++-- invalid source tokens or unseen ports are reported and re-prompted
 +-- only selected source processes receive currentOp commands
 
 CurrentOp sampling pause
@@ -1541,7 +1549,7 @@ same local replica set that `mrun --monitor` is tailing.
 +------------+-----------------------------------------------------+
 | q          | Quit monitor                                        |
 | Ctrl+C     | Quit monitor                                        |
-| r          | Reselect logs                                       |
+| r          | Reselect logs in log view                           |
 | a          | Toggle mrun-managed/all process scope               |
 | Tab        | Focus next pane                                     |
 | Shift+Tab  | Focus previous pane                                 |
@@ -1578,6 +1586,12 @@ same local replica set that `mrun --monitor` is tailing.
 | s          | Cycle refresh interval: 1s -> 5s -> 10s -> 1s       |
 +------------+-----------------------------------------------------+
 ```
+
+The dashboard footer highlights key names separately from action labels. In log
+view, `r logs` means the next `r` press opens the log selector. In currentOp
+view, `r op sources` means the next `r` press opens the currentOp source
+selector. The same footer reports process scope as `scope:mrun` or `scope:all`
+and labels the `a` key as `a show all` or `a mrun only`.
 
 Arrow keys are parsed directly from common terminal escape sequences:
 
@@ -1743,6 +1757,8 @@ without terminating the monitor.
 | FM-MON-COMPAT-001| user   | role fallback via hello/isMaster  | b362ef7 | Implemented |
 | FM-MON-COMPAT-002| user   | currentOp command shape fallback  | b362ef7 | Implemented |
 | FM-MON-COMPAT-003| user   | tolerant serverStatus parsing     | b362ef7 | Implemented |
+| FM-MON-INPUT-001 | user   | strict selection prompt handling  | 568a789 | Implemented |
+| FM-MON-UI-005    | user   | disambiguated colored footer keys | 568a789 | Implemented |
 +-------------------+--------+-----------------------------------+---------+-------------+
 ```
 
@@ -1782,6 +1798,7 @@ without terminating the monitor.
 | 1733a0c | Add mongosh admin shell handoff                | FM-MON-SHELL      | monitor.py, mrun.py, tests    |
 | 9f7cb69 | Pause and filter currentOps                    | FM-MON-OP-009/10  | monitor.py, mrun.py, tests    |
 | b362ef7 | Support monitor command compatibility          | FM-MON-COMPAT     | monitor.py, docs, tests       |
+| 568a789 | Validate monitor selections and footer labels  | FM-MON-INPUT/UI   | monitor.py, mrun.py, tests    |
 +---------+-----------------------------------------------+-------------------+-------------------------------+
 ```
 
@@ -1814,6 +1831,8 @@ Reading order for reviewers:
     sampling pause/resume with Space.
 17. Review b362ef7 for role fallback through `hello` / `isMaster`, currentOp
     command fallback shapes, and tolerant serverStatus subsystem parsing.
+18. Review 568a789 for strict log/currentOp source prompt validation, clearer
+    `r` and `a` footer labels, highlighted footer keys, and matching tests.
 ```
 
 ## Testing added by the branch
@@ -1826,6 +1845,12 @@ The focused monitor test module covers:
 - monitor-specific rejection of init-only auth flags.
 - monitor credential override flags.
 - Help text for monitor controls.
+- strict log selector validation for indexes, displayed ports, and invalid
+  tokens.
+- strict currentOp source re-prompt behavior when a mixed selection contains
+  an invalid port or token.
+- footer controls that disambiguate `r logs` from `r op sources` and show
+  `scope:mrun` / `scope:all`.
 - mrun-managed process filtering from `.mrun_startup`.
 - all-process discovery.
 - process-list permission failures.
@@ -1852,6 +1877,7 @@ The focused monitor test module covers:
   action, and sampler integration.
 - currentOp source selection parsing for indexes, ports, primary, secondary,
   and all.
+- currentOp source prompt invalid-input re-prompt behavior.
 - currentOp source prompt rendering with roles.
 - currentOp sampler filtering so only selected source ports are queried.
 - currentOp Space pause/resume behavior and cached-snapshot reuse while paused.
@@ -1937,7 +1963,12 @@ Use this list for manual review:
 [ ] auth-enabled deployments show network rates when credentials are available.
 [ ] auth-enabled deployments without credentials show auth required.
 [ ] --monitor-username/--monitor-password/--monitor-auth-db override stored credentials.
+[ ] Initial log selection accepts displayed ports, not only list indexes.
+[ ] Invalid log selection ports and non-numeric tokens are rejected with a re-prompt.
 [ ] a toggles process scope and prompts for log selection again.
+[ ] Footer shows scope:mrun or scope:all after process-scope changes.
+[ ] Footer highlights key names separately from their action labels.
+[ ] Log view footer shows r logs.
 [ ] CPU and memory panels show the expected ports and pids.
 [ ] CPU process rows include a ROLE column.
 [ ] Memory, network, and disk rows include the same ROLE column.
@@ -1978,8 +2009,10 @@ Use this list for manual review:
 [ ] Entering 50 shows a top 50 currentOp title/footer and samples up to 50 ops.
 [ ] Invalid currentOp limits are rejected and values above 500 are capped.
 [ ] CurrentOp r opens the source selector instead of the log selector.
+[ ] CurrentOp footer shows r op sources.
 [ ] CurrentOp source selector accepts primary and samples only the primary port.
 [ ] CurrentOp source selector accepts secondary, ports, indexes, all, and Enter.
+[ ] Invalid currentOp source ports and mixed invalid selections are rejected with a re-prompt.
 [ ] CurrentOp source title/footer shows the selected source when not all.
 [ ] CurrentOp Space pauses sampling and keeps the current rows stable.
 [ ] CurrentOp Space again resumes sampling and refreshes rows on the next tick.

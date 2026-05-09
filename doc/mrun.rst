@@ -78,9 +78,14 @@ Monitor
    Monitor controls:
 
    -  ``q`` or ``Ctrl+C`` quits.
-   -  ``r`` reselects logs.
-   -  ``a`` toggles between **mrun** managed processes and all detected local
-      MongoDB processes, then prompts for log selection again.
+   -  In log view, ``r`` reselects log files. The selector accepts list
+      indexes or displayed ports and re-prompts when a token does not match a
+      visible entry.
+   -  In currentOp view, ``r`` opens the currentOp source selector.
+   -  ``a`` toggles the process scope between **mrun** managed processes and
+      all detected local MongoDB processes, then prompts for log selection
+      again. The footer reports the active scope as ``scope:mrun`` or
+      ``scope:all``.
    -  ``Tab`` and ``Shift+Tab`` move focus across CPU, memory, network, disk,
       and logs panes.
    -  ``z`` toggles a full-screen view for the focused pane.
@@ -143,6 +148,9 @@ Monitor
       the severity color. After yanking, that line is highlighted green.
    -  Moving away from the newest log line pauses live-follow. Moving back to
       the newest line resumes live-follow.
+   -  Footer key names are highlighted separately from their action labels so
+      pane-specific actions are easier to distinguish while the dashboard is
+      running.
 
    Pretty JSON colors are selected from the terminal background when
    ``COLORFGBG`` is available. Use ``MRUN_MONITOR_THEME=dark`` or

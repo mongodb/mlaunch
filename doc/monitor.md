@@ -115,8 +115,10 @@ mrun/monitor.py
 +-- keyboard control
     +-- TerminalController
     +-- q or Ctrl+C quits
-    +-- r reselects logs, or currentOp sources while currentOp is active
-    +-- a toggles mrun-managed/all process scope
+    +-- footer action keys are ANSI-highlighted separately from labels
+    +-- r reselects logs in log view
+    +-- currentOp r opens currentOp source selection
+    +-- a toggles mrun-managed/all process scope and shows scope:mrun/scope:all
     +-- Tab and Shift+Tab cycle focused panes
     +-- z zooms the focused pane
     +-- CPU focus: j/k or arrows select a MongoDB process
@@ -173,7 +175,7 @@ flowchart TD
     O4 --> P
     P --> Q{Key pressed?}
     Q -- q or Ctrl+C --> R[Exit monitor]
-    Q -- r --> J
+    Q -- log r --> J
     Q -- a --> J
     Q -- Tab or Shift+Tab --> S[Move pane focus]
     Q -- z --> T[Toggle focused-pane zoom]
@@ -356,6 +358,13 @@ active pauses currentOp sampling and keeps the last sampled rows visible;
 pressing Space again resumes sampling. Pressing `o` again returns the activity
 pane to the log tail.
 
+Selection prompts validate the exact visible choices before returning to the
+dashboard. The initial log selector accepts list indexes and displayed ports;
+unknown ports, out-of-range indexes, and non-numeric tokens print an invalid
+selection message and re-prompt. The currentOp source selector applies the
+same strict behavior for indexes and ports while also accepting `primary`,
+`secondary`, `all`, or Enter for all visible processes.
+
 Pressing `M` launches a `mongosh` administration shell. The monitor offers
 target choices for the detected primary, the selected process, a replica-set
 seed list, the first visible process, and a custom URI. Stored auth/TLS
@@ -415,6 +424,8 @@ The default scope is mrun-managed processes. `Monitor.run()` loads
 running `mongod` or `mongos` processes with matching ports. `mrun --monitor
 --all` starts in all-process mode. Pressing `a` toggles between mrun-managed
 and all detected local MongoDB processes, then prompts for log selection again.
+The footer makes the state explicit with `scope:mrun` or `scope:all` plus an
+`a show all` or `a mrun only` action label.
 
 ## Tail-follow behavior
 
