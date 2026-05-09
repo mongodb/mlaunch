@@ -55,6 +55,7 @@ ANSI_DEFAULT = "\033[39m"
 ANSI_ROLE_PRIMARY = "\033[38;5;71m"
 ANSI_ROLE_SECONDARY = "\033[38;5;179m"
 ANSI_ROLE_WARNING = "\033[38;5;203m"
+ANSI_KEY_HINT = "\033[38;5;81m"
 PANE_HEADER_COLORS = {
     "cpu": ANSI_TEAL,
     "memory": ANSI_GREEN,
@@ -123,6 +124,10 @@ FILTER_VALUE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*:.+")
 
 class ProcessDiscoveryError(RuntimeError):
     """Raised when the monitor cannot enumerate local processes."""
+
+
+class SelectionInputError(ValueError):
+    """Raised when a monitor prompt receives an invalid selection."""
 
 
 @dataclass
@@ -1625,23 +1630,30 @@ def read_log_stream(tailer, stream_paused):
 
 def parse_log_selection(selection, candidates):
     """Return selected ports from a comma/space separated index or port list."""
-    if selection is None or selection.strip() == "" or selection.strip().lower() == "all":
+    selection = "" if selection is None else str(selection).strip()
+    if selection == "" or selection.lower() == "all":
         return [candidate.port for candidate in candidates]
 
     selected_ports = []
+    candidates = list(candidates or [])
+    candidate_ports = [candidate.port for candidate in candidates]
     tokens = [token.strip() for token in selection.replace(",", " ").split()]
     for token in tokens:
         try:
             value = int(token)
         except ValueError:
-            continue
+            raise SelectionInputError(
+                "expected indexes or displayed ports, got: %s" % token)
 
         if 1 <= value <= len(candidates):
             port = candidates[value - 1].port
-        else:
+        elif value in candidate_ports:
             port = value
+        else:
+            raise SelectionInputError(
+                "no displayed log entry matches port/index: %s" % token)
 
-        if port in [candidate.port for candidate in candidates] and port not in selected_ports:
+        if port not in selected_ports:
             selected_ports.append(port)
 
     return selected_ports
@@ -1727,7 +1739,7 @@ def current_op_source_label(processes, ports, role_metrics=None):
     return "ports " + ",".join(str(process.port) for process in selected)
 
 
-def parse_current_op_source_selection(selection, processes, role_metrics=None):
+def _parse_current_op_source_selection(selection, processes, role_metrics=None):
     """Parse a currentOp source selector into ordered process ports.
 
     The selector accepts comma- or space-separated indexes, ports, and role
@@ -1763,19 +1775,38 @@ def parse_current_op_source_selection(selection, processes, role_metrics=None):
             try:
                 value = int(token)
             except ValueError:
-                return None
+                raise SelectionInputError(
+                    "expected indexes, displayed ports, primary, secondary, "
+                    "or all; got: %s" % token)
             if 1 <= value <= len(processes):
                 token_ports = [processes[value - 1].port]
             elif value in by_port:
                 token_ports = [value]
             else:
-                return None
+                raise SelectionInputError(
+                    "no currentOp source matches port/index: %s" % token)
         if not token_ports:
-            return None
+            raise SelectionInputError(
+                "no currentOp source matches: %s" % token)
         for port in token_ports:
             if port not in selected:
                 selected.append(port)
     return selected
+
+
+def parse_current_op_source_selection(selection, processes, role_metrics=None):
+    """Return selected currentOp source ports, or None for invalid input."""
+    try:
+        return _parse_current_op_source_selection(
+            selection, processes, role_metrics)
+    except SelectionInputError:
+        return None
+
+
+def require_current_op_source_selection(selection, processes, role_metrics=None):
+    """Return selected currentOp source ports or raise with a prompt message."""
+    return _parse_current_op_source_selection(
+        selection, processes, role_metrics)
 
 
 def choose_current_op_sources(processes, role_metrics=None, input_func=input,
@@ -1793,11 +1824,17 @@ def choose_current_op_sources(processes, role_metrics=None, input_func=input,
                     index, role, process.port, process.pid, process.name))
     else:
         stdout.write("  No MongoDB processes detected.\n")
-    stdout.write(
-        "Enter indexes, ports, primary, secondary, all, or press Enter for all: ")
-    stdout.flush()
-    return parse_current_op_source_selection(
-        input_func(), processes, role_metrics)
+    prompt = (
+        "Enter indexes, displayed ports, primary, secondary, all, "
+        "or press Enter for all: ")
+    while True:
+        stdout.write(prompt)
+        stdout.flush()
+        try:
+            return require_current_op_source_selection(
+                input_func(), processes, role_metrics)
+        except SelectionInputError as exc:
+            stdout.write("Invalid currentOp source selection: %s\n" % exc)
 
 
 def choose_current_op_namespace(namespaces, input_func=input, stdout=None):
@@ -1995,11 +2032,18 @@ def choose_logpaths(processes, input_func=input, stdout=None):
     for index, process in enumerate(candidates, start=1):
         stdout.write("  [%i] %s port %s pid %s  %s\n" % (
             index, process.name, process.port, process.pid, process.logpath))
-    stdout.write("Enter indexes or ports separated by commas, or press Enter for all: ")
-    stdout.flush()
-
-    selection = input_func()
-    selected_ports = parse_log_selection(selection, candidates)
+    prompt = (
+        "Enter indexes or displayed ports separated by commas, "
+        "or press Enter for all: ")
+    while True:
+        stdout.write(prompt)
+        stdout.flush()
+        selection = input_func()
+        try:
+            selected_ports = parse_log_selection(selection, candidates)
+            break
+        except SelectionInputError as exc:
+            stdout.write("Invalid log selection: %s\n" % exc)
     return {
         process.port: process.logpath
         for process in candidates
@@ -2685,6 +2729,18 @@ def format_seconds(seconds):
     if float(seconds).is_integer():
         return "%is" % int(seconds)
     return "%.1fs" % seconds
+
+
+def key_hint(key):
+    """Return a colored footer key hint."""
+    return ANSI_BOLD + ANSI_KEY_HINT + str(key) + ANSI_RESET
+
+
+def control_hint(key, label=""):
+    """Return one footer control with a highlighted key and plain label."""
+    if label:
+        return "%s %s" % (key_hint(key), label)
+    return key_hint(key)
 
 
 def _visible_log_window(log_lines, cursor, height, view_start=None):
@@ -3560,64 +3616,75 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      current_op_source_label_text="all",
                      cpu_normalized=True):
     focused_pane = normalize_pane(focused_pane)
-    stream_control = "space resume" if stream_paused else "space pause"
-    scope_toggle = "a %s" % ("mrun only" if process_scope == "all" else "all")
+    stream_control = control_hint(
+        "Space", "resume" if stream_paused else "pause")
+    scope_toggle = control_hint(
+        "a", "mrun only" if process_scope == "all" else "show all")
+    source_reselect = control_hint(
+        "r", "op sources" if current_op_view else "logs")
 
     if server_status_active:
         return " | ".join([
-            "q/Ctrl+C",
-            "E exit",
-            "s %s" % format_seconds(refresh_interval),
+            "%s/%s" % (key_hint("q"), key_hint("Ctrl+C")),
+            control_hint("E", "exit"),
+            control_hint("s", format_seconds(refresh_interval)),
         ])
 
     controls = [
-        "q",
-        "Tab",
-        "z quad" if zoom_pane else "z zoom",
-        "r",
-        "E",
-        "M shell",
-        process_scope,
+        key_hint("q"),
+        control_hint("Tab", "pane"),
+        control_hint("z", "quad" if zoom_pane else "zoom"),
+        source_reselect,
+    ]
+    tail_controls = [
+        "scope:%s" % process_scope,
         scope_toggle,
-        "s%s" % format_seconds(refresh_interval),
+        control_hint("s", format_seconds(refresh_interval)),
+        control_hint("E", "status"),
+        control_hint("M", "shell"),
     ]
 
     if focused_pane == "cpu":
-        controls.append("cpu j/k")
-        controls.append("C %s cpu" % (
-            "raw" if cpu_normalized else "norm"))
-        controls.append("t %s threads" % (
-            "list" if cpu_thread_view else "view"))
-        controls.append("o %s" % (
-            "logs" if current_op_view else "currentOps"))
+        controls.append("cpu %s" % key_hint("j/k"))
+        controls.append(control_hint(
+            "C", "%s cpu" % ("raw" if cpu_normalized else "norm")))
+        controls.append(control_hint(
+            "t", "%s threads" % (
+                "list" if cpu_thread_view else "view")))
+        controls.append(control_hint(
+            "o", "logs" if current_op_view else "currentOps"))
+        controls.extend(tail_controls)
     elif focused_pane == "logs":
         if current_op_view:
             current_op_stream_control = (
-                "space resume ops" if current_op_paused
-                else "space pause ops")
+                control_hint("Space", "resume ops") if current_op_paused
+                else control_hint("Space", "pause ops"))
             controls.extend([
-                "op pretty j/k" if current_op_pretty_active else "op j/k",
-                "o logs",
-                "O %s" % ("formatted" if current_op_raw else "raw"),
-                "L top %i" % current_op_limit,
-                "p %s" % ("list" if current_op_pretty_active else "pretty"),
-                "y",
+                "op pretty %s" % key_hint("j/k")
+                if current_op_pretty_active else "op %s" % key_hint("j/k"),
+                control_hint("o", "logs"),
+                control_hint("O", "formatted" if current_op_raw else "raw"),
+                control_hint("L", "top %i" % current_op_limit),
+                control_hint(
+                    "p", "list" if current_op_pretty_active else "pretty"),
+                key_hint("y"),
                 current_op_stream_control,
-                "r sources",
-                "n ns",
+                control_hint("n", "ns"),
             ])
             if current_op_source_label_text and current_op_source_label_text != "all":
                 controls.append("src %s" % current_op_source_label_text)
             if current_op_namespace:
                 controls.append("ns %s" % current_op_namespace)
-                controls.append("c clear ns")
+                controls.append(control_hint("c", "clear ns"))
+            controls.extend(tail_controls)
             return " | ".join(controls)
         elif log_filter_prompt:
             controls.extend([
                 "filter: %s_" % log_filter_input,
-                "Enter apply",
-                "Esc cancel",
+                control_hint("Enter", "apply"),
+                control_hint("Esc", "cancel"),
             ])
+            controls.extend(tail_controls)
             return " | ".join(controls)
 
         if _log_filter_active(log_filter_query):
@@ -3627,26 +3694,28 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                         log_filter_match_count,
                         log_filter_total,
                     ))
-            controls.append("c clear")
+            controls.append(control_hint("c", "clear"))
 
         if pretty_active:
             controls.extend([
-                "pretty j/k",
-                "p raw",
-                "y",
+                "pretty %s" % key_hint("j/k"),
+                control_hint("p", "raw"),
+                key_hint("y"),
                 stream_control,
             ])
         else:
             controls.extend([
-                "logs j/k",
-                "g latest",
-                "p pretty",
-                "y",
+                "logs %s" % key_hint("j/k"),
+                control_hint("g", "latest"),
+                control_hint("p", "pretty"),
+                key_hint("y"),
                 stream_control,
-                "/ filter",
+                control_hint("/", "filter"),
             ])
+        controls.extend(tail_controls)
     else:
         controls.append("%s pane" % focused_pane)
+        controls.extend(tail_controls)
 
     return " | ".join(controls)
 

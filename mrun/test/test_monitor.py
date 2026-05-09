@@ -7,9 +7,11 @@ import psutil
 import pytest
 
 from mrun.monitor import (
+    _footer_controls,
     ANSI_BOLD,
     ANSI_GREEN,
     ANSI_INVERSE,
+    ANSI_KEY_HINT,
     ANSI_RED,
     ANSI_DIM,
     ANSI_ROLE_PRIMARY,
@@ -26,6 +28,7 @@ from mrun.monitor import (
     choose_current_op_limit,
     choose_current_op_namespace,
     choose_current_op_sources,
+    choose_logpaths,
     choose_mongosh_target,
     colorize_pretty_json_line,
     CurrentOpEntry,
@@ -97,6 +100,7 @@ from mrun.monitor import (
     RoleSampler,
     score_log_filter,
     selected_process,
+    SelectionInputError,
     strip_ansi,
     StatusSampler,
     ServerStatusSnapshot,
@@ -564,7 +568,8 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "Metric rows include a Role column" in flat_output
     assert "fatal/error/warning/info/debug severity colors" in flat_output
     assert "q or Ctrl+C quit" in flat_output
-    assert "a toggle mrun/all processes" in flat_output
+    assert "r reselects logs in log view or currentOp sources" in flat_output
+    assert "a toggles process scope between mrun-managed and all processes" in flat_output
     assert "Tab switch panes" in flat_output
     assert "z zoom logs or focused pane" in flat_output
     assert "C toggles raw/normalized CPU" in flat_output
@@ -629,7 +634,34 @@ def test_parse_log_selection_accepts_indexes_ports_and_all():
     assert parse_log_selection("", candidates) == [27017, 27018]
     assert parse_log_selection("all", candidates) == [27017, 27018]
     assert parse_log_selection("1,27018", candidates) == [27017, 27018]
-    assert parse_log_selection("999", candidates) == []
+
+    with pytest.raises(SelectionInputError, match="port/index: 999"):
+        parse_log_selection("999", candidates)
+
+    with pytest.raises(SelectionInputError, match="got: nope"):
+        parse_log_selection("nope", candidates)
+
+
+def test_choose_logpaths_reprompts_on_invalid_port_or_token():
+    candidates = [
+        MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "/tmp/b.log", "", []),
+    ]
+    answers = iter(["28099", "nope", "27018"])
+    stdout = io.StringIO()
+
+    result = choose_logpaths(
+        candidates,
+        input_func=lambda: next(answers),
+        stdout=stdout,
+    )
+
+    assert result == {27018: "/tmp/b.log"}
+    output = stdout.getvalue()
+    assert "Invalid log selection" in output
+    assert "port/index: 28099" in output
+    assert "got: nope" in output
+    assert output.count("Enter indexes or displayed ports") == 3
 
 
 def test_parse_current_op_namespace_selection_accepts_index_clear_and_name():
@@ -720,6 +752,32 @@ def test_choose_current_op_sources_prompts_with_roles():
     assert ports == [27018]
     assert "[1] Secondary" in stdout.getvalue()
     assert "[2] Primary" in stdout.getvalue()
+
+
+def test_choose_current_op_sources_reprompts_on_invalid_mixed_selection():
+    processes = [
+        MongoProcessInfo(10, "mongod", 27017, "", "", []),
+        MongoProcessInfo(11, "mongod", 27018, "", "", []),
+    ]
+    roles = {
+        27017: RoleMetrics(True, "Secondary"),
+        27018: RoleMetrics(True, "Primary"),
+    }
+    answers = iter(["27017,99999", "secondary"])
+    stdout = io.StringIO()
+
+    ports = choose_current_op_sources(
+        processes,
+        roles,
+        input_func=lambda: next(answers),
+        stdout=stdout,
+    )
+
+    assert ports == [27017]
+    output = stdout.getvalue()
+    assert "Invalid currentOp source selection" in output
+    assert "port/index: 99999" in output
+    assert output.count("Enter indexes, displayed ports") == 2
 
 
 def test_current_op_source_label_describes_selected_source():
@@ -1562,7 +1620,7 @@ def test_render_dashboard_marks_focused_cpu_process_selection():
     assert "[CPU Usage (normalized)]" in rendered
     assert "> 27018" in rendered
     assert ANSI_INVERSE in rendered
-    assert "t view threads" in rendered
+    assert "t view threads" in strip_ansi(rendered)
 
 
 def test_format_cpu_lines_includes_replica_role_column():
@@ -1843,7 +1901,8 @@ def test_render_dashboard_current_op_view_uses_right_activity_pane():
     assert "Current Ops (Formatted, top 10)" in rendered
     assert "test.coll" in rendered
     assert "CPU Usage" in rendered
-    assert "o logs" in rendered or "o currentOps" in rendered
+    stripped = strip_ansi(rendered)
+    assert "o logs" in stripped or "o currentOps" in stripped
 
 
 def test_render_dashboard_current_op_raw_view_uses_right_activity_pane():
@@ -1905,7 +1964,7 @@ def test_render_dashboard_current_op_view_shows_custom_limit():
     )
 
     assert "Current Ops (Formatted, top 50)" in rendered
-    assert "L top 50" in rendered
+    assert "L top 50" in strip_ansi(rendered)
 
 
 def test_render_dashboard_current_op_pretty_view_uses_activity_pane():
@@ -1941,7 +2000,7 @@ def test_render_dashboard_current_op_pretty_view_uses_activity_pane():
 
     assert "Current Ops (Pretty, top 10)" in rendered
     assert '"op"' in strip_ansi(rendered)
-    assert "p list" in rendered
+    assert "p list" in strip_ansi(rendered)
 
 
 def test_render_dashboard_thread_view_is_toggle_only_not_default():
@@ -1972,7 +2031,7 @@ def test_render_dashboard_thread_view_is_toggle_only_not_default():
     assert "CPU Threads: port 27017 pid 10" in thread_rendered
     assert "TID        CPU%" in thread_rendered
     assert "101" in thread_rendered
-    assert "t list threads" in thread_rendered
+    assert "t list threads" in strip_ansi(thread_rendered)
 
 
 def test_render_dashboard_thread_view_shows_count_when_details_denied():
@@ -2014,7 +2073,7 @@ def test_render_dashboard_cpu_zoom_uses_current_cpu_mode():
     assert "[CPU Threads: port 27017 pid 10]" in rendered
     assert "Memory Usage" not in rendered
     assert "Log Tail" not in rendered
-    assert "z quad" in rendered
+    assert "z quad" in strip_ansi(rendered)
 
 
 def test_render_dashboard_zoom_mode_focuses_log_tail():
@@ -2034,13 +2093,13 @@ def test_render_dashboard_zoom_mode_focuses_log_tail():
     assert "> 27017 | second" in rendered
     assert ANSI_INVERSE in rendered
     assert "CPU Usage" not in rendered
-    assert "z quad" in rendered
-    assert "g latest" in rendered
-    assert "p pretty" in rendered
-    assert "space pause" in rendered
-    assert "mrun" in rendered
-    assert "a all" in rendered
-    assert "s1s" in rendered
+    stripped = strip_ansi(rendered)
+    assert "z quad" in stripped
+    assert "g latest" in stripped
+    assert "p pretty" in stripped
+    assert "Space pause" in stripped
+    assert "scope:mrun" in stripped
+    assert "a show all" in stripped
 
 
 def test_render_dashboard_paused_stream_updates_title_and_footer():
@@ -2057,7 +2116,7 @@ def test_render_dashboard_paused_stream_updates_title_and_footer():
     )
 
     assert "Log Tail: 27017 (Paused)" in rendered
-    assert "space resume" in rendered
+    assert "Space resume" in strip_ansi(rendered)
 
 
 def test_render_dashboard_filters_log_stream_and_shows_match_count():
@@ -2134,8 +2193,9 @@ def test_render_dashboard_pretty_json_mode_replaces_raw_log_tail():
     assert '  "msg": "hello"' in strip_ansi(rendered)
     assert "\033[" in rendered
     assert "> 27017" not in rendered
-    assert "p raw" in rendered
-    assert "pretty j/k" in rendered
+    stripped = strip_ansi(rendered)
+    assert "p raw" in stripped
+    assert "pretty j/k" in stripped
 
 
 def test_render_dashboard_pretty_json_uses_scroll_offset():
@@ -2649,6 +2709,42 @@ def test_refresh_interval_cycle_and_key_handler():
     assert action == "redraw"
     assert monitor.refresh_interval == 5.0
     assert monitor.status_message == "refresh interval 5s"
+
+
+def test_footer_controls_disambiguate_reselect_and_scope_keys():
+    controls = _footer_controls(
+        "logs",
+        None,
+        1.0,
+        pretty_active=False,
+        stream_paused=False,
+        process_scope="mrun",
+        cpu_thread_view=False,
+        current_op_view=False,
+    )
+
+    assert ANSI_KEY_HINT in controls
+    stripped = strip_ansi(controls)
+    assert "r logs" in stripped
+    assert "scope:mrun" in stripped
+    assert "a show all" in stripped
+    assert " | r | " not in stripped
+
+    controls = _footer_controls(
+        "logs",
+        None,
+        1.0,
+        pretty_active=False,
+        stream_paused=False,
+        process_scope="all",
+        cpu_thread_view=False,
+        current_op_view=True,
+    )
+
+    stripped = strip_ansi(controls)
+    assert "r op sources" in stripped
+    assert "scope:all" in stripped
+    assert "a mrun only" in stripped
 
 
 def test_monitor_space_toggles_log_streaming():
