@@ -14,10 +14,11 @@ by mongorun. The monitor is started with:
 mrun --monitor
 ```
 
-By default, the monitor only displays MongoDB processes that belong to the
-current mongorun data directory, using `./data/.mrun_startup` unless `--dir` is
-provided. This keeps unrelated local `mongod` and `mongos` processes out of the
-view.
+By default, the monitor only displays MongoDB server processes that belong to
+the current mongorun data directory, using `./data/.mrun_startup` unless
+`--dir` is provided. This includes mrun-managed replica-set `mongod` nodes and
+any mrun-managed `mongos` routers from the selected deployment, while keeping
+unrelated local `mongod` and `mongos` processes out of the view.
 
 To include every local MongoDB server process:
 
@@ -68,6 +69,8 @@ The monitor shows:
   cursor reaches the visible window edge.
 - Highlighted footer key names with explicit labels for `r logs`,
   `r op sources`, `scope:mrun`, `scope:all`, and the `a` scope action.
+- All-process scope marks processes outside the selected mrun deployment and
+  requires an explicit log path before tailing external process logs.
 - Copy/yank support through OSC 52 terminal clipboard escape sequences.
 
 No new terminal UI dependency is introduced. Rendering and keyboard input use
@@ -657,9 +660,12 @@ data directory
                 +-- port -> original mongod/mongos command line
 ```
 
-`mrun/monitor.py` loads the startup file and extracts expected ports, dbpaths,
-and logpaths. It then discovers running MongoDB processes using `psutil` and
-keeps only processes whose ports match the startup metadata.
+`mrun/monitor.py` loads the startup file and extracts expected process names,
+ports, dbpaths, logpaths, and replica-set names. It then discovers running
+MongoDB processes using `psutil` and keeps only processes whose command-line
+metadata matches the startup metadata. Port alone is not enough: a matching
+mrun process must also agree on process type and dbpath or logpath, and
+replica-set `mongod` nodes must agree on `--replSet`.
 
 ```mermaid
 flowchart LR
@@ -668,7 +674,7 @@ flowchart LR
     D[psutil.process_iter] --> E[discover_mongo_processes]
     C --> F[filter_mrun_processes]
     E --> F
-    F --> G[mrun-managed running processes]
+    F --> G[mrun-managed mongod/mongos processes]
 ```
 
 ### All-process scope
@@ -678,7 +684,10 @@ monitor. It skips `.mrun_startup` filtering and shows every local `mongod` or
 `mongos` visible to `psutil`.
 
 This is useful for debugging manually launched nodes, but the default remains
-mrun-managed to reduce terminal noise.
+mrun-managed to reduce terminal noise. In all-process scope, mrun-managed
+processes retain their stored log metadata. Processes outside the selected
+mrun deployment are visible in the metrics panes but are marked as external and
+their logs are not tailed automatically.
 
 ## Replica roles and activity-pane currentOp view
 
@@ -1242,8 +1251,16 @@ LogTailer._append_line(port, line)
 "27018 | {\"s\":\"I\", ...}"
 ```
 
-The initial seed reads a small recent tail from each selected log file. Later
-refreshes poll from remembered file offsets.
+The initial seed reads a small recent tail from each selected log file without
+scanning the whole file. Later refreshes poll from remembered file offsets.
+When multiple replica-set logs are selected, the monitor sorts new MongoDB JSON
+log lines by their parsed `t.$date` timestamp before rendering them.
+
+External processes in all-process scope do not use any discovered `--logpath`
+automatically. If a user explicitly selects an external process for log
+streaming, the monitor prints `live tail log unavailable`, asks for a log path,
+and tails that file only when the provided path exists. Blank or invalid paths
+leave the process visible without log streaming.
 
 ```mermaid
 sequenceDiagram

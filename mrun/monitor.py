@@ -2,6 +2,7 @@
 """Live terminal monitor for local MongoDB server processes."""
 
 import base64
+from datetime import datetime
 import json
 import os
 import re
@@ -95,6 +96,7 @@ DEFAULT_CURRENT_OP_LIMIT = 10
 MAX_CURRENT_OP_LIMIT = 500
 ESCAPE_READ_TIMEOUT = 0.03
 KEY_POLL_INTERVAL = 0.01
+LOG_POLL_INTERVAL = 0.5
 PANE_ORDER = ("cpu", "memory", "network", "disk", "logs")
 PANE_TITLES = {
     "cpu": "CPU Usage",
@@ -120,6 +122,7 @@ STYLE_MARKERS = (
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 FILTER_VALUE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*:.+")
+LOG_DATE_RE = re.compile(r'"t"\s*:\s*\{\s*"\$date"\s*:\s*"([^"]+)"')
 
 
 class ProcessDiscoveryError(RuntimeError):
@@ -140,6 +143,8 @@ class MongoProcessInfo:
     logpath: str
     dbpath: str
     cmdline: list
+    explicit_port: bool = True
+    managed: bool = False
 
 
 @dataclass
@@ -150,6 +155,8 @@ class MRunProcessSpec:
     logpath: str
     dbpath: str
     cmdline: list
+    name: str = ""
+    replset: str = ""
 
 
 @dataclass
@@ -389,6 +396,32 @@ def _get_cmdline_int(cmdline, option, default=None):
         return default
 
 
+def _mongo_binary_name_from_cmdline(cmdline):
+    for arg in cmdline or []:
+        name = _normalize_process_name(arg)
+        if name in ("mongod", "mongos"):
+            return name
+    return ""
+
+
+def _get_replset_name(cmdline):
+    return (
+        _get_cmdline_arg(cmdline, "--replSet") or
+        _get_cmdline_arg(cmdline, "--replset") or
+        ""
+    )
+
+
+def _normalize_path(path):
+    if not path:
+        return ""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+
+
+def _same_path(left, right):
+    return bool(left and right and _normalize_path(left) == _normalize_path(right))
+
+
 def process_to_info(process):
     """Convert a psutil process into MongoProcessInfo, or None if unrelated."""
     try:
@@ -399,6 +432,7 @@ def process_to_info(process):
     except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
         return None
 
+    explicit_port = _get_cmdline_arg(cmdline, "--port") is not None
     port = _get_cmdline_int(cmdline, "--port", default=27017)
     logpath = _get_cmdline_arg(cmdline, "--logpath") or ""
     dbpath = _get_cmdline_arg(cmdline, "--dbpath") or ""
@@ -410,6 +444,7 @@ def process_to_info(process):
         logpath=logpath,
         dbpath=dbpath,
         cmdline=cmdline,
+        explicit_port=explicit_port,
     )
 
 
@@ -449,6 +484,8 @@ def load_mrun_process_specs(data_dir):
             logpath=_get_cmdline_arg(cmdline, "--logpath") or "",
             dbpath=_get_cmdline_arg(cmdline, "--dbpath") or "",
             cmdline=cmdline,
+            name=_mongo_binary_name_from_cmdline(cmdline),
+            replset=_get_replset_name(cmdline),
         )
     return specs
 
@@ -556,7 +593,7 @@ def filter_mrun_processes(processes, specs):
     filtered = []
     for process in processes:
         spec = specs.get(process.port)
-        if spec is None:
+        if spec is None or not process_matches_mrun_spec(process, spec):
             continue
         filtered.append(MongoProcessInfo(
             process.pid,
@@ -565,8 +602,55 @@ def filter_mrun_processes(processes, specs):
             process.logpath or spec.logpath,
             process.dbpath or spec.dbpath,
             process.cmdline,
+            process.explicit_port,
+            True,
         ))
     return sorted(filtered, key=lambda p: (p.port, p.name, p.pid))
+
+
+def process_matches_mrun_spec(process, spec):
+    """Return True when a process matches the stored mrun startup command."""
+    if spec.name and process.name != spec.name:
+        return False
+    if not process.explicit_port:
+        return False
+    if spec.replset and _get_replset_name(process.cmdline) != spec.replset:
+        return False
+    if spec.dbpath and _same_path(process.dbpath, spec.dbpath):
+        return True
+    if spec.logpath and _same_path(process.logpath, spec.logpath):
+        return True
+    return not (spec.dbpath or spec.logpath)
+
+
+def annotate_mrun_processes(processes, specs):
+    """Mark discovered processes that belong to the selected mrun deployment."""
+    annotated = []
+    for process in processes:
+        spec = specs.get(process.port)
+        if spec is not None and process_matches_mrun_spec(process, spec):
+            annotated.append(MongoProcessInfo(
+                process.pid,
+                process.name,
+                process.port,
+                process.logpath or spec.logpath,
+                process.dbpath or spec.dbpath,
+                process.cmdline,
+                process.explicit_port,
+                True,
+            ))
+        else:
+            annotated.append(MongoProcessInfo(
+                process.pid,
+                process.name,
+                process.port,
+                process.logpath,
+                process.dbpath,
+                process.cmdline,
+                process.explicit_port,
+                False,
+            ))
+    return sorted(annotated, key=lambda p: (p.port, p.name, p.pid))
 
 
 def discover_mongo_processes(process_iter=None):
@@ -1572,15 +1656,18 @@ class LogTailer:
         self.lines = deque(maxlen=max_lines)
         self.offsets = {}
         self.missing_paths = set()
+        self.sequence = 0
         self._seed()
 
     def _seed(self):
+        records = []
         for port, path in self.logpaths_by_port.items():
             if not path:
                 continue
             try:
                 with open(path, "rb") as logfile:
-                    recent = deque(logfile, maxlen=20)
+                    recent = _tail_file_lines(logfile, 20)
+                    logfile.seek(0, os.SEEK_END)
                     self.offsets[port] = logfile.tell()
             except OSError:
                 self.offsets[port] = 0
@@ -1588,9 +1675,11 @@ class LogTailer:
                 continue
 
             for line in recent:
-                self._append_line(port, line)
+                records.append(self._line_record(port, line))
+        self._append_records(records)
 
     def poll(self):
+        records = []
         for port, path in self.logpaths_by_port.items():
             if not path:
                 continue
@@ -1603,10 +1692,11 @@ class LogTailer:
                         offset = 0
                     logfile.seek(offset)
                     for line in logfile:
-                        self._append_line(port, line)
+                        records.append(self._line_record(port, line))
                     self.offsets[port] = logfile.tell()
             except OSError:
                 self._append_missing(port, path)
+        self._append_records(records)
         return list(self.lines)
 
     def _append_missing(self, port, path):
@@ -1617,8 +1707,61 @@ class LogTailer:
         self.lines.append("%s | log unavailable: %s" % (port, path))
 
     def _append_line(self, port, line):
+        _, text = self._line_record(port, line)
+        self.lines.append(text)
+
+    def _line_record(self, port, line):
         text = line.decode("utf-8", "replace").rstrip()
-        self.lines.append("%s | %s" % (port, text))
+        timestamp = parse_log_timestamp(text)
+        self.sequence += 1
+        sort_key = (
+            timestamp is None,
+            timestamp if timestamp is not None else 0.0,
+            self.sequence,
+        )
+        return sort_key, "%s | %s" % (port, text)
+
+    def _append_records(self, records):
+        for _, text in sorted(records, key=lambda record: record[0]):
+            self.lines.append(text)
+
+
+def _tail_file_lines(logfile, line_count, block_size=8192):
+    """Return up to line_count trailing lines without scanning the whole file."""
+    if line_count <= 0:
+        return []
+
+    logfile.seek(0, os.SEEK_END)
+    position = logfile.tell()
+    chunks = []
+    newline_count = 0
+    while position > 0 and newline_count <= line_count:
+        read_size = min(block_size, position)
+        position -= read_size
+        logfile.seek(position)
+        chunk = logfile.read(read_size)
+        chunks.append(chunk)
+        newline_count += chunk.count(b"\n")
+
+    data = b"".join(reversed(chunks))
+    lines = data.splitlines(keepends=True)
+    if position > 0 and lines:
+        lines = lines[1:]
+    return lines[-line_count:]
+
+
+def parse_log_timestamp(text):
+    """Parse a MongoDB JSON log timestamp into epoch seconds when present."""
+    match = LOG_DATE_RE.search(str(text))
+    if match is None:
+        return None
+    value = match.group(1)
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
 
 
 def read_log_stream(tailer, stream_paused):
@@ -1657,6 +1800,37 @@ def parse_log_selection(selection, candidates):
             selected_ports.append(port)
 
     return selected_ports
+
+
+def _parse_log_process_selection(selection, candidates):
+    """Return selected process objects from index or displayed port tokens."""
+    selection = "" if selection is None else str(selection).strip()
+    candidates = list(candidates or [])
+    if selection == "" or selection.lower() == "all":
+        return list(candidates)
+
+    selected = []
+    tokens = [token.strip() for token in selection.replace(",", " ").split()]
+    for token in tokens:
+        try:
+            value = int(token)
+        except ValueError:
+            raise SelectionInputError(
+                "expected indexes or displayed ports, got: %s" % token)
+
+        if 1 <= value <= len(candidates):
+            matches = [candidates[value - 1]]
+        else:
+            matches = [process for process in candidates if process.port == value]
+            if not matches:
+                raise SelectionInputError(
+                    "no displayed log entry matches port/index: %s" % token)
+
+        for process in matches:
+            if process not in selected:
+                selected.append(process)
+
+    return selected
 
 
 def parse_current_op_namespace_selection(selection, namespaces):
@@ -2022,33 +2196,67 @@ def build_mongosh_command(uri, auth_config=None, tls_kwargs=None,
 def choose_logpaths(processes, input_func=input, stdout=None):
     """Prompt the user to choose log files to tail."""
     stdout = stdout or sys.stdout
-    candidates = [process for process in processes if process.logpath]
+    candidates = list(processes or [])
     if not candidates:
-        stdout.write("No --logpath values found; log tail quadrant will be empty.\n")
+        stdout.write("No MongoDB processes found; log tail quadrant will be empty.\n")
         stdout.flush()
         return {}
 
     stdout.write("\nSelect MongoDB logs to tail:\n")
     for index, process in enumerate(candidates, start=1):
+        if process.managed and process.logpath:
+            suffix = process.logpath
+        elif process.managed:
+            suffix = "managed process; log path unavailable"
+        else:
+            suffix = "external process; live tail log unavailable"
         stdout.write("  [%i] %s port %s pid %s  %s\n" % (
-            index, process.name, process.port, process.pid, process.logpath))
+            index, process.name, process.port, process.pid, suffix))
     prompt = (
         "Enter indexes or displayed ports separated by commas, "
-        "or press Enter for all: ")
+        "or press Enter for managed logs: ")
     while True:
         stdout.write(prompt)
         stdout.flush()
         selection = input_func()
+        if str(selection or "").strip() == "":
+            selected_processes = [
+                process for process in candidates
+                if process.managed and process.logpath
+            ]
+            break
         try:
-            selected_ports = parse_log_selection(selection, candidates)
+            selected_processes = _parse_log_process_selection(selection, candidates)
             break
         except SelectionInputError as exc:
             stdout.write("Invalid log selection: %s\n" % exc)
-    return {
-        process.port: process.logpath
-        for process in candidates
-        if process.port in selected_ports
-    }
+
+    logpaths = {}
+    for process in selected_processes:
+        if process.managed and process.logpath:
+            logpaths[process.port] = process.logpath
+            continue
+
+        stdout.write(
+            "live tail log unavailable for port %s pid %s.\n" %
+            (process.port, process.pid))
+        stdout.write(
+            "Enter log path for port %s pid %s, or press Enter to skip: " %
+            (process.port, process.pid))
+        stdout.flush()
+        path = str(input_func() or "").strip()
+        if not path:
+            continue
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(path):
+            stdout.write("Invalid log path; not tailing %s.\n" % path)
+            continue
+        logpaths[process.port] = path
+
+    if not logpaths:
+        stdout.write("No logs selected; log tail quadrant will be empty.\n")
+        stdout.flush()
+    return logpaths
 
 
 def format_bytes(value):
@@ -2223,6 +2431,13 @@ def format_role(role_metrics, width=17):
     """Format a role column with stable visible width."""
     return _pad_ansi(_truncate_ansi(
         colorize_role(role_display(role_metrics)), width), width)
+
+
+def process_display_name(process):
+    """Mark processes outside the selected mrun deployment in all-process mode."""
+    if getattr(process, "managed", False):
+        return process.name
+    return process.name + "*"
 
 
 def clamp_log_cursor(log_lines, cursor, follow_tail):
@@ -3250,7 +3465,7 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
             "port": str(process.port),
             "pid": str(process.pid),
             "role": colorize_role(role_display(role_metrics.get(process.port))),
-            "process": process.name,
+            "process": process_display_name(process),
             "cpu": "%.1f" % process_cpu_percent_for_display(
                 metrics, normalized=normalized),
             "status": metrics.status,
@@ -3355,7 +3570,7 @@ def format_memory_lines(processes, process_metrics, role_metrics=None,
             "port": str(process.port),
             "role": colorize_role(role_display(role_metrics.get(process.port))),
             "pid": str(process.pid),
-            "process": process.name,
+            "process": process_display_name(process),
             "rss": format_bytes(metrics.memory_rss),
         })
     return format_table_lines(columns, rows, max_width=width)
@@ -4302,6 +4517,8 @@ class Monitor:
                             return "quit"
                         next_sample_at = snapshot.sampled_at + self.refresh_interval
                         force_sample = False
+                    else:
+                        snapshot.log_lines = self._read_log_lines(tailer)
 
                     frame = render_dashboard(
                         snapshot.processes,
@@ -4350,7 +4567,10 @@ class Monitor:
                     self.stdout.flush()
 
                     wait_start = time.time()
-                    wait_timeout = max(0.0, next_sample_at - wait_start)
+                    wait_timeout = min(
+                        max(0.0, next_sample_at - wait_start),
+                        LOG_POLL_INTERVAL,
+                    )
                     action = self._wait_for_action(
                         terminal, wait_start, snapshot.log_lines,
                         snapshot.processes, current_ops=snapshot.current_ops,
@@ -4420,23 +4640,7 @@ class Monitor:
                     self._activity_view_height(),
                 )
         disk_metrics = read_disk_metrics(processes)
-        log_lines = read_log_stream(tailer, self.stream_paused)
-        self.log_cursor = clamp_filtered_log_cursor(
-            log_lines,
-            self.log_cursor,
-            self.follow_tail,
-            self.log_filter_query,
-        )
-        self.log_view_start = clamp_log_view_start(
-            log_lines,
-            self.log_cursor,
-            self._activity_view_height(),
-            self.log_filter_query,
-            self.log_view_start,
-            self.follow_tail,
-        )
-        self.yanked_cursor = clamp_optional_log_cursor(
-            log_lines, self.yanked_cursor)
+        log_lines = self._read_log_lines(tailer)
 
         status_snapshot = None
         if self.server_status_active and selected_cpu:
@@ -4464,6 +4668,26 @@ class Monitor:
             sampled_at=time.time(),
         )
 
+    def _read_log_lines(self, tailer):
+        log_lines = read_log_stream(tailer, self.stream_paused)
+        self.log_cursor = clamp_filtered_log_cursor(
+            log_lines,
+            self.log_cursor,
+            self.follow_tail,
+            self.log_filter_query,
+        )
+        self.log_view_start = clamp_log_view_start(
+            log_lines,
+            self.log_cursor,
+            self._activity_view_height(),
+            self.log_filter_query,
+            self.log_view_start,
+            self.follow_tail,
+        )
+        self.yanked_cursor = clamp_optional_log_cursor(
+            log_lines, self.yanked_cursor)
+        return log_lines
+
     def _prime_cpu(self):
         try:
             processes = self._discover_processes()
@@ -4482,7 +4706,9 @@ class Monitor:
 
     def _discover_processes(self):
         if self.process_scope == "all":
-            return discover_mongo_processes(self.process_iter)
+            specs = load_mrun_process_specs(self.data_dir)
+            return annotate_mrun_processes(
+                discover_mongo_processes(self.process_iter), specs)
         return discover_mrun_processes(self.data_dir, self.process_iter)
 
     def _no_processes_message(self):
@@ -5120,7 +5346,8 @@ class Monitor:
         self._clear_pretty_log_line(restore_zoom=False)
         self._clear_current_op_pretty()
         self.status_message = (
-            "showing all MongoDB processes" if self.process_scope == "all"
+            "showing all MongoDB processes (* external)"
+            if self.process_scope == "all"
             else "showing mongorun-managed processes")
 
     def _jump_to_latest(self, log_lines):
