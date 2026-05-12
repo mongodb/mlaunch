@@ -124,7 +124,7 @@ mrun/monitor.py
     +-- CPU focus: j/k or arrows select a MongoDB process
     +-- CPU focus: C toggles normalized and raw process CPU
     +-- CPU focus: t toggles process-list and selected-process thread views
-    +-- o toggles the right activity pane between logs and top currentOp views
+    +-- logs focus: o toggles the right activity pane between logs and top currentOp views
     +-- O toggles formatted/raw currentOp documents while currentOp is active
     +-- L selects the currentOp top-N limit while currentOp is active
     +-- n opens currentOp namespace selection while currentOp is active
@@ -182,7 +182,7 @@ flowchart TD
     Q -- CPU j/k/arrows --> U[Select MongoDB process]
     Q -- CPU C --> U2[Toggle normalized/raw CPU]
     Q -- CPU t --> V[Toggle selected-process thread view]
-    Q -- o --> V2[Toggle right activity currentOp view]
+    Q -- logs o --> V2[Toggle right activity currentOp view]
     Q -- O --> V3[Toggle formatted/raw currentOp]
     Q -- currentOp L --> V4[Select currentOp top-N limit]
     Q -- currentOp n --> V5[Select currentOp namespace]
@@ -336,8 +336,8 @@ percentage is divided by the host logical CPU count, so 100% means all logical
 CPUs. Pressing `C` toggles to raw process CPU, which can exceed 100% on
 multi-core hosts, and pressing `C` again returns to normalized mode. Pressing
 `t` toggles the CPU pane from the process CPU list to threads for the selected
-process. Pressing `o` from any pane toggles the right activity pane from log
-tail to the active currentOp entries across visible processes. The default
+process. Pressing `o` from the logs pane toggles the right activity pane from
+log tail to the active currentOp entries across visible processes. The default
 limit is 10. Pressing `L` while currentOp is active opens a top-N prompt that
 accepts positive integers and caps large values at 500. Pressing `O` while
 currentOp is active toggles formatted rows and raw currentOp documents derived

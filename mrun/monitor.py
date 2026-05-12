@@ -105,6 +105,27 @@ PANE_TITLES = {
     "disk": "Disk Usage",
     "logs": "Log Tail",
 }
+STATUS_DEFAULT_PANELS = ("disk", "network", "storage", "subsystems")
+STATUS_PROMOTION_SEQUENCE = (1, 2, 0)
+STATUS_SLOT_LABELS = {
+    0: "top-left",
+    1: "top-right",
+    2: "bottom-left",
+    3: "bottom-right",
+}
+STATUS_PANEL_TITLES = {
+    "disk": "DISK STATUS",
+    "network": "NETWORK STATUS",
+    "storage": "STORAGE SUBSYSTEM",
+    "subsystems": "OTHER SUBSYSTEMS",
+}
+STATUS_PANEL_COLORS = {
+    "disk": "disk status",
+    "network": "network status",
+    "storage": "storage subsystem",
+    "subsystems": "other subsystems",
+}
+STATUS_RAW_PANEL_PREFIX = "raw:"
 STYLE_MARKERS = (
     STYLE_SELECTED,
     STYLE_YANKED,
@@ -338,6 +359,7 @@ class ServerStatusSnapshot:
 
     available: bool
     port: int = 0
+    raw: dict = None
     # Disk (WiredTiger block manager, logging, flushing)
     disk: dict = None
     # Network (connections, opcounters, network rates)
@@ -346,6 +368,9 @@ class ServerStatusSnapshot:
     storage: dict = None
     # Lightweight summaries for every top-level serverStatus subsystem.
     subsystems: dict = None
+    rate_ready: bool = False
+    rate_elapsed: float = 0.0
+    sampled_at: float = 0.0
     error: str = ""
 
 
@@ -927,10 +952,11 @@ def _safe_int(value, default=0):
 
 
 def _counter_delta(current, previous, key, elapsed):
-    return (
+    delta = (
         _safe_number(current.get(key)) -
         _safe_number(previous.get(key))
-    ) / elapsed
+    )
+    return max(0.0, delta) / elapsed
 
 
 def _mongo_error_text(exc):
@@ -1330,23 +1356,29 @@ class StatusSampler:
             }
 
             prev = self.previous.get(process_info.port)
+            rate_ready = prev is not None
+            rate_elapsed = 0.0
             if prev:
                 prev_time, prev_status = prev
-                elapsed = max(now - prev_time, 0.001)
+                rate_elapsed = max(now - prev_time, 0.001)
                 disk["rates"] = self._calculate_disk_rates(
-                    status, prev_status, elapsed)
+                    status, prev_status, rate_elapsed)
                 network_data["rates"] = self._calculate_network_rates(
-                    status, prev_status, elapsed)
+                    status, prev_status, rate_elapsed)
 
             self.previous[process_info.port] = (now, status)
 
             return ServerStatusSnapshot(
                 available=True,
                 port=process_info.port,
+                raw=status,
                 disk=disk,
                 network=network_data,
                 storage=storage,
                 subsystems=subsystems,
+                rate_ready=rate_ready,
+                rate_elapsed=rate_elapsed,
+                sampled_at=now,
             )
 
         except Exception as exc:
@@ -3480,7 +3512,7 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
 
 def format_current_op_lines(snapshot, cursor=None, height=None, raw=False,
                             yanked_cursor=None, width=None):
-    """Format the top active currentOp entries for the CPU pane."""
+    """Format the top active currentOp entries for the log activity pane."""
     if snapshot is None:
         return [_table_header("RAW CURRENTOP DOCUMENTS" if raw else "PORT"),
                 "currentOp not sampled yet."]
@@ -3664,6 +3696,24 @@ def _unavailable_status_lines(label, snapshot):
     return lines
 
 
+def _status_rate_window(snapshot):
+    if not snapshot or not snapshot.rate_ready:
+        return "Rate Window: warming up"
+    return "Rate Window: %.1fs" % snapshot.rate_elapsed
+
+
+def _status_rate_value(snapshot, rates, key):
+    if not snapshot or not snapshot.rate_ready:
+        return "warming up"
+    return format_rate(rates.get(key, 0))
+
+
+def _status_op_rate_value(snapshot, rates, key):
+    if not snapshot or not snapshot.rate_ready:
+        return "warming up"
+    return "%.1f" % rates.get(key, 0)
+
+
 def format_disk_status_lines(snapshot):
     """Format Disk section for expanded status view."""
     if not snapshot or not snapshot.available:
@@ -3675,8 +3725,11 @@ def format_disk_status_lines(snapshot):
     rates = disk.get("rates", {})
 
     lines.append("WT Block Manager:")
-    lines.append(" Read:    %s" % format_rate(rates.get("bytes_read_per_sec", 0)))
-    lines.append(" Written: %s" % format_rate(rates.get("bytes_written_per_sec", 0)))
+    lines.append(" %s" % _status_rate_window(snapshot))
+    lines.append(" Read:    %s" % _status_rate_value(
+        snapshot, rates, "bytes_read_per_sec"))
+    lines.append(" Written: %s" % _status_rate_value(
+        snapshot, rates, "bytes_written_per_sec"))
     lines.append(" Mapped Read: %s" % format_bytes(wt_bm.get("mapped bytes read", 0)))
     lines.append("")
 
@@ -3714,12 +3767,18 @@ def format_network_status_lines(snapshot):
 
     lines.append("Op Rates (ops/sec):")
     for op in ["insert", "query", "update", "delete", "getmore", "command"]:
-        lines.append(" %-8s %7.1f" % (op.capitalize() + ":", rates.get(op, 0)))
+        lines.append(" %-8s %s" % (
+            op.capitalize() + ":",
+            _status_op_rate_value(snapshot, rates, op),
+        ))
 
     lines.append("")
     lines.append("Network Rates:")
-    lines.append(" In:  %s" % format_rate(rates.get("bytes_in_per_sec", 0)))
-    lines.append(" Out: %s" % format_rate(rates.get("bytes_out_per_sec", 0)))
+    lines.append(" %s" % _status_rate_window(snapshot))
+    lines.append(" In:  %s" % _status_rate_value(
+        snapshot, rates, "bytes_in_per_sec"))
+    lines.append(" Out: %s" % _status_rate_value(
+        snapshot, rates, "bytes_out_per_sec"))
 
     return lines
 
@@ -3763,23 +3822,202 @@ def format_storage_status_lines(snapshot):
     return lines
 
 
-def format_subsystem_status_lines(snapshot):
-    """Format top-level serverStatus subsystem summaries."""
+def _status_raw_panel_key(raw_key):
+    return STATUS_RAW_PANEL_PREFIX + str(raw_key)
+
+
+def _status_raw_key(panel_key):
+    if str(panel_key).startswith(STATUS_RAW_PANEL_PREFIX):
+        return str(panel_key)[len(STATUS_RAW_PANEL_PREFIX):]
+    return None
+
+
+def _status_panel_label(panel_key):
+    raw_key = _status_raw_key(panel_key)
+    if raw_key is not None:
+        return raw_key
+    return STATUS_PANEL_TITLES.get(panel_key, str(panel_key))
+
+
+def _status_panel_summary(snapshot, panel_key):
+    raw_key = _status_raw_key(panel_key)
+    if raw_key is not None:
+        return (snapshot.subsystems or {}).get(raw_key, "raw section")
+    return "panel"
+
+
+def _status_raw_key_order(snapshot):
+    if not snapshot or not snapshot.available:
+        return []
+    if snapshot.subsystems:
+        return list(snapshot.subsystems)
+    return list((snapshot.raw or {}).keys())
+
+
+def _status_represented_raw_keys(panel_slots):
+    represented = set()
+    for panel_key in panel_slots or STATUS_DEFAULT_PANELS:
+        raw_key = _status_raw_key(panel_key)
+        if raw_key is not None:
+            represented.add(raw_key)
+    return represented
+
+
+def status_selectable_panels(snapshot, panel_slots=None):
+    """Return status panels or raw serverStatus keys not currently expanded."""
+    if not snapshot or not snapshot.available:
+        return []
+
+    slots = tuple(panel_slots or STATUS_DEFAULT_PANELS)
+    visible = set(slots)
+    represented = _status_represented_raw_keys(slots)
+    options = []
+
+    for panel_key in STATUS_DEFAULT_PANELS:
+        if panel_key == "subsystems":
+            continue
+        if panel_key not in visible:
+            options.append(panel_key)
+
+    for raw_key in _status_raw_key_order(snapshot):
+        if raw_key in represented:
+            continue
+        options.append(_status_raw_panel_key(raw_key))
+
+    return options
+
+
+def _clamp_status_cursor(cursor, count):
+    if count <= 0:
+        return None
+    if cursor is None:
+        return 0
+    return max(0, min(int(cursor), count - 1))
+
+
+def clamp_status_scroll(count, cursor, scroll, height):
+    if count <= 0 or cursor is None:
+        return 0
+    height = max(int(height or 1), 1)
+    scroll = max(0, min(int(scroll or 0), max(count - height, 0)))
+    if cursor < scroll:
+        return cursor
+    if cursor >= scroll + height:
+        return max(0, cursor - height + 1)
+    return scroll
+
+
+def _server_status_scalar(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _flatten_server_status_value(value, prefix="", max_depth=3, limit=80):
+    lines = []
+
+    def add_line(line):
+        if len(lines) < limit:
+            lines.append(line)
+
+    def walk(current, path, depth):
+        if len(lines) >= limit:
+            return
+        if isinstance(current, dict):
+            if not current:
+                add_line("%s: {}" % path)
+                return
+            if depth >= max_depth:
+                add_line("%s: %i fields" % (path, len(current)))
+                return
+            for key, value in current.items():
+                next_path = "%s.%s" % (path, key) if path else str(key)
+                walk(value, next_path, depth + 1)
+                if len(lines) >= limit:
+                    break
+            return
+        if isinstance(current, (list, tuple)):
+            if not current:
+                add_line("%s: []" % path)
+                return
+            if depth >= max_depth:
+                add_line("%s: %i items" % (path, len(current)))
+                return
+            for index, value in enumerate(current[:limit]):
+                next_path = "%s[%i]" % (path, index)
+                walk(value, next_path, depth + 1)
+                if len(lines) >= limit:
+                    break
+            return
+        add_line("%s: %s" % (path, _server_status_scalar(current)))
+
+    walk(value, prefix, 0)
+    if len(lines) >= limit:
+        lines.append("... truncated ...")
+    return lines
+
+
+def format_server_status_detail_lines(snapshot, raw_key):
+    """Format one raw top-level serverStatus subsection for a promoted panel."""
+    if not snapshot or not snapshot.available:
+        return _unavailable_status_lines("serverStatus.%s" % raw_key, snapshot)
+
+    raw = snapshot.raw or {}
+    if raw_key not in raw:
+        return ["serverStatus.%s unavailable." % raw_key]
+
+    lines = ["serverStatus.%s" % raw_key]
+    detail_lines = _flatten_server_status_value(raw.get(raw_key), raw_key)
+    if not detail_lines:
+        lines.append("No values returned.")
+    else:
+        lines.extend(detail_lines)
+    return lines
+
+
+def format_subsystem_status_lines(snapshot, cursor=None, scroll=0, height=None,
+                                  panel_slots=None):
+    """Format selectable serverStatus subsystem summaries."""
     if not snapshot or not snapshot.available:
         return _unavailable_status_lines("Subsystem status", snapshot)
 
     lines = [
-        "Top-level serverStatus keys:",
-        _table_header("SUBSYSTEM              SUMMARY"),
+        "Undisplayed serverStatus sections:",
+        _table_header("  SECTION                SUMMARY"),
     ]
-    subsystems = snapshot.subsystems or {}
-    if not subsystems:
-        lines.append("No subsystem fields returned.")
+    options = status_selectable_panels(snapshot, panel_slots)
+    if not options:
+        lines.append("All known sections are expanded.")
         return lines
 
-    for name, summary in subsystems.items():
-        lines.append("%-22s %s" % (
-            _truncate(name + ":", 22),
+    visible_height = None
+    if height is not None:
+        visible_height = max(int(height) - len(lines), 1)
+    cursor = _clamp_status_cursor(cursor, len(options))
+    if visible_height is None:
+        start = 0
+        end = len(options)
+    else:
+        start = clamp_status_scroll(
+            len(options), cursor, scroll, visible_height)
+        end = min(len(options), start + visible_height)
+
+    for index, panel_key in enumerate(options[start:end], start):
+        selected = cursor == index
+        label = _status_panel_label(panel_key)
+        summary = _status_panel_summary(snapshot, panel_key)
+        marker = ">" if selected else " "
+        style = STYLE_SELECTED if selected else ""
+        lines.append("%s%s %-22s %s" % (
+            style,
+            marker,
+            _truncate(label + ":", 22),
             _truncate(summary, 36),
         ))
 
@@ -3829,7 +4067,8 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                      current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
                      current_op_paused=False,
                      current_op_source_label_text="all",
-                     cpu_normalized=True):
+                     cpu_normalized=True,
+                     server_status_target_label="top-right"):
     focused_pane = normalize_pane(focused_pane)
     stream_control = control_hint(
         "Space", "resume" if stream_paused else "pause")
@@ -3842,12 +4081,16 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
         return " | ".join([
             "%s/%s" % (key_hint("q"), key_hint("Ctrl+C")),
             control_hint("E", "exit"),
+            "status %s" % key_hint("j/k"),
+            control_hint("Enter", "promote"),
+            control_hint("r", "reset"),
+            "target:%s" % server_status_target_label,
             control_hint("s", format_seconds(refresh_interval)),
         ])
 
     controls = [
         key_hint("q"),
-        control_hint("Tab", "pane"),
+        key_hint("Tab"),
         control_hint("z", "quad" if zoom_pane else "zoom"),
         source_reselect,
     ]
@@ -3866,8 +4109,6 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
         controls.append(control_hint(
             "t", "%s threads" % (
                 "list" if cpu_thread_view else "view")))
-        controls.append(control_hint(
-            "o", "logs" if current_op_view else "currentOps"))
         controls.extend(tail_controls)
     elif focused_pane == "logs":
         if current_op_view:
@@ -3919,14 +4160,16 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
                 stream_control,
             ])
         else:
+            controls.append(control_hint("o", "currentOp"))
             controls.extend([
                 "logs %s" % key_hint("j/k"),
                 control_hint("g", "latest"),
                 control_hint("p", "pretty"),
-                key_hint("y"),
                 stream_control,
-                control_hint("/", "filter"),
+                "scope:%s" % process_scope,
+                scope_toggle,
             ])
+            return " | ".join(controls)
         controls.extend(tail_controls)
     else:
         controls.append("%s pane" % focused_pane)
@@ -3935,7 +4178,57 @@ def _footer_controls(focused_pane, zoom_pane, refresh_interval, pretty_active,
     return " | ".join(controls)
 
 
-def render_server_status_view(snapshot, columns, rows, status_message, controls):
+def _status_panel_title(panel_key, snapshot):
+    raw_key = _status_raw_key(panel_key)
+    if raw_key is not None:
+        title = "SERVERSTATUS %s" % raw_key
+    else:
+        title = STATUS_PANEL_TITLES.get(panel_key, str(panel_key).upper())
+    if snapshot and snapshot.port:
+        title += " (port %s)" % snapshot.port
+    return title
+
+
+def _status_panel_header_color(panel_key):
+    raw_key = _status_raw_key(panel_key)
+    if raw_key is not None:
+        return PANE_HEADER_COLORS.get("other subsystems")
+    return PANE_HEADER_COLORS.get(
+        STATUS_PANEL_COLORS.get(panel_key, "other subsystems"))
+
+
+def _status_panel_lines(panel_key, snapshot, content_height,
+                        subsystem_cursor, subsystem_scroll, panel_slots):
+    raw_key = _status_raw_key(panel_key)
+    if raw_key is not None:
+        return format_server_status_detail_lines(snapshot, raw_key)
+    if panel_key == "disk":
+        return format_disk_status_lines(snapshot)
+    if panel_key == "network":
+        return format_network_status_lines(snapshot)
+    if panel_key == "storage":
+        return format_storage_status_lines(snapshot)
+    if panel_key == "subsystems":
+        return format_subsystem_status_lines(
+            snapshot,
+            cursor=subsystem_cursor,
+            scroll=subsystem_scroll,
+            height=content_height,
+            panel_slots=panel_slots,
+        )
+    return ["Unknown status panel: %s" % panel_key]
+
+
+def _normalize_status_panel_slots(panel_slots):
+    slots = list(panel_slots or STATUS_DEFAULT_PANELS)
+    while len(slots) < 4:
+        slots.append(STATUS_DEFAULT_PANELS[len(slots)])
+    return slots[:4]
+
+
+def render_server_status_view(snapshot, columns, rows, status_message, controls,
+                              panel_slots=None, subsystem_cursor=0,
+                              subsystem_scroll=0, promotion_index=0):
     """Render the expanded server status view."""
     if not snapshot:
         snapshot = ServerStatusSnapshot(
@@ -3943,36 +4236,46 @@ def render_server_status_view(snapshot, columns, rows, status_message, controls)
             error="No status snapshot available.",
         )
 
-    title_suffix = " (port %s)" % snapshot.port if snapshot.port else ""
-    disk_lines = format_disk_status_lines(snapshot)
-    network_lines = format_network_status_lines(snapshot)
-    storage_lines = format_storage_status_lines(snapshot)
-    subsystem_lines = format_subsystem_status_lines(snapshot)
-
     left_width = columns // 2
     right_width = columns - left_width
     top_height = max(3, rows // 2)
     bottom_height = max(3, rows - top_height)
-    disk_panel = make_panel(
-        "DISK STATUS" + title_suffix, disk_lines, left_width, top_height,
-        header_color=PANE_HEADER_COLORS.get("disk status"))
-    network_panel = make_panel(
-        "NETWORK STATUS" + title_suffix, network_lines, right_width,
-        top_height,
-        header_color=PANE_HEADER_COLORS.get("network status"))
-    storage_panel = make_panel(
-        "STORAGE SUBSYSTEM" + title_suffix, storage_lines, left_width,
-        bottom_height,
-        header_color=PANE_HEADER_COLORS.get("storage subsystem"))
-    subsystem_panel = make_panel(
-        "OTHER SUBSYSTEMS" + title_suffix, subsystem_lines, right_width,
-        bottom_height,
-        header_color=PANE_HEADER_COLORS.get("other subsystems"))
+    panel_slots = _normalize_status_panel_slots(panel_slots)
+    target_slot = STATUS_PROMOTION_SEQUENCE[
+        promotion_index % len(STATUS_PROMOTION_SEQUENCE)]
+
+    panel_specs = [
+        (panel_slots[0], left_width, top_height),
+        (panel_slots[1], right_width, top_height),
+        (panel_slots[2], left_width, bottom_height),
+        (panel_slots[3], right_width, bottom_height),
+    ]
+    rendered_panels = []
+    for slot_index, (panel_key, width, height) in enumerate(panel_specs):
+        lines = _status_panel_lines(
+            panel_key,
+            snapshot,
+            max(height - 2, 1),
+            subsystem_cursor,
+            subsystem_scroll,
+            panel_slots,
+        )
+        focused = panel_key == "subsystems"
+        if slot_index == target_slot and panel_key != "subsystems":
+            lines = ["Next promotion target"] + lines
+        rendered_panels.append(make_panel(
+            _status_panel_title(panel_key, snapshot),
+            lines,
+            width,
+            height,
+            focused=focused,
+            header_color=_status_panel_header_color(panel_key),
+        ))
 
     frame = []
-    for left, right in zip(disk_panel, network_panel):
+    for left, right in zip(rendered_panels[0], rendered_panels[1]):
         frame.append(left + right)
-    for left, right in zip(storage_panel, subsystem_panel):
+    for left, right in zip(rendered_panels[2], rendered_panels[3]):
         frame.append(left + right)
 
     frame.append(_footer(status_message, controls, columns))
@@ -4009,7 +4312,11 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
                      current_op_paused=False,
                      current_op_source_ports=None,
-                     cpu_normalized=True):
+                     cpu_normalized=True,
+                     status_panel_slots=None,
+                     status_subsystem_cursor=0,
+                     status_subsystem_scroll=0,
+                     status_promotion_index=0):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
@@ -4025,6 +4332,10 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_view and current_op_pretty_lines is not None)
     current_op_source_label_text = current_op_source_label(
         processes, current_op_source_ports, role_metrics)
+    status_target_slot = STATUS_PROMOTION_SEQUENCE[
+        status_promotion_index % len(STATUS_PROMOTION_SEQUENCE)]
+    status_target_label = STATUS_SLOT_LABELS.get(
+        status_target_slot, "top-right")
 
     controls = _footer_controls(
         focused_pane,
@@ -4048,11 +4359,21 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         current_op_paused=current_op_paused,
         current_op_source_label_text=current_op_source_label_text,
         cpu_normalized=cpu_normalized,
+        server_status_target_label=status_target_label,
     )
 
     if server_status_active:
         return render_server_status_view(
-            status_snapshot, columns, rows, status_message, controls)
+            status_snapshot,
+            columns,
+            rows,
+            status_message,
+            controls,
+            panel_slots=status_panel_slots,
+            subsystem_cursor=status_subsystem_cursor,
+            subsystem_scroll=status_subsystem_scroll,
+            promotion_index=status_promotion_index,
+        )
 
     if zoom_pane is None and zoom_logs:
         zoom_pane = "logs"
@@ -4290,6 +4611,10 @@ def parse_escape_sequence(sequence):
         return "up"
     if sequence in ("\x1b[B", "\x1bOB"):
         return "down"
+    if sequence == "\x1b[5~":
+        return "pageup"
+    if sequence == "\x1b[6~":
+        return "pagedown"
     if sequence.startswith("\x1b[") and sequence[-1:] in ("A", "B"):
         return {"A": "up", "B": "down"}[sequence[-1]]
     return "escape"
@@ -4447,6 +4772,10 @@ class Monitor:
         self.pretty_previous_zoom = None
         self.stream_paused = False
         self.server_status_active = False
+        self.status_panel_slots = list(STATUS_DEFAULT_PANELS)
+        self.status_subsystem_cursor = 0
+        self.status_subsystem_scroll = 0
+        self.status_promotion_index = 0
         self.log_filter_query = ""
         self.log_filter_prompt = False
         self.log_filter_input = ""
@@ -4561,6 +4890,10 @@ class Monitor:
                         current_op_paused=self.current_op_paused,
                         current_op_source_ports=self.current_op_source_ports,
                         cpu_normalized=self.cpu_normalized,
+                        status_panel_slots=self.status_panel_slots,
+                        status_subsystem_cursor=self.status_subsystem_cursor,
+                        status_subsystem_scroll=self.status_subsystem_scroll,
+                        status_promotion_index=self.status_promotion_index,
                         log_view_start=self.log_view_start,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
@@ -4574,6 +4907,7 @@ class Monitor:
                     action = self._wait_for_action(
                         terminal, wait_start, snapshot.log_lines,
                         snapshot.processes, current_ops=snapshot.current_ops,
+                        status_snapshot=snapshot.status_snapshot,
                         timeout=wait_timeout)
                     if action in ("quit", "reselect"):
                         return action
@@ -4717,7 +5051,8 @@ class Monitor:
         return NO_MRUN_PROCESSES_MESSAGE
 
     def _wait_for_action(self, terminal, start, log_lines, processes=None,
-                         current_ops=None, timeout=None):
+                         current_ops=None, status_snapshot=None,
+                         timeout=None):
         processes = processes or []
         if timeout is None:
             timeout = self.refresh_interval
@@ -4734,6 +5069,36 @@ class Monitor:
 
             if key in ("q", "ctrl-c", "\x03"):
                 return "quit"
+            if self.server_status_active:
+                if key in ("e", "E", "escape"):
+                    self._toggle_server_status_view()
+                    return "resample"
+                if key == "s":
+                    self._cycle_refresh_interval()
+                    return "redraw"
+                if key == "a":
+                    self._toggle_process_scope()
+                    return "reselect"
+                if key == "r":
+                    self._reset_status_panels()
+                    return "redraw"
+                if key in ("up", "k"):
+                    self._move_status_subsystem_cursor(status_snapshot, -1)
+                    return "redraw"
+                if key in ("down", "j"):
+                    self._move_status_subsystem_cursor(status_snapshot, 1)
+                    return "redraw"
+                if key in ("pageup", "\x02"):
+                    self._page_status_subsystem_cursor(status_snapshot, -1)
+                    return "redraw"
+                if key in ("pagedown", "\x06"):
+                    self._page_status_subsystem_cursor(status_snapshot, 1)
+                    return "redraw"
+                if key in ("\r", "\n", "enter"):
+                    self._promote_status_subsystem(status_snapshot)
+                    return "redraw"
+                time.sleep(KEY_POLL_INTERVAL)
+                continue
             if key == "r":
                 self._clear_pretty_log_line(restore_zoom=False)
                 self._clear_current_op_pretty()
@@ -4757,9 +5122,6 @@ class Monitor:
                 return "redraw"
             if key == "M":
                 return "launch-mongosh"
-            if key == "o":
-                self._toggle_cpu_current_op_view()
-                return "resample"
             if key == "O":
                 self._toggle_current_op_raw()
                 return "redraw"
@@ -4776,10 +5138,6 @@ class Monitor:
                 return "resample" if was_paused else "redraw"
 
             if key in ("e", "E"):
-                self._toggle_server_status_view()
-                return "resample"
-
-            if key == "escape" and self.server_status_active:
                 self._toggle_server_status_view()
                 return "resample"
 
@@ -4801,6 +5159,9 @@ class Monitor:
                     self._toggle_cpu_thread_view(processes)
                     return "resample"
             elif self.focused_pane == "logs":
+                if key == "o":
+                    self._toggle_log_current_op_view()
+                    return "resample"
                 if key in ("up", "k"):
                     if self.cpu_current_op_view:
                         if self.current_op_pretty_lines is not None:
@@ -4870,6 +5231,84 @@ class Monitor:
             time.sleep(KEY_POLL_INTERVAL)
         return None
 
+    @staticmethod
+    def _status_selector_visible_rows():
+        terminal_size = shutil.get_terminal_size((120, 40))
+        rows = max(int(terminal_size.lines or 0) - 1, 1)
+        top_height = max(3, rows // 2)
+        bottom_height = max(3, rows - top_height)
+        return max(bottom_height - 4, 1)
+
+    def _status_options(self, snapshot):
+        return status_selectable_panels(snapshot, self.status_panel_slots)
+
+    def _move_status_subsystem_cursor(self, snapshot, delta):
+        options = self._status_options(snapshot)
+        if not options:
+            self.status_subsystem_cursor = 0
+            self.status_subsystem_scroll = 0
+            self.status_message = "no undisplayed serverStatus sections"
+            return
+
+        cursor = _clamp_status_cursor(
+            self.status_subsystem_cursor, len(options))
+        cursor = max(0, min(cursor + delta, len(options) - 1))
+        self.status_subsystem_cursor = cursor
+        self.status_subsystem_scroll = clamp_status_scroll(
+            len(options),
+            cursor,
+            self.status_subsystem_scroll,
+            self._status_selector_visible_rows(),
+        )
+        self.status_message = "selected serverStatus %s" % _status_panel_label(
+            options[cursor])
+
+    def _page_status_subsystem_cursor(self, snapshot, direction):
+        step = self._status_selector_visible_rows()
+        self._move_status_subsystem_cursor(snapshot, direction * step)
+
+    def _promote_status_subsystem(self, snapshot):
+        options = self._status_options(snapshot)
+        if not options:
+            self.status_message = "no undisplayed serverStatus sections"
+            return
+
+        cursor = _clamp_status_cursor(
+            self.status_subsystem_cursor, len(options))
+        selected_panel = options[cursor]
+        target_slot = STATUS_PROMOTION_SEQUENCE[
+            self.status_promotion_index % len(STATUS_PROMOTION_SEQUENCE)]
+        previous_panel = self.status_panel_slots[target_slot]
+        self.status_panel_slots[target_slot] = selected_panel
+        self.status_promotion_index = (
+            self.status_promotion_index + 1) % len(STATUS_PROMOTION_SEQUENCE)
+
+        remaining = self._status_options(snapshot)
+        self.status_subsystem_cursor = (
+            _clamp_status_cursor(cursor, len(remaining)) or 0)
+        self.status_subsystem_scroll = clamp_status_scroll(
+            len(remaining),
+            self.status_subsystem_cursor,
+            self.status_subsystem_scroll,
+            self._status_selector_visible_rows(),
+        )
+        next_slot = STATUS_PROMOTION_SEQUENCE[
+            self.status_promotion_index % len(STATUS_PROMOTION_SEQUENCE)]
+        self.status_message = (
+            "promoted %s to %s; minimized %s; next target %s" % (
+                _status_panel_label(selected_panel),
+                STATUS_SLOT_LABELS.get(target_slot, "pane"),
+                _status_panel_label(previous_panel),
+                STATUS_SLOT_LABELS.get(next_slot, "pane"),
+            ))
+
+    def _reset_status_panels(self):
+        self.status_panel_slots = list(STATUS_DEFAULT_PANELS)
+        self.status_subsystem_cursor = 0
+        self.status_subsystem_scroll = 0
+        self.status_promotion_index = 0
+        self.status_message = "serverStatus layout reset"
+
     def _toggle_server_status_view(self):
         self.server_status_active = not self.server_status_active
         if self.server_status_active:
@@ -4935,7 +5374,7 @@ class Monitor:
         else:
             self.status_message = "CPU process list"
 
-    def _toggle_cpu_current_op_view(self):
+    def _toggle_log_current_op_view(self):
         self.cpu_current_op_view = not self.cpu_current_op_view
         if self.cpu_current_op_view:
             self.cpu_thread_view = False
@@ -4943,13 +5382,13 @@ class Monitor:
             self.current_op_cursor = None
             self.current_op_paused = False
             self.current_op_paused_snapshot = None
-            self.status_message = "currentOp top %i view" % (
+            self.status_message = "log currentOp top %i view" % (
                 self.current_op_limit)
         else:
             self._clear_current_op_pretty()
             self.current_op_paused = False
             self.current_op_paused_snapshot = None
-            self.status_message = "CPU process list"
+            self.status_message = "log tail view"
 
     def _toggle_current_op_raw(self):
         if not self.cpu_current_op_view:
@@ -5033,7 +5472,7 @@ class Monitor:
         self.current_op_paused_snapshot = None
         self.cpu_current_op_view = True
         self.focused_pane = "logs"
-        self.status_message = "currentOp top %i view" % limit
+        self.status_message = "log currentOp top %i view" % limit
 
     def _select_current_op_sources(self):
         self._clear_current_op_pretty()

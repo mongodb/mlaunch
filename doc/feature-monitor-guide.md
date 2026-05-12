@@ -57,7 +57,11 @@ The monitor shows:
 - Selectable CPU process rows.
 - Optional CPU thread view for the selected process.
 - Expanded server status view for Disk, Network, Storage, and all top-level
-  `serverStatus()` subsystem summaries.
+  `serverStatus()` subsystem summaries, with warm-up labels for rates that do
+  not yet have a previous counter sample.
+- Selectable serverStatus section browser in the expanded status view. Press
+  `j`/`k` to select an undisplayed section and Enter to promote that section
+  into the next metric pane, starting with the top-right pane.
 - Zoomed log view.
 - Scrollable syntax-colored Pretty JSON view for a highlighted log line.
 - A two-column dashboard: CPU, Memory, Network, and Disk stacked on the left;
@@ -83,49 +87,25 @@ mongorun.
 ```text
 feature-monitor branch
 |
-+-- mrun/mrun.py (lines 208-750)
-|   +-- adds top-level --monitor, --all, and --dir handling (lines 223-263)
-|   +-- adds --monitor-username, --monitor-password, --monitor-auth-db (lines 272-280)
-|   +-- routes monitor requests before normal command dispatch (line 698)
-|   +-- validates monitor-only flags (lines 709-738)
-|   +-- constructs Monitor with data_dir and include_all options (lines 740-750)
++-- mrun/mrun.py
+|   +-- exposes monitor CLI flags and routes --monitor before normal command dispatch
+|   +-- updates monitor help text for logs-pane currentOp controls
 |
-+-- mrun/monitor.py (lines 1-5240)
-|   +-- interactive Monitor implementation (lines 4159-5240)
-|   +-- process discovery (lines 572-724), metrics sampling (lines 725-1154), log tailing (lines 1561-1624), filtering (lines 2269-2579), rendering (lines 3076-3879), key input (lines 4493-4660)
-|   +-- auth and TLS metadata loading for monitor samplers (lines 424-541)
-|   +-- pane focus, focused-pane zoom, CPU process selection, thread/currentOp sampling
-|   +-- normalized process CPU model and helpers (lines 200, 596-616, 3159-3167)
-|   +-- ProcessSampler preserves psutil CPU state and normalized CPU across refreshes (lines 720-766)
-|   +-- RoleSampler captures primary/secondary role from serverStatus (lines 966-1064)
-|   +-- CurrentOpSampler captures and namespace-filters top active currentOp entries (lines 1065-1149)
-|   +-- SelectionInputError for strict prompt validation (lines 129-130)
-|   +-- log selection by visible index or displayed port with invalid-input re-prompt (lines 1631-1659, 2022-2051)
-|   +-- currentOp limit selection and validation, default 10 and max 500 (lines 1682-1708)
-|   +-- currentOp source selection by role, port, or index with invalid-input re-prompt (lines 1711-1838, 4812-4846)
-|   +-- mongosh target selection, auth/TLS argv construction, and shell handoff helpers (lines 1839-2021, 4799-4856)
-|   +-- StatusSampler captures serverStatus category details and subsystem summaries (lines 1150-1334)
-|   +-- log filter prompt, fuzzy scoring, structured filters, and hit highlighting
-|   +-- BSON-safe raw/currentOp pretty serialization (lines 1526-1538)
-|   +-- muted role colors that do not reuse bold pane-header styling (lines 54-56, 2149-2183)
-|   +-- highlighted footer key helpers and disambiguated footer controls (lines 58, 2734-2743, 3606-3720)
-|   +-- neutral-border, ANSI-aware panel renderer, bold pane titles, colored table headers, and content padding (lines 2090-2183, 3020-3101)
-|   +-- shared table formatter for aligned metric/currentOp tables (lines 3103-3153)
-|   +-- two-column dashboard layout and right activity pane (lines 3698-3879)
-|
-+-- mrun/fault_inject_collection_scans.py
-|   +-- local-only PyMongo workload for monitor troubleshooting
-|   +-- seeds a dedicated test collection and repeatedly runs COLLSCAN queries
-|   +-- optionally enables profiler slowms=0 and restores it afterward
++-- mrun/monitor.py
+|   +-- implements process discovery, metrics sampling, log tailing, filtering, rendering, and key input
+|   +-- distinguishes mrun-managed and external MongoDB processes
+|   +-- adds role, currentOp, mongosh, and expanded serverStatus monitor flows
+|   +-- retains raw serverStatus data for inspectable promoted subsystem panes
+|   +-- displays rate warm-up state until counter deltas have a baseline
+|   +-- clamps counter resets so derived rates never render as negative
+|   +-- scopes currentOp toggling to the logs activity pane
+|   +-- keeps table alignment, ANSI clipping, footer labels, and pane rendering stable
 |
 +-- mrun/test/test_monitor.py
-|   +-- focused tests for monitor behavior and rendering helpers
-|
-+-- mrun/test/test_fault_inject_collection_scans.py
-|   +-- focused tests for injector safety and profiler restoration
+|   +-- focused tests for monitor sampling, rendering, controls, prompts, and state transitions
 |
 +-- doc/mrun.rst
-|   +-- user-facing command documentation
+|   +-- user-facing monitor command documentation
 |
 +-- doc/monitor.md
 |   +-- compact implementation note
@@ -161,15 +141,15 @@ user command
     |
     |  mrun --monitor [--all] [--dir DIR]
     v
-MRunTool.run() (lines 208-750)
+MRunTool.run()
     |
-    +--> parse top-level monitor flags (lines 223-280)
+    +--> parse top-level monitor flags
     |
-    +--> validate monitor-only arguments (lines 709-738)
+    +--> validate monitor-only arguments
     |
-    +--> MRunTool.monitor() (lines 740-750)
+    +--> MRunTool.monitor()
          |
-         +--> Monitor(...).run() (lines 4170-4216)
+         +--> Monitor(...).run()
               |
               +--> interactive terminal dashboard
 ```
@@ -197,16 +177,16 @@ sequenceDiagram
     participant FS as .mrun_startup
 
     User->>CLI: mrun --monitor
-    CLI->>Tool: MRunTool.run() [mrun/mrun.py:208]
-    Tool->>Tool: argparse parses --monitor [mrun/mrun.py:223]
-    Tool->>Tool: skip default init routing [mrun/mrun.py:698]
-    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run() [mrun/mrun.py:744]
-    Monitor->>FS: load ./data/.mrun_startup [mrun/monitor.py:424]
-    Monitor->>PS: discover local mongod/mongos [mrun/monitor.py:567]
-    Monitor->>Monitor: keep only startup ports [mrun/monitor.py:549]
-    Monitor-->>User: prompt for logs to tail [mrun/monitor.py:1985]
-    User-->>Monitor: select log indexes or ports [mrun/monitor.py:1626]
-    Monitor-->>User: render dashboard until quit [mrun/monitor.py:4218]
+    CLI->>Tool: MRunTool.run()
+    Tool->>Tool: argparse parses --monitor
+    Tool->>Tool: skip default init routing
+    Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run()
+    Monitor->>FS: load ./data/.mrun_startup
+    Monitor->>PS: discover local mongod/mongos
+    Monitor->>Monitor: keep only startup ports
+    Monitor-->>User: prompt for logs to tail
+    User-->>Monitor: select log indexes or ports
+    Monitor-->>User: render dashboard until quit
 ```
 
 ## All-process mode sequence
@@ -219,12 +199,12 @@ sequenceDiagram
     participant PS as psutil
 
     User->>Tool: mrun --monitor --all
-    Tool->>Monitor: Monitor(include_all=true).run() [mrun/mrun.py:744]
-    Monitor->>PS: discover all local mongod/mongos [mrun/monitor.py:567]
-    Monitor-->>User: prompt for logs from all discovered processes [mrun/monitor.py:1985]
-    User-->>Monitor: press a [mrun/monitor.py:4424]
-    Monitor->>Monitor: toggle process_scope to mrun [mrun/monitor.py:5029]
-    Monitor-->>User: reselect logs using mrun-managed scope [mrun/monitor.py:4218]
+    Tool->>Monitor: Monitor(include_all=true).run()
+    Monitor->>PS: discover all local mongod/mongos
+    Monitor-->>User: prompt for logs from all discovered processes
+    User-->>Monitor: press a
+    Monitor->>Monitor: toggle process_scope to mrun
+    Monitor-->>User: reselect logs using mrun-managed scope
 ```
 
 ## Auth and TLS network sequence
@@ -236,14 +216,14 @@ sequenceDiagram
     participant Sampler as NetworkSampler
     participant Mongo as MongoDB
 
-    Monitor->>FS: load parsed_args [mrun/monitor.py:424]
+    Monitor->>FS: load parsed_args
     FS-->>Monitor: auth, username, password, auth_db, TLS/SSL fields
-    Monitor->>Monitor: apply monitor credential overrides if present [mrun/monitor.py:4111]
-    Monitor->>Monitor: build PyMongo kwargs [mrun/monitor.py:4116]
-    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required) [mrun/monitor.py:4120]
-    Sampler->>Mongo: admin.command(serverStatus) [mrun/monitor.py:935]
+    Monitor->>Monitor: apply monitor credential overrides if present
+    Monitor->>Monitor: build PyMongo kwargs
+    Monitor->>Sampler: NetworkSampler(client_kwargs, auth_required)
+    Sampler->>Mongo: admin.command(serverStatus)
     Mongo-->>Sampler: network counters or auth/TLS error
-    Sampler-->>Monitor: NetworkMetrics [mrun/monitor.py:899]
+    Sampler-->>Monitor: NetworkMetrics
 ```
 
 ## Runtime dashboard loop
@@ -278,7 +258,7 @@ flowchart TD
     M -- z --> R[Toggle focused-pane zoom]
     M -- CPU arrows/j/k --> S[Select MongoDB process]
     M -- CPU t --> T[Toggle selected-process thread view]
-    M -- o --> TO[Toggle right activity currentOp view]
+    M -- log pane o --> TO[Toggle log activity currentOp view]
     M -- currentOp L --> CL[Select currentOp top-N limit]
     M -- currentOp r --> CS[Select currentOp source nodes]
     M -- currentOp space --> CZ[Pause or resume currentOp sampling]
@@ -288,6 +268,8 @@ flowchart TD
     M -- logs y --> X[Yank highlighted raw line]
     M -- logs space --> Y[Pause or resume log/currentOp streaming]
     M -- E --> SS[Toggle expanded server status view]
+    M -- status j/k --> SV[Select undisplayed serverStatus section]
+    M -- status Enter --> SP[Promote selected section into next status pane]
     M -- M --> MS[Launch mongosh shell and return]
     M -- s --> Z[Cycle refresh interval]
     O --> A
@@ -297,6 +279,8 @@ flowchart TD
     S --> A
     T --> A
     TO --> A
+    SV --> A
+    SP --> A
     CL --> A
     CS --> A
     CZ --> A
@@ -310,35 +294,35 @@ flowchart TD
 
 Implementation mapping for the dashboard loop:
 
-- **Loop Start**: `Monitor._run_dashboard()` [mrun/monitor.py:4218]
-- **Dashboard Snapshot**: `Monitor._read_dashboard_snapshot()` [mrun/monitor.py:4304]
-- **Discover Processes**: `Monitor._discover_processes_or_report()` [mrun/monitor.py:4405]
-- **Read CPU/Memory**: `ProcessSampler.sample()` [mrun/monitor.py:737]
-- **Sample Roles**: `RoleSampler.sample()` [mrun/monitor.py:976]
-- **Sample Current Ops**: `CurrentOpSampler.sample()` [mrun/monitor.py:1075]
-- **Sample Network**: `NetworkSampler.sample()` [mrun/monitor.py:899]
-- **Read Disk Sizes**: `read_disk_metrics()` [mrun/monitor.py:799]
-- **Poll Logs**: `LogTailer.poll()` [mrun/monitor.py:1587]
-- **Render Frame**: `render_dashboard()` [mrun/monitor.py:3707]
-- **Two-Column Layout**: `_split_heights()` and `render_dashboard()` [mrun/monitor.py:3698]
-- **Key Actions**: `Monitor._wait_for_action()` [mrun/monitor.py:4424]
-- **Pane Focus**: `Monitor._focus_next_pane()` [mrun/monitor.py:4585]
-- **Zoom Pane**: `Monitor._toggle_focused_zoom()` [mrun/monitor.py:4595]
-- **CPU Normalized Toggle**: `Monitor._toggle_cpu_normalization()` [mrun/monitor.py:4619]
-- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()` [mrun/monitor.py:4625]
-- **Right-Pane CurrentOp View**: `Monitor._toggle_cpu_current_op_view()` [mrun/monitor.py:4643]
-- **CurrentOp Raw Toggle**: `Monitor._toggle_current_op_raw()` [mrun/monitor.py:4659]
-- **CurrentOp Namespace Selector**: `Monitor._select_current_op_namespace()` [mrun/monitor.py:4679]
-- **CurrentOp Limit Selector**: `Monitor._select_current_op_limit()` [mrun/monitor.py:4719]
-- **CurrentOp Source Selector**: `Monitor._select_current_op_sources()` [mrun/monitor.py:4743]
-- **CurrentOp Pause Toggle**: `Monitor._toggle_current_op_sampling()` [mrun/monitor.py:4777]
-- **Mongosh Shell Handoff**: `Monitor._launch_mongosh_admin_shell()` [mrun/monitor.py:4799]
-- **Log Filter Prompt**: `Monitor._start_log_filter_prompt()` [mrun/monitor.py:4858]
-- **Pretty Log JSON**: `Monitor._toggle_pretty_log_line()` [mrun/monitor.py:5072]
-- **Pretty CurrentOp JSON**: `Monitor._toggle_pretty_current_op()` [mrun/monitor.py:5111]
-- **Yank Log**: `Monitor._yank_log_line()` [mrun/monitor.py:5133]
-- **Yank CurrentOp**: `Monitor._yank_current_op()` [mrun/monitor.py:5148]
-- **Expanded Status**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:4578]
+- **Loop Start**: `Monitor._run_dashboard()`
+- **Dashboard Snapshot**: `Monitor._read_dashboard_snapshot()`
+- **Discover Processes**: `Monitor._discover_processes_or_report()`
+- **Read CPU/Memory**: `ProcessSampler.sample()`
+- **Sample Roles**: `RoleSampler.sample()`
+- **Sample Current Ops**: `CurrentOpSampler.sample()`
+- **Sample Network**: `NetworkSampler.sample()`
+- **Read Disk Sizes**: `read_disk_metrics()`
+- **Poll Logs**: `LogTailer.poll()`
+- **Render Frame**: `render_dashboard()`
+- **Two-Column Layout**: `_split_heights()` and `render_dashboard()`
+- **Key Actions**: `Monitor._wait_for_action()`
+- **Pane Focus**: `Monitor._focus_next_pane()`
+- **Zoom Pane**: `Monitor._toggle_focused_zoom()`
+- **CPU Normalized Toggle**: `Monitor._toggle_cpu_normalization()`
+- **CPU Thread View**: `Monitor._toggle_cpu_thread_view()`
+- **Log Activity CurrentOp View**: `Monitor._toggle_log_current_op_view()`
+- **CurrentOp Raw Toggle**: `Monitor._toggle_current_op_raw()`
+- **CurrentOp Namespace Selector**: `Monitor._select_current_op_namespace()`
+- **CurrentOp Limit Selector**: `Monitor._select_current_op_limit()`
+- **CurrentOp Source Selector**: `Monitor._select_current_op_sources()`
+- **CurrentOp Pause Toggle**: `Monitor._toggle_current_op_sampling()`
+- **Mongosh Shell Handoff**: `Monitor._launch_mongosh_admin_shell()`
+- **Log Filter Prompt**: `Monitor._start_log_filter_prompt()`
+- **Pretty Log JSON**: `Monitor._toggle_pretty_log_line()`
+- **Pretty CurrentOp JSON**: `Monitor._toggle_pretty_current_op()`
+- **Yank Log**: `Monitor._yank_log_line()`
+- **Yank CurrentOp**: `Monitor._yank_current_op()`
+- **Expanded Status**: `Monitor._toggle_server_status_view()`
 ```
 
 ## Terminal layout
@@ -530,30 +514,32 @@ bold teal table header inside a teal CPU pane
 
 Implementation mapping for panel rendering:
 
-- **Bold Escape Constant**: `ANSI_BOLD` [mrun/monitor.py:51]
-- **Table Header Marker**: `STYLE_TABLE_HEADER` [mrun/monitor.py:82]
-- **Role Color Constants**: `ANSI_ROLE_PRIMARY`, `ANSI_ROLE_SECONDARY`, and `ANSI_ROLE_WARNING` [mrun/monitor.py:54]
-- **Panel Content Padding**: `_panel_content_padding()` [mrun/monitor.py:2090]
-- **Table Header Wrapper**: `_table_header()` [mrun/monitor.py:2103]
-- **Style to ANSI Conversion**: `_style_ansi()` [mrun/monitor.py:2124]
-- **Role Color Helpers**: `role_style()`, `colorize_role()`, and `format_role()` [mrun/monitor.py:2149]
-- **Panel Renderer**: `make_panel()` [mrun/monitor.py:3020]
-- **Shared Table Formatter**: `format_table_lines()` [mrun/monitor.py:3103]
-- **CPU Header Source**: `format_cpu_lines()` [mrun/monitor.py:3170]
-- **CurrentOp Header Source**: `format_current_op_lines()` [mrun/monitor.py:3210]
-- **Memory Header Source**: `format_memory_lines()` [mrun/monitor.py:3279]
-- **Network Header Source**: `format_network_lines()` [mrun/monitor.py:3308]
-- **Disk Header Source**: `format_disk_lines()` [mrun/monitor.py:3349]
-- **Subsystem Header Source**: `format_subsystem_status_lines()` [mrun/monitor.py:3495]
-- **Thread Header Source**: `format_thread_lines()` [mrun/monitor.py:3518]
-- **Renderer Regression Test**: `test_make_panel_bolds_title_and_pads_table_header()` [mrun/test/test_monitor.py:1939]
-- **Neutral Border Regression Test**: `test_make_panel_uses_neutral_borders_and_colored_header_text()` [mrun/test/test_monitor.py:1922]
+- **Bold Escape Constant**: `ANSI_BOLD`
+- **Table Header Marker**: `STYLE_TABLE_HEADER`
+- **Role Color Constants**: `ANSI_ROLE_PRIMARY`, `ANSI_ROLE_SECONDARY`, and `ANSI_ROLE_WARNING`
+- **Panel Content Padding**: `_panel_content_padding()`
+- **Table Header Wrapper**: `_table_header()`
+- **Style to ANSI Conversion**: `_style_ansi()`
+- **Role Color Helpers**: `role_style()`, `colorize_role()`, and `format_role()`
+- **Panel Renderer**: `make_panel()`
+- **Shared Table Formatter**: `format_table_lines()`
+- **CPU Header Source**: `format_cpu_lines()`
+- **CurrentOp Header Source**: `format_current_op_lines()`
+- **Memory Header Source**: `format_memory_lines()`
+- **Network Header Source**: `format_network_lines()`
+- **Disk Header Source**: `format_disk_lines()`
+- **Subsystem Header Source**: `format_subsystem_status_lines()`
+- **Thread Header Source**: `format_thread_lines()`
+- **Renderer Regression Test**: `test_make_panel_bolds_title_and_pads_table_header()`
+- **Neutral Border Regression Test**: `test_make_panel_uses_neutral_borders_and_colored_header_text()`
 
 ## Expanded Server Status View
 
 The expanded status view is triggered by `E` and provides a deeper view into
 the internals of the selected MongoDB process. It replaces the standard
-dashboard with a four-panel `serverStatus()` layout.
+dashboard with a four-panel `serverStatus()` layout. The first sample from a
+node is used as the counter baseline; rate fields show `warming up` until a
+second sample establishes a real elapsed window.
 
 ### Layout segregation
 
@@ -562,12 +548,31 @@ dashboard with a four-panel `serverStatus()` layout.
 | **Disk** | `wiredTiger.block-manager`, `wiredTiger.log`, `backgroundFlushing` | Read/Write rates, Log size, Flush durations |
 | **Network** | `network`, `connections`, `opcounters` | Active connections, Op rates (ops/sec), Network IO |
 | **Storage** | `wiredTiger.cache`, `concurrentTransactions`, `globalLock`, `mem` | Cache usage (%), Read/Write tickets, Lock queues, RSS |
-| **Other Subsystems** | all top-level `serverStatus()` keys | key name and compact summary, including `metrics`, `locks`, `repl`, `flowControl`, `security`, and any version-specific fields |
+| **Other Subsystems** | all top-level `serverStatus()` keys not already expanded | selectable key name and compact summary, including `metrics`, `locks`, `repl`, `flowControl`, `security`, and any version-specific fields |
 
-The other-subsystems panel intentionally lists compact summaries instead of
-dumping the entire BSON response. This keeps the terminal readable while still
-making it clear which MongoDB subsystem sections are present for the selected
-node.
+The other-subsystems panel intentionally starts with compact summaries instead
+of dumping the entire BSON response. This keeps the terminal readable while
+still making it clear which MongoDB subsystem sections are present for the
+selected node. Press `j`/`k` or the arrow keys to move through the list and
+press Enter to promote the selected section into the next metric pane. The
+first promotion target is the top-right pane, then the bottom-left pane, then
+the top-left pane. The selector remains anchored in the bottom-right pane so it
+is always available for the next promotion. The displaced pane becomes a
+selectable item in the other-subsystems list.
+
+### Accuracy model
+
+`serverStatus()` exposes a mix of absolute counters, instantaneous gauges, and
+rate-like data that must be derived by comparing two counter samples. The
+expanded status sampler keeps the raw response, the sample timestamp, and the
+elapsed interval used for rate calculations. Disk and network rates are not
+rendered as `0` on the first sample anymore; the UI shows `warming up` until a
+previous sample exists. Counter resets, such as a server restart between
+samples, are clamped to `0` instead of displaying negative rates.
+
+The promoted raw-section panes render the current value from the latest
+`serverStatus()` response. That makes version-specific sections inspectable
+without guessing which MongoDB release exposes which fields.
 
 ### Status sequence
 
@@ -578,20 +583,21 @@ sequenceDiagram
     participant StatusSampler
     participant Mongo as MongoDB
 
-    User->>Monitor: Press 'E' [mrun/monitor.py:4424]
-    Monitor->>Monitor: Set server_status_active = True [mrun/monitor.py:4578]
+    User->>Monitor: Press 'E'
+    Monitor->>Monitor: Set server_status_active = True
     loop Refresh Loop
-        Monitor->>StatusSampler: sample(process) [mrun/monitor.py:4304]
-        StatusSampler->>Mongo: runCommand({serverStatus: 1}) [mrun/monitor.py:1175]
+        Monitor->>StatusSampler: sample(process)
+        StatusSampler->>Mongo: runCommand({serverStatus: 1})
         Mongo-->>StatusSampler: Full BSON Response
-        StatusSampler->>StatusSampler: Summarize every top-level subsystem [mrun/monitor.py:1306]
-        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details [mrun/monitor.py:1208]
-        StatusSampler-->>Monitor: ServerStatusSnapshot [mrun/monitor.py:1238]
-        Monitor->>Monitor: render_server_status_view() [mrun/monitor.py:3654]
-        Monitor-->>User: Refresh 4-panel UI [mrun/monitor.py:3654]
+        StatusSampler->>StatusSampler: Store raw response and summarize every top-level subsystem
+        StatusSampler->>StatusSampler: Segregate Disk/Network/Storage details
+        StatusSampler->>StatusSampler: Compute rates only when a previous sample exists
+        StatusSampler-->>Monitor: ServerStatusSnapshot
+        Monitor->>Monitor: render_server_status_view()
+        Monitor-->>User: Refresh 4-panel UI
     end
-    User->>Monitor: Press 'E' or 'Esc' [mrun/monitor.py:4424]
-    Monitor->>Monitor: Set server_status_active = False [mrun/monitor.py:4578]
+    User->>Monitor: Press 'E' or 'Esc'
+    Monitor->>Monitor: Set server_status_active = False
 ```
 
 ### ASCII Layout (Expanded View)
@@ -599,32 +605,36 @@ sequenceDiagram
 ```text
 + [DISK STATUS] (port 27017) ----------+ [NETWORK STATUS] (port 27017) ------+
 | WT Block Manager:                    | Connections:                       |
-|  Read:    1.2 MB/s                   |  Current:   15                     |
-|  Written: 0.5 MB/s                   | Op Rates (ops/sec):                |
-| WT Logging:                          |  Query:   450.5                    |
+|  Rate Window: 1.0s                   |  Current:   15                     |
+|  Read:    1.2 MB/s                   | Op Rates (ops/sec):                |
+|  Written: 0.5 MB/s                   |  Query:   450.5                    |
+| WT Logging:                          | Network Rates:                     |
 +--------------------------------------+------------------------------------+
 + [STORAGE SUBSYSTEM] (port 27017) ----+ [OTHER SUBSYSTEMS] (port 27017) ---+
-| WT Cache:                            | Top-level serverStatus keys:       |
-|  Used: [####------] 42%              | SUBSYSTEM              SUMMARY     |
+| WT Cache:                            | Undisplayed serverStatus sections: |
+|  Used: [####------] 42%              | SECTION                SUMMARY     |
 | WT Tickets (available):              | version:               8.0.0       |
-|  Read:  128                          | metrics:               18 fields   |
+|  Read:  128                          |>metrics:              18 fields    |
 | Memory:                              | locks:                 5 fields    |
 +--------------------------------------+------------------------------------+
-E exit status view | s refresh 1s | q quit
+E exit | status j/k | Enter promote | r reset | target:top-right | s 1s | q quit
 ```
 
 Implementation mapping for expanded status view:
 
-- **Status Snapshot Model**: `ServerStatusSnapshot` [mrun/monitor.py:324]
-- **Status Sampler**: `StatusSampler.sample()` [mrun/monitor.py:1175]
-- **Subsystem Summaries**: `StatusSampler._extract_subsystems()` [mrun/monitor.py:1306]
-- **Disk Formatting**: `format_disk_status_lines()` [mrun/monitor.py:3396]
-- **Network Formatting**: `format_network_status_lines()` [mrun/monitor.py:3428]
-- **Storage Formatting**: `format_storage_status_lines()` [mrun/monitor.py:3456]
-- **Other Subsystems Formatting**: `format_subsystem_status_lines()` [mrun/monitor.py:3495]
-- **Four-Panel Renderer**: `render_server_status_view()` [mrun/monitor.py:3654]
-- **Neutral Border Rendering**: `make_panel()` [mrun/monitor.py:3020]
-- **Toggle Handling**: `Monitor._toggle_server_status_view()` [mrun/monitor.py:4578]
+- **Status Snapshot Model**: `ServerStatusSnapshot`
+- **Status Sampler**: `StatusSampler.sample()`
+- **Subsystem Summaries**: `StatusSampler._extract_subsystems()`
+- **Disk Formatting**: `format_disk_status_lines()`
+- **Network Formatting**: `format_network_status_lines()`
+- **Storage Formatting**: `format_storage_status_lines()`
+- **Other Subsystems Formatting**: `format_subsystem_status_lines()`
+- **Raw Subsystem Formatting**: `format_server_status_detail_lines()`
+- **Selectable Status Sections**: `status_selectable_panels()`
+- **Status Promotion Handling**: `Monitor._promote_status_subsystem()`
+- **Four-Panel Renderer**: `render_server_status_view()`
+- **Neutral Border Rendering**: `make_panel()`
+- **Toggle Handling**: `Monitor._toggle_server_status_view()`
 
 ### Logical flow
 
@@ -635,11 +645,13 @@ flowchart LR
     B -- Yes --> D[Invoke StatusSampler]
     D --> E[Execute serverStatus]
     E --> F[Extract detailed categories]
-    E --> K[Summarize all top-level subsystem keys]
+    E --> K[Retain raw response and summarize subsystem keys]
     F --> G[Disk: WT Blocks/Log]
     F --> H[Network: Ops/Conns]
     F --> I[Storage: Cache/Locks]
     G & H & I & K --> J[Render 4-Panel View]
+    J --> L[Other Subsystems selector]
+    L --> M[Enter promotes selected raw section]
 ```
 
 ## Process discovery
@@ -705,19 +717,19 @@ sequenceDiagram
     participant Op as CurrentOpSampler
     participant Mongo as MongoDB Node
 
-    Loop->>Role: sample(processes) [mrun/monitor.py:976]
-    Role->>Mongo: admin.command(serverStatus) [mrun/monitor.py:997]
+    Loop->>Role: sample(processes)
+    Role->>Mongo: admin.command(serverStatus)
     Mongo-->>Role: repl.stateStr or repl.isWritablePrimary
     opt serverStatus lacks role or is rejected
-        Role->>Mongo: admin.command(hello), then isMaster [mrun/monitor.py:1383]
+        Role->>Mongo: admin.command(hello), then isMaster
         Mongo-->>Role: isWritablePrimary/ismaster/secondary/msg
     end
     Role-->>Loop: RoleMetrics by port
     alt activity-pane currentOp view active
-        Loop->>Op: sample(processes, role_metrics, limit, namespace) [mrun/monitor.py:1075]
-        Op->>Mongo: admin.command({currentOp:1,$all:true,active:true,ns?}) [mrun/monitor.py:1110]
+        Loop->>Op: sample(processes, role_metrics, limit, namespace)
+        Op->>Mongo: admin.command({currentOp:1,$all:true,active:true,ns?})
         opt optional currentOp field rejected
-            Op->>Mongo: retry simpler currentOp shapes [mrun/monitor.py:1433]
+            Op->>Mongo: retry simpler currentOp shapes
         end
         Mongo-->>Op: inprog active operations
         Op-->>Loop: top-N entries sorted by secs_running
@@ -755,8 +767,8 @@ Password Required -> muted non-bold warning red
 unknown/unavailable -> dim or neutral
 ```
 
-The currentOp view is not the default. Press `o` from any pane to replace the
-right-side log activity pane with active currentOp entries across visible
+The currentOp view is not the default. Press `o` from the logs pane to replace
+the right-side log activity pane with active currentOp entries across visible
 processes. The default limit is top 10, and `L` opens a top-N selector while
 currentOp is active. The selector accepts positive integers and caps large
 values at 500. The left CPU, memory, network, and disk panes remain visible.
@@ -788,42 +800,42 @@ unnecessarily.
 
 Implementation mapping for roles and currentOp:
 
-- **Role Snapshot Model**: `RoleMetrics` [mrun/monitor.py:243]
-- **Command Capability Model**: `MongoCommandCapabilities` [mrun/monitor.py:341]
-- **CurrentOp Entry Model**: `CurrentOpEntry` [mrun/monitor.py:300]
-- **CurrentOp Snapshot Model**: `CurrentOpSnapshot` [mrun/monitor.py:315]
-- **Compatibility Error Mapping**: `_compat_error_message()` [mrun/monitor.py:877]
-- **Role Sampler**: `RoleSampler.sample()` [mrun/monitor.py:976]
-- **Role Extraction**: `role_from_server_status()` [mrun/monitor.py:1335]
-- **Hello Role Fallback**: `read_hello_role()` [mrun/monitor.py:1383]
-- **Role Formatting**: `format_role()` [mrun/monitor.py:2178]
-- **CurrentOp Sampler**: `CurrentOpSampler.sample()` [mrun/monitor.py:1075]
-- **CurrentOp Command Fallbacks**: `current_op_command_candidates()` [mrun/monitor.py:1433]
-- **CurrentOp Result Extraction**: `current_op_documents()` [mrun/monitor.py:1460]
-- **CurrentOp Normalization**: `current_op_entry()` [mrun/monitor.py:1472]
-- **CurrentOp Namespace List**: `current_op_namespaces()` [mrun/monitor.py:1487]
-- **BSON-Safe Raw Rendering**: `current_op_raw_json()` [mrun/monitor.py:1526]
-- **Pretty CurrentOp JSON**: `current_op_pretty_json_lines()` [mrun/monitor.py:1531]
-- **Limit Prompt Parser**: `parse_current_op_limit_selection()` [mrun/monitor.py:1670]
-- **Limit Prompt**: `choose_current_op_limit()` [mrun/monitor.py:1687]
-- **Source Label**: `current_op_source_label()` [mrun/monitor.py:1713]
-- **Source Prompt Parser**: `parse_current_op_source_selection()` [mrun/monitor.py:1730]
-- **Source Prompt**: `choose_current_op_sources()` [mrun/monitor.py:1781]
-- **Namespace Prompt Parser**: `parse_current_op_namespace_selection()` [mrun/monitor.py:1650]
-- **Namespace Prompt**: `choose_current_op_namespace()` [mrun/monitor.py:1803]
-- **Shared Table Formatter**: `format_table_lines()` [mrun/monitor.py:3103]
-- **CPU Role Rendering**: `format_cpu_lines()` [mrun/monitor.py:3170]
-- **Memory Role Rendering**: `format_memory_lines()` [mrun/monitor.py:3279]
-- **Network Role Rendering**: `format_network_lines()` [mrun/monitor.py:3308]
-- **Disk Role Rendering**: `format_disk_lines()` [mrun/monitor.py:3349]
-- **CurrentOp Rendering**: `format_current_op_lines()` [mrun/monitor.py:3210]
-- **Right-Pane CurrentOp Toggle**: `Monitor._toggle_cpu_current_op_view()` [mrun/monitor.py:4643]
-- **Raw CurrentOp Toggle**: `Monitor._toggle_current_op_raw()` [mrun/monitor.py:4659]
-- **CurrentOp Limit Selector**: `Monitor._select_current_op_limit()` [mrun/monitor.py:4719]
-- **CurrentOp Source Selector**: `Monitor._select_current_op_sources()` [mrun/monitor.py:4743]
-- **CurrentOp Pause Toggle**: `Monitor._toggle_current_op_sampling()` [mrun/monitor.py:4777]
-- **Pretty CurrentOp Toggle**: `Monitor._toggle_pretty_current_op()` [mrun/monitor.py:5111]
-- **CurrentOp Yank**: `Monitor._yank_current_op()` [mrun/monitor.py:5148]
+- **Role Snapshot Model**: `RoleMetrics`
+- **Command Capability Model**: `MongoCommandCapabilities`
+- **CurrentOp Entry Model**: `CurrentOpEntry`
+- **CurrentOp Snapshot Model**: `CurrentOpSnapshot`
+- **Compatibility Error Mapping**: `_compat_error_message()`
+- **Role Sampler**: `RoleSampler.sample()`
+- **Role Extraction**: `role_from_server_status()`
+- **Hello Role Fallback**: `read_hello_role()`
+- **Role Formatting**: `format_role()`
+- **CurrentOp Sampler**: `CurrentOpSampler.sample()`
+- **CurrentOp Command Fallbacks**: `current_op_command_candidates()`
+- **CurrentOp Result Extraction**: `current_op_documents()`
+- **CurrentOp Normalization**: `current_op_entry()`
+- **CurrentOp Namespace List**: `current_op_namespaces()`
+- **BSON-Safe Raw Rendering**: `current_op_raw_json()`
+- **Pretty CurrentOp JSON**: `current_op_pretty_json_lines()`
+- **Limit Prompt Parser**: `parse_current_op_limit_selection()`
+- **Limit Prompt**: `choose_current_op_limit()`
+- **Source Label**: `current_op_source_label()`
+- **Source Prompt Parser**: `parse_current_op_source_selection()`
+- **Source Prompt**: `choose_current_op_sources()`
+- **Namespace Prompt Parser**: `parse_current_op_namespace_selection()`
+- **Namespace Prompt**: `choose_current_op_namespace()`
+- **Shared Table Formatter**: `format_table_lines()`
+- **CPU Role Rendering**: `format_cpu_lines()`
+- **Memory Role Rendering**: `format_memory_lines()`
+- **Network Role Rendering**: `format_network_lines()`
+- **Disk Role Rendering**: `format_disk_lines()`
+- **CurrentOp Rendering**: `format_current_op_lines()`
+- **Log Activity CurrentOp Toggle**: `Monitor._toggle_log_current_op_view()`
+- **Raw CurrentOp Toggle**: `Monitor._toggle_current_op_raw()`
+- **CurrentOp Limit Selector**: `Monitor._select_current_op_limit()`
+- **CurrentOp Source Selector**: `Monitor._select_current_op_sources()`
+- **CurrentOp Pause Toggle**: `Monitor._toggle_current_op_sampling()`
+- **Pretty CurrentOp Toggle**: `Monitor._toggle_pretty_current_op()`
+- **CurrentOp Yank**: `Monitor._yank_current_op()`
 
 ## Mongosh administration shell handoff
 
@@ -878,13 +890,13 @@ sequenceDiagram
     participant Role as RoleSampler
     participant Shell as mongosh
 
-    User->>Monitor: Press M [mrun/monitor.py:4424]
-    Monitor->>Monitor: Check executable and credentials [mrun/monitor.py:4799]
-    Monitor->>Role: sample(processes) for primary target [mrun/monitor.py:976]
-    Monitor->>Monitor: Build target list [mrun/monitor.py:1839]
-    Monitor-->>User: Prompt target choice [mrun/monitor.py:1918]
+    User->>Monitor: Press M
+    Monitor->>Monitor: Check executable and credentials
+    Monitor->>Role: sample(processes) for primary target
+    Monitor->>Monitor: Build target list
+    Monitor-->>User: Prompt target choice
     User-->>Monitor: Select primary/selected/seed/first/custom
-    Monitor->>Monitor: Build argv with auth/TLS [mrun/monitor.py:1969]
+    Monitor->>Monitor: Build argv with auth/TLS
     Monitor->>Shell: subprocess.call(argv)
     Shell-->>Monitor: Exit status
     Monitor-->>User: Resume dashboard
@@ -892,14 +904,14 @@ sequenceDiagram
 
 Implementation mapping for mongosh handoff:
 
-- **Replica Set Name Loader**: `load_monitor_replset_name()` [mrun/monitor.py:541]
-- **Target Model**: `MongoshTarget` [mrun/monitor.py:273]
-- **Target Builder**: `mongosh_target_options()` [mrun/monitor.py:1839]
-- **Target Parser**: `parse_mongosh_target_selection()` [mrun/monitor.py:1892]
-- **Target Prompt**: `choose_mongosh_target()` [mrun/monitor.py:1918]
-- **TLS Flag Builder**: `mongosh_tls_args()` [mrun/monitor.py:1943]
-- **Command Builder**: `build_mongosh_command()` [mrun/monitor.py:1969]
-- **Dashboard Handoff**: `Monitor._launch_mongosh_admin_shell()` [mrun/monitor.py:4799]
+- **Replica Set Name Loader**: `load_monitor_replset_name()`
+- **Target Model**: `MongoshTarget`
+- **Target Builder**: `mongosh_target_options()`
+- **Target Parser**: `parse_mongosh_target_selection()`
+- **Target Prompt**: `choose_mongosh_target()`
+- **TLS Flag Builder**: `mongosh_tls_args()`
+- **Command Builder**: `build_mongosh_command()`
+- **Dashboard Handoff**: `Monitor._launch_mongosh_admin_shell()`
 
 ## Metrics model
 
@@ -1029,8 +1041,11 @@ ServerStatusSnapshot
 |
 +-- available
 +-- port
++-- raw: latest full serverStatus response
 +-- disk/network/storage detailed categories
 +-- subsystems: compact top-level serverStatus summaries
++-- rate_ready/rate_elapsed for derived counter rates
++-- sampled_at
 +-- error
 
 DashboardSnapshot
@@ -1097,9 +1112,12 @@ Expanded status mode reuses the same MongoDB client configuration and calls
 `serverStatus()` for the selected CPU process. Detailed fields are split into
 Disk, Network, and Storage panels, while every top-level response key is also
 summarized in the Other Subsystems panel so version-specific subsystems are not
-silently hidden. Missing or non-dictionary subsystem fields are treated as empty
-sections instead of crashing the renderer, which lets the pane display cleanly
-across supported MongoDB versions.
+silently hidden. The raw response is retained in `ServerStatusSnapshot.raw`, so
+selecting a hidden section and pressing Enter can stream that section's current
+values in a promoted pane on later refreshes. Missing or non-dictionary
+subsystem fields are treated as empty sections instead of crashing the
+renderer, which lets the pane display cleanly across supported MongoDB
+versions.
 
 Thread metrics are sampled only when the CPU pane is in thread view. The
 monitor reads `psutil.Process(pid).threads()` for the selected process and
@@ -1153,10 +1171,10 @@ Thread view is not rendered by default. It is a pane-local toggle, so log
 tailing, memory, network, and disk views do not change unless their pane is
 focused or zoomed.
 
-CurrentOp view is also not rendered by default. It is mutually exclusive with
-thread view: enabling currentOp hides thread rows, and enabling thread view
-hides currentOp rows. CurrentOp itself is an activity-pane mode, so the left
-metric stack remains visible:
+CurrentOp view is also not rendered by default. It is toggled from the logs
+pane with `o`, replacing the log tail in the right-side log activity pane.
+The CPU pane keeps showing process CPU rows, so the left metric stack remains
+visible:
 
 ```text
 log activity pane
@@ -1229,12 +1247,12 @@ newest filtered or unfiltered log line.
 
 Implementation mapping for cursor-only redraw:
 
-- **Log View Clamp**: `clamp_log_view_start()` [mrun/monitor.py:2710]
-- **Log Row Formatting**: `format_log_lines()` [mrun/monitor.py:2762]
-- **Activity Pane Height**: `Monitor._activity_view_height()` [mrun/monitor.py:5012]
-- **Log Cursor Move**: `Monitor._move_log_cursor()` [mrun/monitor.py:4931]
-- **Jump Latest**: `Monitor._jump_to_latest()` [mrun/monitor.py:5057]
-- **Cursor Regression Test**: `test_log_cursor_moves_inside_visible_window_before_scrolling()` [mrun/test/test_monitor.py:2390]
+- **Log View Clamp**: `clamp_log_view_start()`
+- **Log Row Formatting**: `format_log_lines()`
+- **Activity Pane Height**: `Monitor._activity_view_height()`
+- **Log Cursor Move**: `Monitor._move_log_cursor()`
+- **Jump Latest**: `Monitor._jump_to_latest()`
+- **Cursor Regression Test**: `test_log_cursor_moves_inside_visible_window_before_scrolling()`
 
 ## Log tailing
 
@@ -1342,17 +1360,17 @@ No log lines match filter: slowop
 
 Implementation mapping for log filtering:
 
-- **Filter Match Result**: `LogFilterMatch` [mrun/monitor.py:282]
-- **Filtered View Model**: `LogFilterView` [mrun/monitor.py:291]
-- **Fuzzy Scorer**: `score_log_filter()` [mrun/monitor.py:2269]
-- **Structured Filter Match**: `match_log_filter()` [mrun/monitor.py:2502]
-- **View Builder**: `filter_log_lines()` [mrun/monitor.py:2536]
-- **Filtered Cursor Clamp**: `clamp_filtered_log_cursor()` [mrun/monitor.py:2555]
-- **Filtered Cursor Move**: `move_filtered_log_cursor()` [mrun/monitor.py:2573]
-- **Hit Highlight Rendering**: `format_log_lines()` [mrun/monitor.py:2762]
-- **Filter Prompt Keys**: `Monitor._handle_log_filter_prompt_key()` [mrun/monitor.py:4866]
-- **Apply Filter**: `Monitor._apply_log_filter()` [mrun/monitor.py:4891]
-- **Clear Filter**: `Monitor._clear_log_filter()` [mrun/monitor.py:4914]
+- **Filter Match Result**: `LogFilterMatch`
+- **Filtered View Model**: `LogFilterView`
+- **Fuzzy Scorer**: `score_log_filter()`
+- **Structured Filter Match**: `match_log_filter()`
+- **View Builder**: `filter_log_lines()`
+- **Filtered Cursor Clamp**: `clamp_filtered_log_cursor()`
+- **Filtered Cursor Move**: `move_filtered_log_cursor()`
+- **Hit Highlight Rendering**: `format_log_lines()`
+- **Filter Prompt Keys**: `Monitor._handle_log_filter_prompt_key()`
+- **Apply Filter**: `Monitor._apply_log_filter()`
+- **Clear Filter**: `Monitor._clear_log_filter()`
 
 ## Log colors and highlight priority
 
@@ -1436,128 +1454,6 @@ so `j`/Down and `k`/Up move through long slow-operation JSON without changing
 the highlighted raw log line underneath. `p` exits back to the same raw line,
 and `y` still copies the original raw log entry.
 
-## Collection-scan fault injection
-
-The branch includes a local workload helper for exercising `mrun --monitor`
-against a running replica set:
-
-```bash
-uv run python mrun/fault_inject_collection_scans.py
-```
-
-The default target is:
-
-```text
-mongodb://localhost:27017/?replicaSet=rs0
-database:   mrun_fault_injection
-collection: collection_scans
-comment:    mrun-monitor-fault-scan
-```
-
-The helper is intentionally not wired into the `mrun` command surface. It is a
-test utility for reviewers and troubleshooting sessions. It uses PyMongo, which
-is already a mongorun dependency, and adds no external library.
-
-Safety behavior:
-
-```text
-+----------------------+----------------------------------------------+
-| Guard                | Behavior                                     |
-+----------------------+----------------------------------------------+
-| Local URI default    | localhost replica set only                   |
-| Non-local URI        | rejected unless --allow-nonlocal is supplied |
-| Data target          | dedicated mrun_fault_injection collection    |
-| Cleanup              | collection drop only when --cleanup is used  |
-| Profiling            | restored in a finally block after the run    |
-+----------------------+----------------------------------------------+
-```
-
-Runtime flow:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Monitor as mrun --monitor
-    participant Injector as fault injector
-    participant Mongo as local replica set
-
-    User->>Monitor: start monitor and select logs
-    User->>Injector: uv run python mrun/fault_inject_collection_scans.py --profile
-    Injector->>Mongo: ping
-    Injector->>Mongo: seed dedicated collection if needed
-    Injector->>Mongo: profile 2 slowms 0
-    Injector->>Mongo: repeated unindexed find(...).comment(...)
-    Mongo-->>Monitor: COMMAND slow query log lines
-    Monitor-->>User: colored live tail and metric changes
-    Injector->>Mongo: restore previous profiler setting
-    Injector->>Mongo: optional drop collection with --cleanup
-```
-
-Data path:
-
-```text
-seed documents
-    |
-    +-- fields intentionally have no index except MongoDB's _id
-        |
-        v
-worker threads
-    |
-    +-- find({"scan_probe": "missing-worker-N-iteration-M"})
-    |   |
-    |   +-- no scan_probe index exists
-    |   +-- query includes comment "mrun-monitor-fault-scan ..."
-    v
-mongod
-    |
-    +-- logs slow COMMAND entries when --profile sets slowms=0
-    v
-mrun --monitor log pane
-```
-
-Useful commands:
-
-```bash
-uv run python mrun/fault_inject_collection_scans.py --dry-run
-
-uv run python mrun/fault_inject_collection_scans.py \
-  --profile \
-  --duration 120 \
-  --workers 3 \
-  --docs 10000 \
-  --payload-bytes 2048
-
-uv run python mrun/fault_inject_collection_scans.py \
-  --uri "mongodb://monitoruser:monitorpass@localhost:27017/?authSource=admin&replicaSet=rs0" \
-  --profile \
-  --duration 60
-```
-
-Use `--cleanup` when the test collection should be dropped after the workload.
-The cleanup path only drops the configured collection, not the database or any
-other user collection.
-
-Manual monitor test flow:
-
-```text
-1. Start or reuse a local mongorun replica set.
-2. In terminal A, run uv run mrun --monitor.
-3. Select all MongoDB logs when prompted.
-4. In terminal B, run the injector with --dry-run and confirm the target.
-5. Run the injector with --profile for 60-120 seconds.
-6. In the monitor, verify CPU/network activity rises on the target port.
-7. Verify log rows include mrun-monitor-fault-scan.
-8. Press /, enter slowop, and verify only slow-operation rows remain.
-9. Press p on a filtered structured log row and verify syntax-colored Pretty JSON.
-10. Press c to clear the filter.
-11. Press Space to pause/resume, g to jump latest, and y to yank a line.
-12. After the injector exits, verify the profiler restore message was printed.
-```
-
-If logs do not show the injected operations, first confirm that `--profile` was
-used, the monitor selected the correct log files, and the URI points at the
-same local replica set that `mrun --monitor` is tailing.
-
 ## Keyboard controls
 
 ```text
@@ -1575,7 +1471,7 @@ same local replica set that `mrun --monitor` is tailing.
 | CPU Down/j | Select next MongoDB process                         |
 | CPU C      | Toggle normalized/raw process CPU                   |
 | CPU t      | Toggle selected-process thread view                 |
-| o          | Toggle right activity pane between logs/currentOp   |
+| Log o      | Toggle log activity pane between logs/currentOp     |
 | O          | Toggle formatted/raw currentOp while currentOp shown|
 | CurrentOp L| Select currentOp top-N limit                       |
 | CurrentOp r| Select currentOp source nodes                      |
@@ -1719,138 +1615,64 @@ mrun --monitor could not list local processes: permission denied
 Missing or unreadable disk paths are reported as unavailable in the disk panel,
 without terminating the monitor.
 
-## Anomaly resolution traceability
+## Development history
 
-```text
-+-------------------+--------+-----------------------------------+---------+-------------+
-| ID                | Source | Summary                           | Commit  | Status      |
-+-------------------+--------+-----------------------------------+---------+-------------+
-| FM-MON-BASE-001  | user   | initial monitor dashboard         | 6dd5ff2 | Implemented |
-| FM-MON-CLI-001   | A3     | monitor flag order routing        | 1266878 | Implemented |
-| FM-MON-CLI-002   | A2     | monitor unknown argument handling | 1266878 | Implemented |
-| FM-MON-PROC-001  | A4     | process-list permission handling  | efebf01 | Implemented |
-| FM-MON-AUTH-001  | A1,A6  | load auth metadata                | d9f3060 | Implemented |
-| FM-MON-AUTH-002  | A1     | pass auth to NetworkSampler       | d9f3060 | Implemented |
-| FM-MON-AUTH-003  | A1,A6  | auth required network status      | d9f3060 | Implemented |
-| FM-MON-AUTH-004  | A2,A6  | monitor credential overrides      | c8376cc | Implemented |
-| FM-MON-TLS-001   | A5     | TLS/SSL network kwargs            | d1454f0 | Implemented |
-| FM-MON-DOC-001   | all    | traceable auth/TLS anomaly docs   | 264f6da | Implemented |
-| FM-MON-PANE-001  | user   | pane focus and focused zoom       | f354587 | Implemented |
-| FM-MON-CPU-001   | user   | CPU process selection             | f354587 | Implemented |
-| FM-MON-CPU-002   | user   | toggled CPU thread view           | f354587 | Implemented |
-| FM-MON-QA-001    | user   | thread view anomaly report        | 52a8234 | Implemented |
-| FM-MON-THREAD-001| user   | denied thread details show count  | fbd7996 | Implemented |
-| FM-MON-PERF-001  | user   | fast cursor redraws               | 95ea616 | Implemented |
-| FM-MON-RENDER-001| user   | cached disk metrics NameError fix | b095c9b | Implemented |
-| FM-MON-KEY-001   | user   | arrow keys use fd-level reads     | 5ca41d5 | Implemented |
-| FM-MON-PRETTY-001| user   | syntax-colored Pretty JSON view   | 0a6d5de | Implemented |
-| FM-MON-FAULT-001 | user   | collection-scan fault injector    | a626f03 | Implemented |
-| FM-MON-CPU-003   | user   | CPU sampler preserves psutil state| ba7f8e3 | Implemented |
-| FM-MON-CPU-004   | user   | normalized CPU display toggle     | 24799c5 | Implemented |
-| FM-MON-PRETTY-002| user   | scrollable Pretty JSON log view   | f42c9ec | Implemented |
-| FM-MON-STATUS-001| user   | expanded serverStatus subsystems  | c8553aa | Implemented |
-| FM-MON-FILTER-001| user   | fuzzy/structured log filtering    | b2f6f61 | Implemented |
-| FM-MON-UI-001    | user   | pane header padding/style         | 56fa23c | Implemented |
-| FM-MON-ROLE-001  | user   | primary/secondary role column     | 1c64657 | Implemented |
-| FM-MON-OP-001    | user   | initial top 10 currentOp view     | 1c64657 | Implemented |
-| FM-MON-LAYOUT-001| user   | two-column metric/activity layout | e671c7d | Implemented |
-| FM-MON-ROLE-002  | user   | role column across metric panes   | e671c7d | Implemented |
-| FM-MON-OP-002    | user   | formatted/raw right currentOp pane| e671c7d | Implemented |
-| FM-MON-LOG-002   | user   | independent log cursor viewport   | e671c7d | Implemented |
-| FM-MON-UI-002    | user   | neutral borders and clipped footer| e671c7d | Implemented |
-| FM-MON-OP-003    | user   | BSON-safe raw currentOp rendering | e02d83d | Implemented |
-| FM-MON-OP-004    | user   | currentOp namespace selector      | e02d83d | Implemented |
-| FM-MON-UI-003    | user   | consistent left metric row padding| e02d83d | Implemented |
-| FM-MON-OP-005    | user   | currentOp namespace hotkeys       | 0100ea8 | Implemented |
-| FM-MON-UI-004    | user   | shared aligned table formatter    | 8869e65 | Implemented |
-| FM-MON-ROLE-003  | user   | muted non-header role colors      | 8869e65 | Implemented |
-| FM-MON-OP-006    | user   | currentOp Pretty JSON view        | 8869e65 | Implemented |
-| FM-MON-OP-007    | user   | currentOp yank/copy support       | 8869e65 | Implemented |
-| FM-MON-OP-008    | user   | configurable currentOp top-N limit| 2b4e2a3 | Implemented |
-| FM-MON-OP-009    | user   | currentOp source node selector    | 9f7cb69 | Implemented |
-| FM-MON-OP-010    | user   | currentOp sampling pause/resume   | 9f7cb69 | Implemented |
-| FM-MON-SHELL-001 | user   | mongosh admin shell handoff       | 1733a0c | Implemented |
-| FM-MON-SHELL-002 | user   | mongosh auth/TLS secure argv      | 1733a0c | Implemented |
-| FM-MON-COMPAT-001| user   | role fallback via hello/isMaster  | b362ef7 | Implemented |
-| FM-MON-COMPAT-002| user   | currentOp command shape fallback  | b362ef7 | Implemented |
-| FM-MON-COMPAT-003| user   | tolerant serverStatus parsing     | b362ef7 | Implemented |
-| FM-MON-INPUT-001 | user   | strict selection prompt handling  | 568a789 | Implemented |
-| FM-MON-UI-005    | user   | disambiguated colored footer keys | 568a789 | Implemented |
-+-------------------+--------+-----------------------------------+---------+-------------+
-```
+This branch grew from a basic monitor into the final implementation in these
+reviewable increments:
 
-## Feature monitor commit map
-
-```text
-+---------+-----------------------------------------------+-------------------+-------------------------------+
-| Commit  | Purpose                                       | Trace IDs         | Key files                     |
-+---------+-----------------------------------------------+-------------------+-------------------------------+
-| 6dd5ff2 | Add base interactive monitor dashboard         | FM-MON-BASE-001   | monitor.py, mrun.py, docs     |
-| 1266878 | Fix monitor CLI routing and monitor args       | FM-MON-CLI-001/2  | mrun.py, test_monitor.py      |
-| efebf01 | Handle process discovery permission failures   | FM-MON-PROC-001   | monitor.py, test_monitor.py   |
-| d9f3060 | Load auth metadata for network sampling        | FM-MON-AUTH-001/3 | monitor.py, test_monitor.py   |
-| c8376cc | Add explicit monitor credential overrides      | FM-MON-AUTH-004   | mrun.py, monitor.py, tests    |
-| d1454f0 | Propagate TLS/SSL settings to network sampling | FM-MON-TLS-001    | monitor.py, test_monitor.py   |
-| 264f6da | Add anomaly traceability docs                  | FM-MON-DOC-001    | feature-monitor-guide.md      |
-| f354587 | Add pane focus, CPU selection, thread toggle   | FM-MON-PANE/CPU   | monitor.py, mrun.py, tests    |
-| 52a8234 | Document pane focus and thread-view behavior   | FM-MON-QA-001     | docs, anomaly report          |
-| fbd7996 | Fall back to thread count when details denied  | FM-MON-THREAD-001 | monitor.py, tests, docs       |
-| 95ea616 | Redraw cursor moves from cached samples        | FM-MON-PERF-001   | monitor.py, tests, docs       |
-| b095c9b | Fix cached disk metrics render NameError       | FM-MON-RENDER-001 | monitor.py, tests, report     |
-| 5ca41d5 | Read arrow escape sequences from tty fd        | FM-MON-KEY-001    | monitor.py, test_monitor.py   |
-| 0a6d5de | Colorize Pretty JSON log view                  | FM-MON-PRETTY-001 | monitor.py, test_monitor.py   |
-| a626f03 | Add collection-scan fault injector             | FM-MON-FAULT-001  | fault injector, tests         |
-| ba7f8e3 | Preserve psutil Process objects for CPU rates  | FM-MON-CPU-003    | monitor.py, test_monitor.py   |
-| 24799c5 | Add normalized CPU display toggle              | FM-MON-CPU-004    | monitor.py, mrun.py, tests    |
-| f42c9ec | Scroll zoomed Pretty JSON log view             | FM-MON-PRETTY-002 | monitor.py, test_monitor.py   |
-| c8553aa | Expand serverStatus subsystem view             | FM-MON-STATUS-001 | monitor.py, docs, tests       |
-| b2f6f61 | Add fuzzy and structured log filtering         | FM-MON-FILTER-001 | monitor.py, docs, tests       |
-| 56fa23c | Align pane headers and content padding         | FM-MON-UI-001     | monitor.py, test_monitor.py   |
-| 1c64657 | Add role column and currentOp view             | FM-MON-ROLE/OP    | monitor.py, mrun.py, tests    |
-| e671c7d | Rework layout and activity pane                | FM-MON-LAYOUT/OP  | monitor.py, test_monitor.py   |
-| e02d83d | Safely render raw currentOps                   | FM-MON-OP/UI      | monitor.py, mrun.py, tests    |
-| 0100ea8 | Support currentOp namespace hotkeys            | FM-MON-OP-005     | monitor.py                    |
-| 8869e65 | Align monitor tables and prettify currentOps   | FM-MON-UI/OP      | monitor.py, mrun.py, tests    |
-| 2b4e2a3 | Support configurable currentOp limits          | FM-MON-OP-008     | monitor.py, mrun.py, tests    |
-| 1733a0c | Add mongosh admin shell handoff                | FM-MON-SHELL      | monitor.py, mrun.py, tests    |
-| 9f7cb69 | Pause and filter currentOps                    | FM-MON-OP-009/10  | monitor.py, mrun.py, tests    |
-| b362ef7 | Support monitor command compatibility          | FM-MON-COMPAT     | monitor.py, docs, tests       |
-| 568a789 | Validate monitor selections and footer labels  | FM-MON-INPUT/UI   | monitor.py, mrun.py, tests    |
-+---------+-----------------------------------------------+-------------------+-------------------------------+
-```
-
-Reading order for reviewers:
-
-```text
-1. Start with 6dd5ff2 to understand the dashboard shape.
-2. Review 1266878 through d1454f0 for auth, TLS, and process-discovery anomaly fixes.
-3. Review f354587 and 52a8234 for pane focus and CPU thread view.
-4. Review fbd7996 through f42c9ec for live-testing follow-up fixes.
-5. Review a626f03 for the optional local workload helper.
-6. Review c8553aa for the expanded serverStatus subsystem UI.
-7. Review b2f6f61 for fuzzy and structured log filtering.
-8. Review 56fa23c for bold pane titles, colored table headers, and panel padding.
-9. Review 1c64657 for the initial ROLE column and currentOp implementation.
-10. Review e671c7d for the two-column layout, role columns in all metric
-    panes, right-side formatted/raw currentOp activity pane, independent log
-    cursor viewport, and neutral clipped panel/footer rendering.
-11. Review e02d83d for BSON-safe raw currentOp output, namespace filtering,
-    the namespace selector prompt, and left metric row padding.
-12. Review 0100ea8 for `n` and `c` currentOp namespace controls while the
-    activity pane is active.
-13. Review 8869e65 for shared metric/currentOp table alignment, muted role
-    colors, currentOp Pretty JSON, and currentOp yank support.
-14. Review 2b4e2a3 for `L` currentOp top-N selection, limit validation, and
-    sampler/render integration.
-15. Review 1733a0c for `M` mongosh shell handoff, target selection, and
-    auth/TLS-safe argv construction.
-16. Review 9f7cb69 for currentOp source filtering with `r` and currentOp
-    sampling pause/resume with Space.
-17. Review b362ef7 for role fallback through `hello` / `isMaster`, currentOp
-    command fallback shapes, and tolerant serverStatus subsystem parsing.
-18. Review 568a789 for strict log/currentOp source prompt validation, clearer
-    `r` and `a` footer labels, highlighted footer keys, and matching tests.
-```
+- Added the top-level `mrun --monitor` path and kept it separate from the
+  normal `init`, `start`, `stop`, `restart`, `list`, and `kill` command flow.
+- Added mrun-managed process discovery from `.mrun_startup`, plus all-process
+  scope for manually launched local `mongod` and `mongos` processes.
+- Added auth and TLS metadata loading from startup data, plus explicit monitor
+  credential overrides for sampling and `mongosh` handoff.
+- Added the terminal dashboard with CPU, memory, network, disk, and log panes.
+- Added pane focus, full-pane zoom, cached redraws for cursor movement, and
+  direct tty escape-sequence parsing for arrow keys.
+- Added CPU row selection, raw/normalized CPU display, and optional per-process
+  thread view with thread-count fallback when detailed timing is denied.
+- Added MongoDB role detection from `serverStatus()`, with `hello` and
+  `isMaster` fallbacks for compatible command surfaces.
+- Added role columns across CPU, memory, network, disk, and currentOp rows.
+- Added the two-column dashboard layout with a left metric stack and a
+  right-side log/currentOp activity pane.
+- Added strict log selection by visible index or displayed port, with
+  invalid-input re-prompts instead of silent fallback behavior.
+- Added external-process handling in all-process scope so metrics remain
+  visible while log tailing requires an explicit user-provided log path.
+- Added bounded live log tailing, recent-file seeding, timestamp merge ordering
+  across selected logs, pause/resume, and cursor movement that does not scroll
+  the viewport until the cursor reaches an edge.
+- Added MongoDB log severity coloring, selected/yanked priority handling, OSC
+  52 copy support, and syntax-colored Pretty JSON for structured logs.
+- Added local fuzzy and structured log filtering for `slowop`, command,
+  component, severity, port, and message searches.
+- Added on-demand top-N currentOp sampling in the log activity pane, with
+  formatted and raw BSON-safe display modes.
+- Added currentOp namespace filtering, active-namespace selection, Pretty JSON,
+  yank support, source-node selection, and pause/resume behavior.
+- Added currentOp command compatibility fallbacks so supported MongoDB versions
+  that reject optional fields can still render usable results.
+- Added the `M` key `mongosh` handoff with primary, selected-node, seed-list,
+  first-node, and custom-URI targets.
+- Added secure `mongosh` argv construction that reuses monitor TLS/auth options
+  without placing password values directly in argv.
+- Added expanded `serverStatus()` mode with Disk, Network, Storage, and Other
+  Subsystems panels.
+- Added raw `serverStatus()` retention, selectable undisplayed subsystem
+  browsing, Enter-to-promote behavior, round-robin promotion targets, and `r`
+  reset for the expanded status layout.
+- Added status rate warm-up labels before a previous counter sample exists,
+  rate-window display after a baseline exists, and counter-reset clamping so
+  derived rates do not go negative.
+- Added ANSI-aware rendering primitives: neutral borders, pane-colored bold
+  titles and table headers, aligned table rows, stable left padding, and clipped
+  footers that do not wrap on narrow terminals.
+- Updated the CLI help, compact monitor docs, user docs, and this
+  implementation spec to match the final controls and behavior.
+- Added focused tests for monitor CLI routing, sampling, rendering, prompts,
+  key handling, currentOp behavior, expanded status behavior, log filtering,
+  and failure/status messages.
 
 ## Testing added by the branch
 
@@ -1927,12 +1749,13 @@ The focused monitor test module covers:
 - ANSI-aware panel clipping for colored Pretty JSON.
 - serverStatus sampling for Disk, Network, Storage, and top-level subsystem
   summaries.
+- serverStatus raw response retention for promoted subsystem panes.
+- serverStatus rate warm-up display before a previous counter sample exists.
+- serverStatus counter-reset clamping so derived rates do not go negative.
+- selectable serverStatus subsystem navigation and Enter promotion.
+- serverStatus promotion reset with `r`.
 - expanded serverStatus rendering, unavailable status errors, and pane boundary
   colors.
-- collection-scan injector CLI parsing and dry-run behavior.
-- collection-scan injector localhost safety guard.
-- collection-scan injector query comments and unindexed filters.
-- collection-scan injector profiler restore and cleanup behavior.
 - `y` yank behavior.
 - severity color detection and rendering.
 - selected/yanked color priority.
@@ -1960,11 +1783,12 @@ The focused monitor test module covers:
 The verification commands used for this branch are:
 
 ```bash
-python3 -m py_compile mrun/monitor.py mrun/mrun.py mrun/test/test_monitor.py
-python3 -m py_compile mrun/fault_inject_collection_scans.py mrun/test/test_fault_inject_collection_scans.py
-uv run --with pytest pytest mrun/test/test_monitor.py
-uv run --with pytest pytest mrun/test/test_fault_inject_collection_scans.py
-uv run --with pytest pytest
+uv run --isolated --python python3.11 --no-python-downloads \
+  --with-requirements requirements.txt \
+  --with-requirements test-requirements.txt \
+  pytest mrun/test/test_monitor.py
+
+git diff --check
 ```
 
 ## Review checklist
@@ -1994,7 +1818,7 @@ Use this list for manual review:
 [ ] Secondary roles render with muted non-bold amber.
 [ ] Password Required roles render with muted non-bold warning color.
 [ ] Auth-enabled nodes without monitor credentials show Password Required in the ROLE column.
-[ ] CPU percentages update during the fault injector or another CPU stress workload.
+[ ] CPU percentages update during a local CPU stress workload.
 [ ] Network panel reports rates or unavailable status.
 [ ] Disk panel reports dbpath and log file size.
 [ ] Dashboard uses the stacked left metrics column and tall right activity pane.
@@ -2020,7 +1844,7 @@ Use this list for manual review:
 [ ] Raw CPU can exceed 100% during multi-core CPU activity.
 [ ] Normalized CPU is raw CPU divided by the host logical CPU count.
 [ ] CPU pane t toggles thread view for the selected process.
-[ ] o toggles the right activity pane between logs and currentOp.
+[ ] Log pane o toggles the right activity pane between logs and currentOp.
 [ ] O toggles currentOp between formatted and raw document mode.
 [ ] CurrentOp L opens the top-N prompt.
 [ ] Entering 50 shows a top 50 currentOp title/footer and samples up to 50 ops.
@@ -2068,13 +1892,16 @@ Use this list for manual review:
 [ ] MRUN_MONITOR_THEME=dark and MRUN_MONITOR_THEME=light select different palettes.
 [ ] E opens the expanded serverStatus view for the selected CPU process.
 [ ] Expanded serverStatus shows Disk, Network, Storage, and Other Subsystems.
-[ ] Other Subsystems lists compact summaries for top-level serverStatus keys.
+[ ] First-sample Disk and Network rates show warming up instead of zero.
+[ ] Later Disk and Network rates show a rate window and derived per-second values.
+[ ] Other Subsystems lists compact summaries for undisplayed serverStatus keys.
+[ ] Other Subsystems j/k or arrows move the selected serverStatus section.
+[ ] Enter promotes the selected serverStatus section into the next target pane.
+[ ] The first serverStatus promotion target is the top-right pane.
+[ ] Displaced serverStatus panes become selectable in Other Subsystems.
+[ ] r resets the expanded serverStatus layout.
 [ ] Auth or connection failures show a status error instead of a blank status view.
 [ ] Space pauses and resumes log streaming.
 [ ] g jumps back to the newest log line.
-[ ] fault injector --dry-run prints the local target without connecting.
-[ ] fault injector --profile emits mrun-monitor-fault-scan log entries.
-[ ] fault injector restores the previous profiler setting after exit.
-[ ] fault injector --cleanup drops only the configured test collection.
 [ ] q and Ctrl+C exit cleanly.
 ```

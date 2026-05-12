@@ -95,9 +95,9 @@ Monitor
    -  In the CPU pane, ``t`` toggles between the default process CPU list and
       a thread view for the selected process. Thread view is never shown by
       default.
-   -  ``o`` toggles the right activity pane between the log tail and the active
-      ``currentOp`` entries across visible MongoDB processes. The default limit
-      is 10 entries.
+   -  In the logs pane, ``o`` toggles the right activity pane between the log
+      tail and the active ``currentOp`` entries across visible MongoDB
+      processes. The default limit is 10 entries.
    -  ``O`` toggles formatted and raw ``currentOp`` documents while the
       currentOp activity view is active. Raw mode displays BSON-safe text
       derived from ``db.currentOp()`` output.

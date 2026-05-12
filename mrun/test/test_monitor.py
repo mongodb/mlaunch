@@ -21,6 +21,7 @@ from mrun.monitor import (
     ANSI_TEAL,
     ANSI_YELLOW,
     AUTH_REQUIRED_STATUS,
+    annotate_mrun_processes,
     build_monitor_tls_kwargs,
     build_mongosh_command,
     build_osc52_sequence,
@@ -48,8 +49,10 @@ from mrun.monitor import (
     format_current_op_lines,
     format_cpu_lines,
     format_disk_lines,
+    format_disk_status_lines,
     format_memory_lines,
     format_network_lines,
+    format_network_status_lines,
     format_pretty_log_lines,
     format_log_lines,
     filter_mrun_processes,
@@ -87,6 +90,7 @@ from mrun.monitor import (
     parse_current_op_source_selection,
     parse_mongosh_target_selection,
     parse_log_selection,
+    parse_log_timestamp,
     pretty_json_palette,
     process_to_info,
     prettify_log_line,
@@ -102,6 +106,7 @@ from mrun.monitor import (
     selected_process,
     SelectionInputError,
     strip_ansi,
+    status_selectable_panels,
     StatusSampler,
     ServerStatusSnapshot,
     ThreadMetrics,
@@ -417,7 +422,31 @@ def test_filter_mrun_processes_keeps_only_startup_ports(tmp_path):
     }))
     discovered = [
         MongoProcessInfo(1, "mongod", 27017, "", "", []),
-        MongoProcessInfo(2, "mongod", 27018, "", "", []),
+        MongoProcessInfo(
+            2,
+            "mongod",
+            27018,
+            "/tmp/mongod.log",
+            "/tmp/db",
+            [
+                "mongod",
+                "--port",
+                "27018",
+                "--dbpath",
+                "/tmp/db",
+                "--logpath",
+                "/tmp/mongod.log",
+            ],
+        ),
+        MongoProcessInfo(
+            3,
+            "mongod",
+            27018,
+            "",
+            "",
+            ["mongod"],
+            explicit_port=False,
+        ),
     ]
 
     filtered = filter_mrun_processes(
@@ -426,6 +455,81 @@ def test_filter_mrun_processes_keeps_only_startup_ports(tmp_path):
     assert [(process.pid, process.port) for process in filtered] == [(2, 27018)]
     assert filtered[0].dbpath == "/tmp/db"
     assert filtered[0].logpath == "/tmp/mongod.log"
+    assert filtered[0].managed is True
+
+
+def test_filter_mrun_processes_keeps_managed_mongos(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "startup_info": {
+            "27017": "mongos --port 27017 --logpath /tmp/mongos.log "
+                     "--configdb rs0/localhost:27018",
+        },
+    }))
+    discovered = [
+        MongoProcessInfo(
+            4,
+            "mongos",
+            27017,
+            "/tmp/mongos.log",
+            "",
+            ["mongos", "--port", "27017", "--logpath", "/tmp/mongos.log"],
+        ),
+        MongoProcessInfo(
+            5,
+            "mongod",
+            27017,
+            "/tmp/mongos.log",
+            "",
+            ["mongod", "--port", "27017", "--logpath", "/tmp/mongos.log"],
+        ),
+    ]
+
+    filtered = filter_mrun_processes(
+        discovered, load_mrun_process_specs(str(tmp_path)))
+
+    assert [(process.pid, process.name, process.port) for process in filtered] == [
+        (4, "mongos", 27017),
+    ]
+
+
+def test_annotate_mrun_processes_marks_external_processes(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "startup_info": {
+            "27018": (
+                "mongod --port 27018 --dbpath /tmp/db "
+                "--logpath /tmp/mongod.log")
+        },
+    }))
+    processes = [
+        MongoProcessInfo(
+            2,
+            "mongod",
+            27018,
+            "/tmp/mongod.log",
+            "/tmp/db",
+            ["mongod", "--port", "27018", "--dbpath", "/tmp/db"],
+        ),
+        MongoProcessInfo(
+            9,
+            "mongod",
+            37017,
+            "/tmp/other.log",
+            "/tmp/other",
+            ["mongod", "--port", "37017"],
+        ),
+    ]
+
+    annotated = annotate_mrun_processes(
+        processes, load_mrun_process_specs(str(tmp_path)))
+
+    assert [(process.pid, process.managed) for process in annotated] == [
+        (2, True),
+        (9, False),
+    ]
 
 
 def test_mrun_monitor_flag_does_not_route_to_init(monkeypatch):
@@ -574,7 +678,7 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
     assert "z zoom logs or focused pane" in flat_output
     assert "C toggles raw/normalized CPU" in flat_output
     assert "t toggles thread view" in flat_output
-    assert "o toggles currentOp activity" in flat_output
+    assert "logs pane o toggles currentOp activity" in flat_output
     assert "O toggles currentOp raw/format" in flat_output
     assert "n selects currentOp namespace" in flat_output
     assert "L sets currentOp top-N limit" in flat_output
@@ -644,8 +748,8 @@ def test_parse_log_selection_accepts_indexes_ports_and_all():
 
 def test_choose_logpaths_reprompts_on_invalid_port_or_token():
     candidates = [
-        MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", []),
-        MongoProcessInfo(11, "mongod", 27018, "/tmp/b.log", "", []),
+        MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [], managed=True),
+        MongoProcessInfo(11, "mongod", 27018, "/tmp/b.log", "", [], managed=True),
     ]
     answers = iter(["28099", "nope", "27018"])
     stdout = io.StringIO()
@@ -662,6 +766,60 @@ def test_choose_logpaths_reprompts_on_invalid_port_or_token():
     assert "port/index: 28099" in output
     assert "got: nope" in output
     assert output.count("Enter indexes or displayed ports") == 3
+
+
+def test_choose_logpaths_defaults_to_managed_logs_only():
+    candidates = [
+        MongoProcessInfo(10, "mongod", 27017, "/tmp/a.log", "", [], managed=True),
+        MongoProcessInfo(11, "mongod", 37017, "/tmp/external.log", "", []),
+    ]
+    stdout = io.StringIO()
+
+    result = choose_logpaths(
+        candidates,
+        input_func=lambda: "",
+        stdout=stdout,
+    )
+
+    assert result == {27017: "/tmp/a.log"}
+    assert "external process; live tail log unavailable" in stdout.getvalue()
+
+
+def test_choose_logpaths_prompts_for_external_log_path(tmp_path):
+    logfile = tmp_path / "external.log"
+    logfile.write_text("hello\n")
+    candidates = [
+        MongoProcessInfo(11, "mongod", 37017, "/tmp/external.log", "", []),
+    ]
+    answers = iter(["1", str(logfile)])
+    stdout = io.StringIO()
+
+    result = choose_logpaths(
+        candidates,
+        input_func=lambda: next(answers),
+        stdout=stdout,
+    )
+
+    assert result == {37017: str(logfile)}
+    assert "live tail log unavailable for port 37017 pid 11" in stdout.getvalue()
+
+
+def test_choose_logpaths_skips_invalid_external_log_path(tmp_path):
+    candidates = [
+        MongoProcessInfo(11, "mongod", 37017, "/tmp/external.log", "", []),
+    ]
+    answers = iter(["1", str(tmp_path / "missing.log")])
+    stdout = io.StringIO()
+
+    result = choose_logpaths(
+        candidates,
+        input_func=lambda: next(answers),
+        stdout=stdout,
+    )
+
+    assert result == {}
+    assert "Invalid log path" in stdout.getvalue()
+    assert "No logs selected" in stdout.getvalue()
 
 
 def test_parse_current_op_namespace_selection_accepts_index_clear_and_name():
@@ -1409,6 +1567,89 @@ def test_log_tailer_seeds_and_polls_new_lines(tmp_path):
     assert "27017 | third" in lines
 
 
+def test_log_tailer_seeds_recent_lines_without_full_file_scan(tmp_path):
+    logfile = tmp_path / "mongod.log"
+    logfile.write_text("".join("line %i\n" % i for i in range(50)))
+
+    tailer = LogTailer({27017: str(logfile)}, max_lines=30)
+
+    assert len(tailer.lines) == 20
+    assert "27017 | line 30" in tailer.lines
+    assert "27017 | line 49" in tailer.lines
+    assert "27017 | line 29" not in tailer.lines
+
+
+def test_log_tailer_seed_drops_partial_first_line_from_large_tail_block(tmp_path):
+    logfile = tmp_path / "mongod.log"
+    long_prefix = "x" * 9000
+    logfile.write_text(
+        long_prefix + "\n" +
+        "".join("line %i\n" % index for index in range(50))
+    )
+
+    tailer = LogTailer({27017: str(logfile)}, max_lines=20)
+
+    assert len(tailer.lines) == 20
+    assert "27017 | line 30" in tailer.lines
+    assert all("x" not in line for line in tailer.lines)
+
+
+def test_log_tailer_poll_starts_at_eof_after_seed(tmp_path):
+    logfile = tmp_path / "mongod.log"
+    logfile.write_text(
+        ("x" * 9000) + "\n" +
+        "".join("line %i\n" % index for index in range(50))
+    )
+    tailer = LogTailer({27017: str(logfile)}, max_lines=30)
+
+    with logfile.open("a") as fp:
+        fp.write("new line\n")
+
+    lines = tailer.poll()
+
+    assert lines[-1] == "27017 | new line"
+    assert all("x" not in line for line in lines)
+
+
+def test_log_tailer_merges_selected_logs_by_timestamp(tmp_path):
+    first = tmp_path / "first.log"
+    second = tmp_path / "second.log"
+    first.write_text(
+        '{"t":{"$date":"2026-05-11T11:00:02.000-07:00"},"msg":"two"}\n')
+    second.write_text(
+        '{"t":{"$date":"2026-05-11T11:00:01.000-07:00"},"msg":"one"}\n')
+
+    tailer = LogTailer({27017: str(first), 27018: str(second)}, max_lines=5)
+
+    assert list(tailer.lines) == [
+        '27018 | {"t":{"$date":"2026-05-11T11:00:01.000-07:00"},"msg":"one"}',
+        '27017 | {"t":{"$date":"2026-05-11T11:00:02.000-07:00"},"msg":"two"}',
+    ]
+    assert parse_log_timestamp(tailer.lines[0]) < parse_log_timestamp(tailer.lines[1])
+
+
+def test_log_tailer_polls_new_lines_by_timestamp(tmp_path):
+    first = tmp_path / "first.log"
+    second = tmp_path / "second.log"
+    first.write_text("")
+    second.write_text("")
+    tailer = LogTailer({27017: str(first), 27018: str(second)}, max_lines=5)
+
+    with first.open("a") as fp:
+        fp.write(
+            '{"t":{"$date":"2026-05-11T11:00:04.000-07:00"},"msg":"four"}\n')
+    with second.open("a") as fp:
+        fp.write(
+            '{"t":{"$date":"2026-05-11T11:00:03.000-07:00"},"msg":"three"}\n')
+
+    lines = tailer.poll()
+
+    assert lines == [
+        '27018 | {"t":{"$date":"2026-05-11T11:00:03.000-07:00"},"msg":"three"}',
+        '27017 | {"t":{"$date":"2026-05-11T11:00:04.000-07:00"},"msg":"four"}',
+    ]
+
+
 def test_read_log_stream_pauses_without_advancing_file_offsets(tmp_path):
     logfile = tmp_path / "mongod.log"
     logfile.write_text("first\n")
@@ -1892,7 +2133,7 @@ def test_render_dashboard_current_op_view_uses_right_activity_pane():
         {},
         ["27017 | log line"],
         terminal_size=os.terminal_size((120, 24)),
-        focused_pane="cpu",
+        focused_pane="logs",
         cpu_cursor=0,
         current_op_view=True,
         current_ops=snapshot,
@@ -1902,7 +2143,7 @@ def test_render_dashboard_current_op_view_uses_right_activity_pane():
     assert "test.coll" in rendered
     assert "CPU Usage" in rendered
     stripped = strip_ansi(rendered)
-    assert "o logs" in stripped or "o currentOps" in stripped
+    assert "o logs" in stripped
 
 
 def test_render_dashboard_current_op_raw_view_uses_right_activity_pane():
@@ -2726,9 +2967,23 @@ def test_footer_controls_disambiguate_reselect_and_scope_keys():
     assert ANSI_KEY_HINT in controls
     stripped = strip_ansi(controls)
     assert "r logs" in stripped
+    assert "o currentOp" in stripped
     assert "scope:mrun" in stripped
     assert "a show all" in stripped
     assert " | r | " not in stripped
+
+    cpu_controls = _footer_controls(
+        "cpu",
+        None,
+        1.0,
+        pretty_active=False,
+        stream_paused=False,
+        process_scope="mrun",
+        cpu_thread_view=False,
+        current_op_view=False,
+    )
+    cpu_stripped = strip_ansi(cpu_controls)
+    assert "o currentOp" not in cpu_stripped
 
     controls = _footer_controls(
         "logs",
@@ -2743,6 +2998,7 @@ def test_footer_controls_disambiguate_reselect_and_scope_keys():
 
     stripped = strip_ansi(controls)
     assert "r op sources" in stripped
+    assert "o logs" in stripped
     assert "scope:all" in stripped
     assert "a mrun only" in stripped
 
@@ -2770,7 +3026,7 @@ def test_monitor_a_toggles_process_scope_and_reselects_logs():
 
     assert action == "reselect"
     assert monitor.process_scope == "all"
-    assert monitor.status_message == "showing all MongoDB processes"
+    assert monitor.status_message == "showing all MongoDB processes (* external)"
 
     action = monitor._wait_for_action(FakeTerminal("a"), time.time(), [])
 
@@ -3070,10 +3326,19 @@ def test_monitor_t_toggles_cpu_thread_view_only_when_cpu_focused():
     assert monitor.status_message == "CPU process list"
 
 
-def test_monitor_o_toggles_current_op_view_globally():
+def test_monitor_o_toggles_current_op_view_from_logs_pane():
     process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
     monitor = Monitor(stdout=io.StringIO())
     monitor.refresh_interval = 0.01
+    monitor.focused_pane = "cpu"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("o"), time.time(), [], [process])
+
+    assert action is None
+    assert monitor.cpu_current_op_view is False
+
+    monitor.focused_pane = "logs"
 
     action = monitor._wait_for_action(
         FakeTerminal("o"), time.time(), [], [process])
@@ -3082,14 +3347,14 @@ def test_monitor_o_toggles_current_op_view_globally():
     assert monitor.cpu_current_op_view is True
     assert monitor.cpu_thread_view is False
     assert monitor.focused_pane == "logs"
-    assert monitor.status_message == "currentOp top 10 view"
+    assert monitor.status_message == "log currentOp top 10 view"
 
     action = monitor._wait_for_action(
         FakeTerminal("o"), time.time(), [], [process])
 
     assert action == "resample"
     assert monitor.cpu_current_op_view is False
-    assert monitor.status_message == "CPU process list"
+    assert monitor.status_message == "log tail view"
 
 
 def test_monitor_upper_o_toggles_current_op_raw_mode():
@@ -3200,7 +3465,7 @@ def test_monitor_select_current_op_limit_updates_limit():
     assert monitor.current_op_pretty_lines is None
     assert monitor.cpu_current_op_view is True
     assert monitor.focused_pane == "logs"
-    assert monitor.status_message == "currentOp top 50 view"
+    assert monitor.status_message == "log currentOp top 50 view"
 
 
 def test_monitor_select_current_op_sources_updates_selected_ports():
@@ -3701,6 +3966,8 @@ def test_status_sampler_segregates_metrics():
     assert snapshot.network["connections"]["current"] == 5
     assert snapshot.storage["wt_cache"]["maximum bytes configured"] == 1000
     assert snapshot.storage["wt_tickets"]["read"]["available"] == 128
+    assert snapshot.raw["metrics"]["queryExecutor"]["scanned"] == 10
+    assert snapshot.rate_ready is False
     assert snapshot.subsystems["version"] == "8.0.0"
     assert snapshot.subsystems["metrics"] == "1 fields"
     assert snapshot.subsystems["locks"] == "1 fields"
@@ -3739,10 +4006,47 @@ def test_status_sampler_handles_missing_version_specific_sections():
     assert first.available is True
     assert first.disk["wt_block_manager"] == {}
     assert first.network["network"] == {}
+    assert first.rate_ready is False
+    assert "warming up" in "\n".join(format_disk_status_lines(first))
+    assert "warming up" in "\n".join(format_network_status_lines(first))
     assert second.available is True
+    assert second.rate_ready is True
+    assert second.rate_elapsed == 2.0
     assert second.disk["rates"]["bytes_read_per_sec"] == 512
     assert second.network["rates"]["query"] == 1.5
     assert sampler.capabilities[27017].server_status is True
+
+
+def test_status_sampler_clamps_counter_resets():
+    responses = [
+        {
+            "wiredTiger": {"block-manager": {"bytes read": 1000}},
+            "network": {"bytesIn": 1000},
+            "opcounters": {"query": 10},
+        },
+        {
+            "wiredTiger": {"block-manager": {"bytes read": 100}},
+            "network": {"bytesIn": 100},
+            "opcounters": {"query": 1},
+        },
+    ]
+    times = [1.0, 2.0]
+
+    def client_factory(host, **kwargs):
+        return FakeClient(responses.pop(0))
+
+    sampler = StatusSampler(
+        client_factory=client_factory,
+        clock=lambda: times.pop(0),
+    )
+    process = MongoProcessInfo(10, "mongod", 27017, "", "", [])
+
+    sampler.sample(process)
+    second = sampler.sample(process)
+
+    assert second.disk["rates"]["bytes_read_per_sec"] == 0.0
+    assert second.network["rates"]["bytes_in_per_sec"] == 0.0
+    assert second.network["rates"]["query"] == 0.0
 
 
 def test_monitor_e_toggles_server_status_view():
@@ -3766,6 +4070,7 @@ def test_render_server_status_view_contains_all_sections():
     snapshot = ServerStatusSnapshot(
         available=True,
         port=27017,
+        raw={"metrics": {"queryExecutor": {"scanned": 10}}},
         disk={"wt_block_manager": {}, "wt_log": {}, "backgroundFlushing": {}, "rates": {}},
         network={"network": {}, "connections": {}, "opcounters": {}, "rates": {}},
         storage={"wt_cache": {}, "wt_tickets": {}, "globalLock": {}, "mem": {}},
@@ -3782,6 +4087,73 @@ def test_render_server_status_view_contains_all_sections():
     assert "metrics:" in rendered
     assert "test message" in rendered
     assert "controls" in rendered
+
+
+def test_render_server_status_view_promotes_raw_subsystem_panel():
+    snapshot = ServerStatusSnapshot(
+        available=True,
+        port=27017,
+        raw={
+            "metrics": {"queryExecutor": {"scanned": 10}},
+            "locks": {"Global": {"acquireCount": {"r": 3}}},
+        },
+        disk={"wt_block_manager": {}, "wt_log": {}, "backgroundFlushing": {}, "rates": {}},
+        network={"network": {}, "connections": {}, "opcounters": {}, "rates": {}},
+        storage={"wt_cache": {}, "wt_tickets": {}, "globalLock": {}, "mem": {}},
+        subsystems={"metrics": "1 fields", "locks": "1 fields"},
+    )
+
+    rendered = render_server_status_view(
+        snapshot,
+        120,
+        24,
+        "",
+        "controls",
+        panel_slots=["disk", "raw:metrics", "storage", "subsystems"],
+    )
+
+    assert "SERVERSTATUS metrics (port 27017)" in rendered
+    assert "metrics.queryExecutor.scanned: 10" in rendered
+    assert "NETWORK STATUS:" in rendered
+
+
+def test_monitor_server_status_navigation_promotes_round_robin():
+    snapshot = ServerStatusSnapshot(
+        available=True,
+        port=27017,
+        raw={"metrics": {"queryExecutor": {"scanned": 10}}},
+        disk={"wt_block_manager": {}, "wt_log": {}, "backgroundFlushing": {}, "rates": {}},
+        network={"network": {}, "connections": {}, "opcounters": {}, "rates": {}},
+        storage={"wt_cache": {}, "wt_tickets": {}, "globalLock": {}, "mem": {}},
+        subsystems={"metrics": "1 fields"},
+    )
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.server_status_active = True
+
+    action = monitor._wait_for_action(
+        FakeTerminal("enter"),
+        time.time(),
+        [],
+        status_snapshot=snapshot,
+    )
+
+    assert action == "redraw"
+    assert monitor.status_panel_slots[1] == "raw:metrics"
+    assert monitor.status_promotion_index == 1
+    assert "promoted metrics to top-right" in monitor.status_message
+    assert "network" in status_selectable_panels(
+        snapshot, monitor.status_panel_slots)
+
+    action = monitor._wait_for_action(
+        FakeTerminal("r"),
+        time.time(),
+        [],
+        status_snapshot=snapshot,
+    )
+
+    assert action == "redraw"
+    assert monitor.status_panel_slots == ["disk", "network", "storage", "subsystems"]
+    assert monitor.status_promotion_index == 0
 
 
 def test_render_server_status_view_shows_unavailable_errors():
