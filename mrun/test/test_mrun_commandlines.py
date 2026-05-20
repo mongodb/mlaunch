@@ -229,6 +229,42 @@ class TestMRun(object):
                 c.add('--fork')
         self.cmdlist_assert(cmdlist)
 
+    def test_sharded_embedded_csrs_1(self):
+        """
+        mrun should start 2 shards (1 node each), shard distribution should be 1 embedded CSRS,
+        1 shard member, 1 mongos
+        """       
+        self.run_tool('init --sharded 2 --replicaset --nodes 1 --config 1 --embedded')
+        cmdlist = (
+            [set(['"mongod"', '--replSet', '--dbpath', '--logpath', '--port',
+                  '--configsvr'])] * 1 +
+            [set(['"mongod"', '--replSet', '--dbpath', '--logpath', '--port',
+                  '--shardsvr'])] * 1 +
+            [set(['"mongos"', '--logpath', '--port', '--configdb'])]
+            )
+        if sys.platform == 'linux':
+            for c in cmdlist:
+                c.add('--fork')
+        self.cmdlist_assert(cmdlist)
+
+    def test_sharded_embedded_csrs_3(self):
+        """
+        mrun should start 2 shards (3 nodes each), shard distribution should be 1 embedded CSRS,
+        1 shard member, 1 mongos
+        """       
+        self.run_tool('init --sharded 2 --replicaset --nodes 3 --config 3 --embedded')
+        cmdlist = (
+            [set(['"mongod"', '--replSet', '--dbpath', '--logpath', '--port',
+                  '--configsvr'])] * 3 +
+            [set(['"mongod"', '--replSet', '--dbpath', '--logpath', '--port',
+                  '--shardsvr'])] * 3 +
+            [set(['"mongos"', '--logpath', '--port', '--configdb'])]
+            )
+        if sys.platform == 'linux':
+            for c in cmdlist:
+                c.add('--fork')
+        self.cmdlist_assert(cmdlist)
+
     def test_sharded_oplogsize_csrs(self):
         """mrun should not pass --oplogSize to config server (CSRS)."""
         self.run_tool('init --sharded 1 --replicaset --nodes 1 '
