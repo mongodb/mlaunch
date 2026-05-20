@@ -233,7 +233,9 @@ class TestMRun(object):
         """
         mrun should start 2 shards (1 node each), shard distribution should be 1 embedded CSRS,
         1 shard member, 1 mongos
-        """       
+        """
+        if version.parse(self.mongod_version) <= version.parse('8.0.0'):
+            raise pytest.skip('MongoDB version is older than 8.0.0')
         self.run_tool('init --sharded 2 --replicaset --nodes 1 --config 1 --embedded')
         cmdlist = (
             [set(['"mongod"', '--replSet', '--dbpath', '--logpath', '--port',
@@ -251,7 +253,9 @@ class TestMRun(object):
         """
         mrun should start 2 shards (3 nodes each), shard distribution should be 1 embedded CSRS,
         1 shard member, 1 mongos
-        """       
+        """
+        if version.parse(self.mongod_version) <= version.parse('8.0.0'):
+            raise pytest.skip('MongoDB version is older than 8.0.0')
         self.run_tool('init --sharded 2 --replicaset --nodes 3 --config 3 --embedded')
         cmdlist = (
             [set(['"mongod"', '--replSet', '--dbpath', '--logpath', '--port',
