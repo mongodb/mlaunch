@@ -29,10 +29,11 @@ class TestMRun(object):
     port = 33333
     base_dir = 'data_test_mrun'
 
-    def __init__(self):
-        """Constructor."""
-        self.use_auth = False
-        self.data_dir = ''
+    @classmethod
+    def setup_class(cls):
+        """Setup Constructor."""
+        cls.use_auth = False
+        cls.data_dir = ''
 
     def setup_method(self):
         """Start up method to create mrun tool and find free port."""
