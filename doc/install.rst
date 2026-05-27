@@ -2,20 +2,19 @@
 Installation
 ============
 
-mongrun is written in Python and it is currently tested with Python 3.8, 3.9,
-3.10, and 3.11.
+`mrun` is written in Python and tested against Python 3.10+.
 
 mongorun is only tested with
 `actively supported <https://www.mongodb.com/support-policy/lifecycles>`__
-(non End-of-Life) versions of the MongoDB server. As of November 2025,
+(non End-of-Life) versions of the MongoDB server. As of May 2026,
 that includes MongoDB 7.0 or newer.
 
 Prerequisites
 ~~~~~~~~~~~~~
 
 Python
-   You need to have Python 3.8, 3.9, 3.10, or 3.11 installed in order to
-   use mtools. Other versions of Python are not currently supported or tested.
+   You need to have Python 3.10+ installed in order to use mtools. Earlier 
+   versions of Python are not tested and not guaranteed to function.
 
    To check your Python version, run ``python --version`` on the command line.
 
@@ -28,7 +27,7 @@ The easiest way to install mongorun is via ``pip3``. From the command line, run:
 
    pip3 install mongorun
 
-You need to have Python 3.7 or newer installed. ``pip3`` should be included as
+You need to have Python 3.10 or newer installed. ``pip3`` should be included as
 part of the default install for supported versions of Python 3.
 
 Depending on your user rights, ``pip3`` may complain about not having

@@ -12,12 +12,9 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
-        pymongo-version: ["4.9", "4.16.0"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        pymongo-version: ["4.9", "4.17.0"]
         mongodb-version: ["7.0", "8.0"]
-        exclude:
-          - python-version: "3.8"
-            pymongo-version: "4.16.0"  # PyMongo 4.16 requires Python 3.9+
       fail-fast: false
 
     steps:
