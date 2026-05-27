@@ -1,6 +1,10 @@
-==================
-Changes to mlaunch
-==================
+===================
+Changes to mongorun
+===================
+
+version 1.9.0
+~~~~~~~~~~~~~
+ * add support for embedded config servers on MongoDB 8.0+ (thanks @renatoriccio!)
 
 version 1.8.0 - first release of mongorun standalone
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

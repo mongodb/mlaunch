@@ -94,8 +94,8 @@ Usage
 
    mrun init [-h] (--single | --replicaset) [--nodes NUM] [--arbiter]
                 [--name NAME] [--priority] [--sharded N [N ...]]
-                [--config NUM] [--csrs] [--mongos NUM] [--verbose]
-                [--port PORT] [--binarypath PATH] [--dir DIR]
+                [--config NUM] [--csrs] [--mongos NUM] [--embeddedcsrs]
+                [--verbose] [--port PORT] [--binarypath PATH] [--dir DIR]
                 [--hostname HOSTNAME] [--auth] [--username USERNAME]
                 [--password PASSWORD] [--auth-db DB]
                 [--auth-roles [ROLE [ROLE ...]]] [--auth-role-docs]
@@ -259,6 +259,10 @@ or a replica set.
    This parameter determines, how many ``mongos`` instances are launched in a
    sharded environment. The default number is 1. With this setting, the default
    can be changed to ``N`` mongos instances.
+
+``--embeddedcsrs``
+   This parameter indicates that ``mrun``` should start the cluster with an
+   embedded CSRS instead of a dedicated CSRS.
 
 Authentication Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^
