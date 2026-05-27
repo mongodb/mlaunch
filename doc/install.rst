@@ -2,11 +2,11 @@
 Installation
 ============
 
-mongrun is written in Python and it is currently tested with Python 3.10+.
+`mrun` is written in Python and tested against Python 3.10+.
 
 mongorun is only tested with
 `actively supported <https://www.mongodb.com/support-policy/lifecycles>`__
-(non End-of-Life) versions of the MongoDB server. As of November 2025,
+(non End-of-Life) versions of the MongoDB server. As of May 2026,
 that includes MongoDB 7.0 or newer.
 
 Prerequisites

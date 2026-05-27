@@ -19,7 +19,7 @@ For more information, see the `mongorun documentation
 Requirements and Installation Instructions
 ------------------------------------------
 
-`mrun` is written in Python. The tools are currently tested with Python 3.10+.
+`mrun` is written in Python and tested against Python 3.10+.
 
 mongorun requires `pymongo`, `psutil` and `packaging` dependencies. See the 
 `installation instructions <https://mongodb.github.io/mongorun/install.html>`__
