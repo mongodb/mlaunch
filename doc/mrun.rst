@@ -94,7 +94,7 @@ Usage
 
    mrun init [-h] (--single | --replicaset) [--nodes NUM] [--arbiter]
                 [--name NAME] [--priority] [--sharded N [N ...]]
-                [--config NUM] [--csrs] [--mongos NUM] [--embedded]
+                [--config NUM] [--csrs] [--mongos NUM] [--embeddedcsrs]
                 [--verbose] [--port PORT] [--binarypath PATH] [--dir DIR]
                 [--hostname HOSTNAME] [--auth] [--username USERNAME]
                 [--password PASSWORD] [--auth-db DB]
