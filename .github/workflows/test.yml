@@ -31,12 +31,14 @@ jobs:
             ${{ runner.os }}-${{ matrix.python-version }}-pip-
       - name: Install MongoDB
         run: |
+          mongodbVersion="${{ matrix.mongodb-version }}"
+          keyVersion=${mongodbVersion%%.*}.0
           sudo apt-get install -y gnupg curl
-          curl -fsSL https://www.mongodb.org/static/pgp/server-${{ matrix.mongodb-version }}.asc | \
-              sudo gpg -o /usr/share/keyrings/mongodb-server-${{ matrix.mongodb-version }}.gpg \
+          curl -fsSL https://pgp.mongodb.com/server-${keyVersion}.asc | \
+              sudo gpg -o /usr/share/keyrings/mongodb-server-${keyVersion}.gpg \
               --dearmor
-          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-${{ matrix.mongodb-version }}.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/${{ matrix.mongodb-version }} multiverse" | \
-              sudo tee /etc/apt/sources.list.d/mongodb-org-${{ matrix.mongodb-version }}.list
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-${keyVersion}.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/${mongodbVersion} multiverse" | \
+              sudo tee /etc/apt/sources.list.d/mongodb-org-${mongodbVersion}.list
           sudo apt-get update
           sudo apt-get install -y mongodb-org
       - name: Run test
