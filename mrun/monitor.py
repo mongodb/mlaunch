@@ -17,6 +17,66 @@ from dataclasses import dataclass
 
 import psutil
 
+from mrun.monitor_constants import (
+    ANSI_BOLD,
+    ANSI_DEFAULT,
+    ANSI_DIM,
+    ANSI_GREEN,
+    ANSI_INVERSE,
+    ANSI_KEY_HINT,
+    ANSI_PRETTY_KEY_DARK,
+    ANSI_PRETTY_KEY_LIGHT,
+    ANSI_PRETTY_KEYWORD_DARK,
+    ANSI_PRETTY_KEYWORD_LIGHT,
+    ANSI_PRETTY_NUMBER_DARK,
+    ANSI_PRETTY_NUMBER_LIGHT,
+    ANSI_PRETTY_PUNCT_DARK,
+    ANSI_PRETTY_PUNCT_LIGHT,
+    ANSI_PRETTY_STRING_DARK,
+    ANSI_PRETTY_STRING_LIGHT,
+    ANSI_RED,
+    ANSI_RESET,
+    ANSI_ROLE_PRIMARY,
+    ANSI_ROLE_SECONDARY,
+    ANSI_ROLE_WARNING,
+    ANSI_SEARCH_HIT,
+    ANSI_TEAL,
+    ANSI_YELLOW,
+    AUTH_REQUIRED_STATUS,
+    DEFAULT_CURRENT_OP_LIMIT,
+    ESCAPE_READ_TIMEOUT,
+    KEY_POLL_INTERVAL,
+    LOG_POLL_INTERVAL,
+    MAX_CURRENT_OP_LIMIT,
+    NO_MRUN_PROCESSES_MESSAGE,
+    NO_PROCESSES_MESSAGE,
+    PANE_HEADER_COLORS,
+    PANE_ORDER,
+    PANE_TITLES,
+    PROCESS_DISCOVERY_ERROR_MESSAGE,
+    REFRESH_INTERVALS,
+    ROLE_PASSWORD_REQUIRED,
+    STATUS_DEFAULT_PANELS,
+    STATUS_PANEL_COLORS,
+    STATUS_PANEL_TITLES,
+    STATUS_PROMOTION_SEQUENCE,
+    STATUS_RAW_PANEL_PREFIX,
+    STATUS_SLOT_LABELS,
+    STYLE_MARKERS,
+    STYLE_ROLE_DIM,
+    STYLE_ROLE_PRIMARY,
+    STYLE_ROLE_SECONDARY,
+    STYLE_ROLE_WARNING,
+    STYLE_SELECTED,
+    STYLE_SEVERITY_DEBUG,
+    STYLE_SEVERITY_ERROR,
+    STYLE_SEVERITY_FATAL,
+    STYLE_SEVERITY_INFO,
+    STYLE_SEVERITY_WARNING,
+    STYLE_TABLE_HEADER,
+    STYLE_YANKED,
+)
+
 try:
     import msvcrt
 except ImportError:
@@ -30,116 +90,6 @@ except ImportError:
     tty = None
 
 
-NO_PROCESSES_MESSAGE = (
-    "No running mongod or mongos processes found.\n"
-    "Start MongoDB nodes first, then run: mrun --monitor"
-)
-NO_MRUN_PROCESSES_MESSAGE = (
-    "No running mongorun-managed MongoDB processes found.\n"
-    "Start nodes with mrun first, or run: mrun --monitor --all"
-)
-PROCESS_DISCOVERY_ERROR_MESSAGE = (
-    "mrun --monitor could not list local processes: %s"
-)
-AUTH_REQUIRED_STATUS = "auth required"
-ROLE_PASSWORD_REQUIRED = "Password Required"
-
-ANSI_RESET = "\033[0m"
-ANSI_YELLOW = "\033[33m"
-ANSI_GREEN = "\033[32m"
-ANSI_RED = "\033[31m"
-ANSI_TEAL = "\033[38;5;44m"
-ANSI_DIM = "\033[2m"
-ANSI_INVERSE = "\033[7m"
-ANSI_BOLD = "\033[1m"
-ANSI_DEFAULT = "\033[39m"
-ANSI_ROLE_PRIMARY = "\033[38;5;71m"
-ANSI_ROLE_SECONDARY = "\033[38;5;179m"
-ANSI_ROLE_WARNING = "\033[38;5;203m"
-ANSI_KEY_HINT = "\033[38;5;81m"
-PANE_HEADER_COLORS = {
-    "cpu": ANSI_TEAL,
-    "memory": ANSI_GREEN,
-    "network": ANSI_YELLOW,
-    "disk": ANSI_RED,
-    "logs": ANSI_TEAL,
-    "disk status": ANSI_RED,
-    "network status": ANSI_YELLOW,
-    "storage subsystem": ANSI_GREEN,
-    "other subsystems": ANSI_TEAL,
-}
-ANSI_PRETTY_KEY_DARK = "\033[38;5;81m"
-ANSI_PRETTY_STRING_DARK = "\033[38;5;114m"
-ANSI_PRETTY_NUMBER_DARK = "\033[38;5;215m"
-ANSI_PRETTY_KEYWORD_DARK = "\033[38;5;141m"
-ANSI_PRETTY_PUNCT_DARK = "\033[38;5;245m"
-ANSI_PRETTY_KEY_LIGHT = "\033[38;5;25m"
-ANSI_PRETTY_STRING_LIGHT = "\033[38;5;28m"
-ANSI_PRETTY_NUMBER_LIGHT = "\033[38;5;130m"
-ANSI_PRETTY_KEYWORD_LIGHT = "\033[38;5;90m"
-ANSI_PRETTY_PUNCT_LIGHT = "\033[38;5;240m"
-ANSI_SEARCH_HIT = "\033[33m\033[7m"
-STYLE_SELECTED = "\x00selected\x00"
-STYLE_YANKED = "\x00yanked\x00"
-STYLE_SEVERITY_FATAL = "\x00severity:fatal\x00"
-STYLE_SEVERITY_ERROR = "\x00severity:error\x00"
-STYLE_SEVERITY_WARNING = "\x00severity:warning\x00"
-STYLE_SEVERITY_INFO = "\x00severity:info\x00"
-STYLE_SEVERITY_DEBUG = "\x00severity:debug\x00"
-STYLE_TABLE_HEADER = "\x00table-header\x00"
-STYLE_ROLE_PRIMARY = "\x00role:primary\x00"
-STYLE_ROLE_SECONDARY = "\x00role:secondary\x00"
-STYLE_ROLE_WARNING = "\x00role:warning\x00"
-STYLE_ROLE_DIM = "\x00role:dim\x00"
-REFRESH_INTERVALS = (1.0, 5.0, 10.0)
-DEFAULT_CURRENT_OP_LIMIT = 10
-MAX_CURRENT_OP_LIMIT = 500
-ESCAPE_READ_TIMEOUT = 0.03
-KEY_POLL_INTERVAL = 0.01
-LOG_POLL_INTERVAL = 0.5
-PANE_ORDER = ("cpu", "memory", "network", "disk", "logs")
-PANE_TITLES = {
-    "cpu": "CPU Usage",
-    "memory": "Memory Usage",
-    "network": "Network Usage",
-    "disk": "Disk Usage",
-    "logs": "Log Tail",
-}
-STATUS_DEFAULT_PANELS = ("disk", "network", "storage", "subsystems")
-STATUS_PROMOTION_SEQUENCE = (1, 2, 0)
-STATUS_SLOT_LABELS = {
-    0: "top-left",
-    1: "top-right",
-    2: "bottom-left",
-    3: "bottom-right",
-}
-STATUS_PANEL_TITLES = {
-    "disk": "DISK STATUS",
-    "network": "NETWORK STATUS",
-    "storage": "STORAGE SUBSYSTEM",
-    "subsystems": "OTHER SUBSYSTEMS",
-}
-STATUS_PANEL_COLORS = {
-    "disk": "disk status",
-    "network": "network status",
-    "storage": "storage subsystem",
-    "subsystems": "other subsystems",
-}
-STATUS_RAW_PANEL_PREFIX = "raw:"
-STYLE_MARKERS = (
-    STYLE_SELECTED,
-    STYLE_YANKED,
-    STYLE_SEVERITY_FATAL,
-    STYLE_SEVERITY_ERROR,
-    STYLE_SEVERITY_WARNING,
-    STYLE_SEVERITY_INFO,
-    STYLE_SEVERITY_DEBUG,
-    STYLE_TABLE_HEADER,
-    STYLE_ROLE_PRIMARY,
-    STYLE_ROLE_SECONDARY,
-    STYLE_ROLE_WARNING,
-    STYLE_ROLE_DIM,
-)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 FILTER_VALUE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*:.+")
@@ -166,6 +116,8 @@ class MongoProcessInfo:
     cmdline: list
     explicit_port: bool = True
     managed: bool = False
+    group: str = ""
+    group_order: int = 0
 
 
 @dataclass
@@ -178,6 +130,8 @@ class MRunProcessSpec:
     cmdline: list
     name: str = ""
     replset: str = ""
+    group: str = ""
+    group_order: int = 0
 
 
 @dataclass
@@ -290,6 +244,58 @@ class NetworkMetrics:
     bytes_out_per_sec: float = 0.0
     requests_per_sec: float = 0.0
     error: str = ""
+
+
+class ConnectionManager:
+    """Reuse MongoDB clients for monitor sampling."""
+
+    def __init__(self, client_factory=None):
+        self.client_factory = client_factory or self._default_client_factory
+        self.clients = {}
+
+    def get_client(self, host, **kwargs):
+        key = self._cache_key(host, kwargs)
+        if key not in self.clients:
+            self.clients[key] = self.client_factory(host, **kwargs)
+        return self.clients[key]
+
+    def close_all(self):
+        for client in list(self.clients.values()):
+            if hasattr(client, "close"):
+                client.close()
+        self.clients.clear()
+
+    @classmethod
+    def _cache_key(cls, host, kwargs):
+        return (
+            cls._cache_value(host),
+            cls._cache_value(kwargs),
+        )
+
+    @classmethod
+    def _cache_value(cls, value):
+        if isinstance(value, dict):
+            return tuple(
+                sorted(
+                    (key, cls._cache_value(item))
+                    for key, item in value.items()
+                )
+            )
+        if isinstance(value, (list, tuple)):
+            return tuple(cls._cache_value(item) for item in value)
+        if isinstance(value, set):
+            return tuple(sorted(cls._cache_value(item) for item in value))
+        try:
+            hash(value)
+        except TypeError:
+            return repr(value)
+        return value
+
+    @staticmethod
+    def _default_client_factory(host, **kwargs):
+        from pymongo import MongoClient
+
+        return MongoClient(host, **kwargs)
 
 
 @dataclass
@@ -421,6 +427,111 @@ def _get_cmdline_int(cmdline, option, default=None):
         return default
 
 
+def _strip_config_comment(line):
+    quote = ""
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote:
+            escaped = True
+            continue
+        if char in ("'", '"'):
+            if quote == char:
+                quote = ""
+            elif not quote:
+                quote = char
+            continue
+        if char == "#" and not quote:
+            return line[:index]
+    return line
+
+
+def _clean_config_value(value):
+    value = _strip_config_comment(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _parse_mongo_config_text(text):
+    """Parse common MongoDB YAML-style config keys without a YAML dependency."""
+    values = {}
+    stack = []
+    for raw_line in str(text or "").splitlines():
+        line = _strip_config_comment(raw_line.expandtabs()).rstrip()
+        if not line.strip() or ":" not in line:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        key, value = line.strip().split(":", 1)
+        key = key.strip()
+        if not key:
+            continue
+
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+
+        value = _clean_config_value(value)
+        path = [item[1] for item in stack] + [key]
+        if value:
+            values[".".join(path)] = value
+        else:
+            stack.append((indent, key))
+    return values
+
+
+def _resolve_process_path(process, path):
+    path = os.path.expanduser(str(path or "").strip())
+    if not path or os.path.isabs(path):
+        return path
+    try:
+        cwd = process.cwd()
+    except (AttributeError, psutil.AccessDenied, psutil.NoSuchProcess,
+            psutil.ZombieProcess, OSError):
+        cwd = os.getcwd()
+    return os.path.abspath(os.path.join(cwd, path))
+
+
+def _load_mongo_config_values(process, config_path):
+    config_path = _resolve_process_path(process, config_path)
+    if not config_path:
+        return {}, ""
+    try:
+        with open(config_path, "r") as fp:
+            return _parse_mongo_config_text(fp.read()), config_path
+    except OSError:
+        return {}, config_path
+
+
+def _config_value(config_values, keys):
+    for key in keys:
+        value = config_values.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _config_int(config_values, keys):
+    value = _config_value(config_values, keys)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _config_path_value(config_values, keys, config_path):
+    value = _config_value(config_values, keys)
+    if not value:
+        return ""
+    value = os.path.expanduser(str(value))
+    if os.path.isabs(value) or not config_path:
+        return value
+    return os.path.abspath(os.path.join(os.path.dirname(config_path), value))
+
+
 def _mongo_binary_name_from_cmdline(cmdline):
     for arg in cmdline or []:
         name = _normalize_process_name(arg)
@@ -435,6 +546,56 @@ def _get_replset_name(cmdline):
         _get_cmdline_arg(cmdline, "--replset") or
         ""
     )
+
+
+def _cmdline_has_flag(cmdline, flag):
+    return flag in (cmdline or [])
+
+
+def _startup_shard_names(parsed_args):
+    sharded = parsed_args.get("sharded") if parsed_args else None
+    if not sharded:
+        return []
+    if isinstance(sharded, str):
+        values = [sharded]
+    else:
+        values = list(sharded)
+    if len(values) == 1:
+        try:
+            count = int(values[0])
+        except (TypeError, ValueError):
+            return values
+        return ["shard%.2i" % (index + 1) for index in range(count)]
+    return values
+
+
+def _assign_process_spec_groups(specs, startup_config):
+    parsed_args = startup_config.get("parsed_args", {}) if startup_config else {}
+    if not parsed_args.get("sharded"):
+        return specs
+
+    shard_names = _startup_shard_names(parsed_args)
+    discovered_shards = sorted({
+        spec.replset for spec in specs.values()
+        if spec.replset and _cmdline_has_flag(spec.cmdline, "--shardsvr")
+    })
+    for shard in discovered_shards:
+        if shard not in shard_names:
+            shard_names.append(shard)
+    shard_order = {name: index for index, name in enumerate(shard_names)}
+
+    for spec in specs.values():
+        if spec.name == "mongos":
+            spec.group = "mongos"
+            spec.group_order = 0
+        elif _cmdline_has_flag(spec.cmdline, "--configsvr"):
+            spec.group = "config server"
+            spec.group_order = 1
+        elif (_cmdline_has_flag(spec.cmdline, "--shardsvr") or
+              spec.replset in shard_order):
+            spec.group = spec.replset or "shard"
+            spec.group_order = 2 + shard_order.get(spec.group, len(shard_order))
+    return specs
 
 
 def _normalize_path(path):
@@ -457,10 +618,23 @@ def process_to_info(process):
     except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
         return None
 
-    explicit_port = _get_cmdline_arg(cmdline, "--port") is not None
-    port = _get_cmdline_int(cmdline, "--port", default=27017)
-    logpath = _get_cmdline_arg(cmdline, "--logpath") or ""
-    dbpath = _get_cmdline_arg(cmdline, "--dbpath") or ""
+    config_values = {}
+    config_path = ""
+    configured = _get_cmdline_arg(cmdline, "-f") or _get_cmdline_arg(
+        cmdline, "--config")
+    if configured:
+        config_values, config_path = _load_mongo_config_values(
+            process, configured)
+
+    cmdline_port = _get_cmdline_int(cmdline, "--port")
+    config_port = _config_int(config_values, ("net.port", "port"))
+    explicit_port = cmdline_port is not None or config_port is not None
+    port = cmdline_port if cmdline_port is not None else (config_port or 27017)
+    logpath = _get_cmdline_arg(cmdline, "--logpath") or _config_path_value(
+        config_values, ("systemLog.path", "logpath"), config_path)
+    dbpath = _get_cmdline_arg(cmdline, "--dbpath") or _config_path_value(
+        config_values, ("storage.dbPath", "storage.dbpath", "dbpath"),
+        config_path)
 
     return MongoProcessInfo(
         pid=process.pid,
@@ -486,9 +660,10 @@ def load_mrun_startup_config(data_dir):
         return {}
 
 
-def load_mrun_process_specs(data_dir):
+def load_mrun_process_specs(data_dir, startup_config=None):
     """Load expected mongorun server processes from datadir/.mrun_startup."""
-    startup_config = load_mrun_startup_config(data_dir)
+    if startup_config is None:
+        startup_config = load_mrun_startup_config(data_dir)
     startup_info = startup_config.get("startup_info", {})
     specs = {}
     for port_key, command_str in startup_info.items():
@@ -512,12 +687,13 @@ def load_mrun_process_specs(data_dir):
             name=_mongo_binary_name_from_cmdline(cmdline),
             replset=_get_replset_name(cmdline),
         )
-    return specs
+    return _assign_process_spec_groups(specs, startup_config)
 
 
-def load_monitor_auth_config(data_dir):
+def load_monitor_auth_config(data_dir, startup_config=None):
     """Load monitor auth metadata from datadir/.mrun_startup parsed args."""
-    startup_config = load_mrun_startup_config(data_dir)
+    if startup_config is None:
+        startup_config = load_mrun_startup_config(data_dir)
     parsed_args = startup_config.get("parsed_args", {})
     return MonitorAuthConfig(
         enabled=bool(parsed_args.get("auth")),
@@ -599,15 +775,18 @@ def build_monitor_tls_kwargs(parsed_args):
     return opts
 
 
-def load_monitor_tls_kwargs(data_dir):
+def load_monitor_tls_kwargs(data_dir, startup_config=None):
     """Load PyMongo TLS kwargs from datadir/.mrun_startup parsed args."""
-    startup_config = load_mrun_startup_config(data_dir)
+    if startup_config is None:
+        startup_config = load_mrun_startup_config(data_dir)
     return build_monitor_tls_kwargs(startup_config.get("parsed_args", {}))
 
 
-def load_monitor_replset_name(data_dir):
+def load_monitor_replset_name(data_dir, startup_config=None):
     """Load the configured replica-set name when available."""
-    parsed_args = load_mrun_startup_config(data_dir).get("parsed_args", {})
+    if startup_config is None:
+        startup_config = load_mrun_startup_config(data_dir)
+    parsed_args = startup_config.get("parsed_args", {})
     if parsed_args.get("replicaset"):
         return parsed_args.get("name") or "replset"
     return ""
@@ -629,8 +808,10 @@ def filter_mrun_processes(processes, specs):
             process.cmdline,
             process.explicit_port,
             True,
+            spec.group,
+            spec.group_order,
         ))
-    return sorted(filtered, key=lambda p: (p.port, p.name, p.pid))
+    return sort_processes_for_monitor(filtered)
 
 
 def process_matches_mrun_spec(process, spec):
@@ -648,6 +829,24 @@ def process_matches_mrun_spec(process, spec):
     return not (spec.dbpath or spec.logpath)
 
 
+def process_sort_key(process):
+    group = getattr(process, "group", "")
+    if group:
+        return (
+            0,
+            getattr(process, "group_order", 0),
+            process.port,
+            process.name,
+            process.pid,
+        )
+    return (1, process.port, process.name, process.pid)
+
+
+def sort_processes_for_monitor(processes):
+    """Sort processes in sharded deployment order when group metadata exists."""
+    return sorted(processes, key=process_sort_key)
+
+
 def annotate_mrun_processes(processes, specs):
     """Mark discovered processes that belong to the selected mrun deployment."""
     annotated = []
@@ -663,6 +862,8 @@ def annotate_mrun_processes(processes, specs):
                 process.cmdline,
                 process.explicit_port,
                 True,
+                spec.group,
+                spec.group_order,
             ))
         else:
             annotated.append(MongoProcessInfo(
@@ -674,8 +875,10 @@ def annotate_mrun_processes(processes, specs):
                 process.cmdline,
                 process.explicit_port,
                 False,
+                getattr(process, "group", ""),
+                getattr(process, "group_order", 0),
             ))
-    return sorted(annotated, key=lambda p: (p.port, p.name, p.pid))
+    return sort_processes_for_monitor(annotated)
 
 
 def discover_mongo_processes(process_iter=None):
@@ -696,12 +899,13 @@ def discover_mongo_processes(process_iter=None):
         raise ProcessDiscoveryError(
             PROCESS_DISCOVERY_ERROR_MESSAGE % str(exc)) from exc
 
-    return sorted(processes, key=lambda p: (p.port, p.name, p.pid))
+    return sort_processes_for_monitor(processes)
 
 
-def discover_mrun_processes(data_dir, process_iter=None):
+def discover_mrun_processes(data_dir, process_iter=None, specs=None):
     """Discover running mongod/mongos processes launched by this mrun data dir."""
-    specs = load_mrun_process_specs(data_dir)
+    if specs is None:
+        specs = load_mrun_process_specs(data_dir)
     if not specs:
         return []
     return filter_mrun_processes(discover_mongo_processes(process_iter), specs)
@@ -1004,8 +1208,9 @@ class NetworkSampler:
     """Sample MongoDB serverStatus network counters and expose per-second rates."""
 
     def __init__(self, client_factory=None, clock=None, client_kwargs=None,
-                 auth_required=False):
-        self.client_factory = client_factory or self._default_client_factory
+                 auth_required=False, connection_manager=None):
+        self.connection_manager = (
+            connection_manager or ConnectionManager(client_factory))
         self.clock = clock or time.time
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
@@ -1045,14 +1250,13 @@ class NetworkSampler:
         if self.auth_required:
             return None, AUTH_REQUIRED_STATUS
 
-        client = None
         try:
             client_kwargs = {
                 "directConnection": True,
                 "serverSelectionTimeoutMS": 200,
             }
             client_kwargs.update(self.client_kwargs)
-            client = self.client_factory(
+            client = self.connection_manager.get_client(
                 "localhost:%i" % port,
                 **client_kwargs
             )
@@ -1067,23 +1271,15 @@ class NetworkSampler:
         except Exception as exc:
             return None, _compat_error_message(
                 [_mongo_error_text(exc)], "serverStatus")
-        finally:
-            if client is not None and hasattr(client, "close"):
-                client.close()
-
-    @staticmethod
-    def _default_client_factory(host, **kwargs):
-        from pymongo import MongoClient
-
-        return MongoClient(host, **kwargs)
 
 
 class RoleSampler:
     """Sample replica-set role information from serverStatus for each process."""
 
     def __init__(self, client_factory=None, client_kwargs=None,
-                 auth_required=False):
-        self.client_factory = client_factory or self._default_client_factory
+                 auth_required=False, connection_manager=None):
+        self.connection_manager = (
+            connection_manager or ConnectionManager(client_factory))
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
         self.capabilities = {}
@@ -1102,14 +1298,13 @@ class RoleSampler:
                 error=AUTH_REQUIRED_STATUS,
             )
 
-        client = None
         try:
             client_kwargs = {
                 "directConnection": True,
                 "serverSelectionTimeoutMS": 200,
             }
             client_kwargs.update(self.client_kwargs)
-            client = self.client_factory(
+            client = self.connection_manager.get_client(
                 "localhost:%i" % process.port,
                 **client_kwargs
             )
@@ -1166,23 +1361,15 @@ class RoleSampler:
                 role="unavailable",
                 error=_compat_error_message([_mongo_error_text(exc)], "role"),
             )
-        finally:
-            if client is not None and hasattr(client, "close"):
-                client.close()
-
-    @staticmethod
-    def _default_client_factory(host, **kwargs):
-        from pymongo import MongoClient
-
-        return MongoClient(host, **kwargs)
 
 
 class CurrentOpSampler:
     """Sample and rank active currentOp entries across visible processes."""
 
     def __init__(self, client_factory=None, client_kwargs=None,
-                 auth_required=False):
-        self.client_factory = client_factory or self._default_client_factory
+                 auth_required=False, connection_manager=None):
+        self.connection_manager = (
+            connection_manager or ConnectionManager(client_factory))
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
         self.capabilities = {}
@@ -1213,14 +1400,13 @@ class CurrentOpSampler:
         return CurrentOpSnapshot(True, [])
 
     def _read_current_ops(self, process, role_metrics, namespace=""):
-        client = None
         try:
             client_kwargs = {
                 "directConnection": True,
                 "serverSelectionTimeoutMS": 200,
             }
             client_kwargs.update(self.client_kwargs)
-            client = self.client_factory(
+            client = self.connection_manager.get_client(
                 "localhost:%i" % process.port,
                 **client_kwargs
             )
@@ -1251,15 +1437,6 @@ class CurrentOpSampler:
                     [_mongo_error_text(exc)], "currentOp"))
             return [], _compat_error_message(
                 [_mongo_error_text(exc)], "currentOp")
-        finally:
-            if client is not None and hasattr(client, "close"):
-                client.close()
-
-    @staticmethod
-    def _default_client_factory(host, **kwargs):
-        from pymongo import MongoClient
-
-        return MongoClient(host, **kwargs)
 
 
 class StatusSampler:
@@ -1296,8 +1473,9 @@ class StatusSampler:
     ]
 
     def __init__(self, client_factory=None, clock=None, client_kwargs=None,
-                 auth_required=False):
-        self.client_factory = client_factory or self._default_client_factory
+                 auth_required=False, connection_manager=None):
+        self.connection_manager = (
+            connection_manager or ConnectionManager(client_factory))
         self.clock = clock or time.time
         self.client_kwargs = dict(client_kwargs or {})
         self.auth_required = auth_required
@@ -1314,14 +1492,13 @@ class StatusSampler:
             )
 
         now = self.clock()
-        client = None
         try:
             client_kwargs = {
                 "directConnection": True,
                 "serverSelectionTimeoutMS": 200,
             }
             client_kwargs.update(self.client_kwargs)
-            client = self.client_factory(
+            client = self.connection_manager.get_client(
                 "localhost:%i" % process_info.port,
                 **client_kwargs
             )
@@ -1393,9 +1570,6 @@ class StatusSampler:
                 error=_compat_error_message(
                     [_mongo_error_text(exc)], "serverStatus"),
             )
-        finally:
-            if client is not None and hasattr(client, "close"):
-                client.close()
 
     def _calculate_disk_rates(self, current, previous, elapsed):
         curr_wt = _dict_at(current, "wiredTiger", "block-manager")
@@ -1445,13 +1619,6 @@ class StatusSampler:
         if value is None:
             return "null"
         return _truncate(str(value), 32)
-
-    @staticmethod
-    def _default_client_factory(host, **kwargs):
-        from pymongo import MongoClient
-
-        return MongoClient(host, **kwargs)
-
 
 def role_from_server_status(status):
     """Extract a human-readable node role from serverStatus()."""
@@ -2472,6 +2639,23 @@ def process_display_name(process):
     return process.name + "*"
 
 
+def process_group_display(process):
+    """Return the sharded deployment group for a process row."""
+    return getattr(process, "group", "") or "other processes"
+
+
+def process_groups_visible(processes):
+    """Return True when process rows should include group sections."""
+    return any(getattr(process, "group", "") for process in processes or [])
+
+
+def process_group_sections(processes):
+    """Return sharded deployment section labels for process rows."""
+    if not process_groups_visible(processes):
+        return None
+    return [process_group_display(process) for process in processes]
+
+
 def clamp_log_cursor(log_lines, cursor, follow_tail):
     """Return a valid highlighted log-line index."""
     if not log_lines:
@@ -2891,19 +3075,32 @@ def clamp_pretty_scroll(pretty_lines, offset, height):
     return max(0, min(offset, max_offset))
 
 
-def normalize_pane(pane):
+def normalize_visible_panes(visible_panes=None):
+    """Return visible panes in canonical dashboard order."""
+    if visible_panes is None:
+        return PANE_ORDER
+    visible = set(visible_panes)
+    panes = tuple(pane for pane in PANE_ORDER if pane in visible)
+    return panes or PANE_ORDER
+
+
+def normalize_pane(pane, visible_panes=None):
     """Return a valid monitor pane name."""
-    return pane if pane in PANE_ORDER else "logs"
+    panes = normalize_visible_panes(visible_panes)
+    if pane in panes:
+        return pane
+    return "logs" if "logs" in panes else panes[0]
 
 
-def next_pane(current_pane, delta=1):
+def next_pane(current_pane, delta=1, visible_panes=None):
     """Move focus through dashboard panes."""
-    current_pane = normalize_pane(current_pane)
+    panes = normalize_visible_panes(visible_panes)
+    current_pane = normalize_pane(current_pane, panes)
     try:
-        index = PANE_ORDER.index(current_pane)
+        index = panes.index(current_pane)
     except ValueError:
-        index = PANE_ORDER.index("logs")
-    return PANE_ORDER[(index + delta) % len(PANE_ORDER)]
+        index = panes.index("logs") if "logs" in panes else 0
+    return panes[(index + delta) % len(panes)]
 
 
 def clamp_process_cursor(processes, cursor):
@@ -3404,12 +3601,13 @@ def _table_column_widths(columns, rows, max_width=None,
 
 
 def format_table_lines(columns, rows, indent="  ", row_prefixes=None,
-                       row_styles=None, max_width=None):
+                       row_styles=None, max_width=None, section_labels=None):
     """Format an ANSI-aware table with stable column alignment."""
     rows = list(rows or [])
     columns = list(columns or [])
     row_prefixes = list(row_prefixes) if row_prefixes is not None else None
     row_styles = list(row_styles or [])
+    section_labels = list(section_labels or [])
     gap = "  "
     prefix_width = (
         max([visible_width(prefix) for prefix in row_prefixes] or [0])
@@ -3440,7 +3638,15 @@ def format_table_lines(columns, rows, indent="  ", row_prefixes=None,
         for column in columns
     }
     lines = [_table_header(build(header_cells, " " * prefix_width))]
+    previous_section = None
     for index, row in enumerate(rows):
+        section = section_labels[index] if index < len(section_labels) else ""
+        if section and section != previous_section:
+            section_indent = indent
+            if row_prefixes is not None:
+                section_indent += " " * (prefix_width + 1)
+            lines.append(_table_header(section_indent + section))
+            previous_section = section
         prefix = row_prefixes[index] if row_prefixes is not None else ""
         text = build(row, prefix)
         styles = row_styles[index] if index < len(row_styles) else []
@@ -3474,6 +3680,7 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
                      role_metrics=None, width=None, normalized=True):
     """Format CPU process rows, optionally marking the selected process."""
     role_metrics = role_metrics or {}
+    section_labels = process_group_sections(processes)
     selected_index = clamp_process_cursor(processes, cursor)
     if not processes:
         return [_table_header("  PORT   PID      ROLE              PROCESS  CPU%   STATUS"),
@@ -3493,7 +3700,7 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
     for index, process in enumerate(processes):
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        rows.append({
+        row = {
             "port": str(process.port),
             "pid": str(process.pid),
             "role": colorize_role(role_display(role_metrics.get(process.port))),
@@ -3501,13 +3708,14 @@ def format_cpu_lines(processes, process_metrics, cursor=None, show_cursor=False,
             "cpu": "%.1f" % process_cpu_percent_for_display(
                 metrics, normalized=normalized),
             "status": metrics.status,
-        })
+        }
+        rows.append(row)
         selected = show_cursor and index == selected_index
         prefixes.append(">" if selected else " ")
         styles.append([STYLE_SELECTED] if selected else [])
     return format_table_lines(
         columns, rows, indent="", row_prefixes=prefixes,
-        row_styles=styles, max_width=width)
+        row_styles=styles, max_width=width, section_labels=section_labels)
 
 
 def format_current_op_lines(snapshot, cursor=None, height=None, raw=False,
@@ -3583,6 +3791,7 @@ def format_memory_lines(processes, process_metrics, role_metrics=None,
                         width=None):
     """Format memory rows for process RSS usage."""
     role_metrics = role_metrics or {}
+    section_labels = process_group_sections(processes)
     if not processes:
         return [_table_header("  PORT    ROLE              PID       PROCESS   RSS"),
                 "  No MongoDB processes found."]
@@ -3598,20 +3807,23 @@ def format_memory_lines(processes, process_metrics, role_metrics=None,
     for process in processes:
         metrics = process_metrics.get(
             process.pid, ProcessMetrics(0.0, 0, "unavailable"))
-        rows.append({
+        row = {
             "port": str(process.port),
             "role": colorize_role(role_display(role_metrics.get(process.port))),
             "pid": str(process.pid),
             "process": process_display_name(process),
             "rss": format_bytes(metrics.memory_rss),
-        })
-    return format_table_lines(columns, rows, max_width=width)
+        }
+        rows.append(row)
+    return format_table_lines(
+        columns, rows, max_width=width, section_labels=section_labels)
 
 
 def format_network_lines(processes, network_metrics, role_metrics=None,
                          width=None):
     """Format MongoDB network counter rates."""
     role_metrics = role_metrics or {}
+    section_labels = process_group_sections(processes)
     if not processes:
         return [_table_header("  PORT    ROLE              IN        OUT       REQ/s   STATUS"),
                 "  No MongoDB processes found."]
@@ -3646,12 +3858,14 @@ def format_network_lines(processes, network_metrics, role_metrics=None,
             "role": colorize_role(role_display(role_metrics.get(process.port))),
         })
         rows.append(row)
-    return format_table_lines(columns, rows, max_width=width)
+    return format_table_lines(
+        columns, rows, max_width=width, section_labels=section_labels)
 
 
 def format_disk_lines(processes, disk_metrics, role_metrics=None, width=None):
     """Format dbpath and logpath disk consumption."""
     role_metrics = role_metrics or {}
+    section_labels = process_group_sections(processes)
     if not processes:
         return [_table_header("  PORT    ROLE              DB SIZE   LOG SIZE  STATUS"),
                 "  No MongoDB processes found."]
@@ -3670,14 +3884,16 @@ def format_disk_lines(processes, disk_metrics, role_metrics=None, width=None):
             status = "ok"
         else:
             status = "unavailable"
-        rows.append({
+        row = {
             "port": str(process.port),
             "role": colorize_role(role_display(role_metrics.get(process.port))),
             "db_size": format_bytes(disk.db_size),
             "log_size": format_bytes(disk.log_size),
             "status": status,
-        })
-    return format_table_lines(columns, rows, max_width=width)
+        }
+        rows.append(row)
+    return format_table_lines(
+        columns, rows, max_width=width, section_labels=section_labels)
 
 
 def _ascii_bar(value, total, width=10):
@@ -4312,18 +4528,23 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
                      current_op_limit=DEFAULT_CURRENT_OP_LIMIT,
                      current_op_paused=False,
                      current_op_source_ports=None,
-                     cpu_normalized=True,
-                     status_panel_slots=None,
-                     status_subsystem_cursor=0,
-                     status_subsystem_scroll=0,
-                     status_promotion_index=0):
+                      cpu_normalized=True,
+                      status_panel_slots=None,
+                      status_subsystem_cursor=0,
+                      status_subsystem_scroll=0,
+                      status_promotion_index=0,
+                      visible_panes=None):
     """Render the full monitor frame (quadrants or expanded status)."""
     if terminal_size is None:
         terminal_size = shutil.get_terminal_size((120, 40))
 
     columns = max(int(terminal_size.columns or 0), 4)
     rows = max(int(terminal_size.lines or 0) - 1, 1)
-    focused_pane = normalize_pane(focused_pane)
+    active_panes = normalize_visible_panes(visible_panes)
+    focused_pane = normalize_pane(focused_pane, active_panes)
+    if zoom_pane is None and zoom_logs and "logs" in active_panes:
+        zoom_pane = "logs"
+    zoom_pane = zoom_pane if zoom_pane in active_panes else None
     log_filter_view = filter_log_lines(log_lines, log_filter_query)
     filter_active = _log_filter_active(log_filter_query)
     filter_match_count = len(log_filter_view.lines) if filter_active else None
@@ -4375,10 +4596,6 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
             promotion_index=status_promotion_index,
         )
 
-    if zoom_pane is None and zoom_logs:
-        zoom_pane = "logs"
-    zoom_pane = zoom_pane if zoom_pane in PANE_ORDER else None
-
     selected_ports = selected_ports or []
     if selected_ports:
         log_title = "Log Tail: " + ", ".join(str(port) for port in selected_ports)
@@ -4399,6 +4616,15 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
     disk_metrics = disk_metrics or {}
     role_metrics = role_metrics or {}
     thread_metrics = thread_metrics or []
+    logs_visible = "logs" in active_panes
+    metric_panes = [
+        pane for pane in ("cpu", "memory", "network", "disk")
+        if pane in active_panes
+    ]
+    two_column = logs_visible and bool(metric_panes)
+    left_width = columns // 2 if two_column else columns
+    right_width = columns - left_width if two_column else columns
+    metric_width = max(left_width - 3, 1)
     cpu_cursor = clamp_process_cursor(processes, cpu_cursor)
     selected_cpu = selected_process(processes, cpu_cursor)
     show_cpu_cursor = focused_pane == "cpu" or zoom_pane == "cpu"
@@ -4414,12 +4640,10 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         cpu_title = (
             "CPU Usage (normalized)" if cpu_normalized
             else "CPU Usage (raw)")
-        metric_width = max((columns // 2) - 3, 1)
         cpu_lines = format_cpu_lines(
             processes, process_metrics, cpu_cursor, show_cpu_cursor,
             role_metrics, width=metric_width, normalized=cpu_normalized)
 
-    metric_width = max((columns // 2) - 3, 1)
     mem_lines = format_memory_lines(
         processes, process_metrics, role_metrics, width=metric_width)
     net_lines = format_network_lines(
@@ -4519,10 +4743,6 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         frame.append(_footer(status_message, controls, columns))
         return "\n".join(frame)
 
-    left_width = columns // 2
-    right_width = columns - left_width
-    cpu_height, mem_height, net_height, disk_height = _split_heights(rows, 4)
-
     activity_content_height = max(rows - 2, 1)
     if current_op_view:
         state = (
@@ -4575,30 +4795,32 @@ def render_dashboard(processes, process_metrics, network_metrics, log_lines,
         else:
             log_content = ["No log selected."]
 
-    cpu_panel = make_panel(
-        cpu_title, cpu_lines, left_width, cpu_height,
-        focused=focused_pane == "cpu",
-        header_color=PANE_HEADER_COLORS.get("cpu"))
-    mem_panel = make_panel(
-        "Memory Usage", mem_lines, left_width, mem_height,
-        focused=focused_pane == "memory",
-        header_color=PANE_HEADER_COLORS.get("memory"))
-    net_panel = make_panel(
-        "Network Usage", net_lines, left_width, net_height,
-        focused=focused_pane == "network",
-        header_color=PANE_HEADER_COLORS.get("network"))
-    disk_panel = make_panel(
-        "Disk Usage", disk_lines, left_width, disk_height,
-        focused=focused_pane == "disk",
-        header_color=PANE_HEADER_COLORS.get("disk"))
-    left_panel = cpu_panel + mem_panel + net_panel + disk_panel
-    log_panel = make_panel(
-        activity_title, log_content, right_width, rows,
-        focused=focused_pane == "logs",
-        header_color=PANE_HEADER_COLORS.get("logs"))
-
     frame = []
-    frame.extend(left + right for left, right in zip(left_panel, log_panel))
+    if metric_panes:
+        metric_heights = _split_heights(rows, len(metric_panes))
+        metric_panel = []
+        for pane, height in zip(metric_panes, metric_heights):
+            title, lines = panels[pane]
+            metric_panel.extend(make_panel(
+                title, lines, left_width, height,
+                focused=focused_pane == pane,
+                header_color=PANE_HEADER_COLORS.get(pane)))
+    else:
+        metric_panel = []
+
+    if logs_visible and metric_panes:
+        log_panel = make_panel(
+            activity_title, log_content, right_width, rows,
+            focused=focused_pane == "logs",
+            header_color=PANE_HEADER_COLORS.get("logs"))
+        frame.extend(left + right for left, right in zip(metric_panel, log_panel))
+    elif logs_visible:
+        frame.extend(make_panel(
+            activity_title, log_content, columns, rows,
+            focused=focused_pane == "logs",
+            header_color=PANE_HEADER_COLORS.get("logs")))
+    else:
+        frame.extend(metric_panel)
     frame.append(_footer(status_message, controls, columns))
     return "\n".join(frame)
 
@@ -4715,31 +4937,38 @@ class Monitor:
         self.stdout = stdout or sys.stdout
         self.stdin = stdin or sys.stdin
         self.input_func = input_func or input
-        self.auth_config = load_monitor_auth_config(data_dir).with_overrides(
+        self.startup_config = load_mrun_startup_config(data_dir)
+        self.process_specs = load_mrun_process_specs(
+            data_dir, self.startup_config)
+        self.auth_config = load_monitor_auth_config(
+            data_dir, self.startup_config).with_overrides(
             username=monitor_username,
             password=monitor_password,
             auth_db=monitor_auth_db,
         )
-        network_client_kwargs = load_monitor_tls_kwargs(data_dir)
+        network_client_kwargs = load_monitor_tls_kwargs(
+            data_dir, self.startup_config)
         self.monitor_tls_kwargs = dict(network_client_kwargs)
         network_client_kwargs.update(self.auth_config.client_kwargs())
         self.monitor_client_kwargs = dict(network_client_kwargs)
-        self.replset_name = load_monitor_replset_name(data_dir)
+        self.replset_name = load_monitor_replset_name(
+            data_dir, self.startup_config)
         self.mongosh_runner = mongosh_runner or subprocess.call
         self.mongosh_executable = mongosh_executable
         self.which_func = which_func or shutil.which
+        self.connection_manager = ConnectionManager(client_factory)
         self.network_sampler = NetworkSampler(
-            client_factory=client_factory,
+            connection_manager=self.connection_manager,
             client_kwargs=self.monitor_client_kwargs,
             auth_required=self.auth_config.requires_credentials(),
         )
         self.role_sampler = RoleSampler(
-            client_factory=client_factory,
+            connection_manager=self.connection_manager,
             client_kwargs=self.monitor_client_kwargs,
             auth_required=self.auth_config.requires_credentials(),
         )
         self.current_op_sampler = CurrentOpSampler(
-            client_factory=client_factory,
+            connection_manager=self.connection_manager,
             client_kwargs=self.monitor_client_kwargs,
             auth_required=self.auth_config.requires_credentials(),
         )
@@ -4750,6 +4979,7 @@ class Monitor:
         self.zoom_logs = False
         self.zoom_pane = None
         self.focused_pane = "logs"
+        self.visible_panes = list(PANE_ORDER)
         self.cpu_cursor = 0
         self.cpu_normalized = True
         self.cpu_thread_view = False
@@ -4781,6 +5011,12 @@ class Monitor:
         self.log_filter_input = ""
 
     def run(self):
+        try:
+            return self._run()
+        finally:
+            self.connection_manager.close_all()
+
+    def _run(self):
         processes = self._discover_processes_or_report()
         if processes is None:
             return 1
@@ -4790,7 +5026,7 @@ class Monitor:
             return 1
 
         if not self._interactive_terminal():
-            self.stdout.write("mrun --monitor requires an interactive terminal.\n")
+            self.stdout.write("mrun monitor requires an interactive terminal.\n")
             self.stdout.flush()
             return 1
 
@@ -4895,6 +5131,7 @@ class Monitor:
                         status_subsystem_scroll=self.status_subsystem_scroll,
                         status_promotion_index=self.status_promotion_index,
                         log_view_start=self.log_view_start,
+                        visible_panes=self.visible_panes,
                     )
                     self.stdout.write("\033[2J\033[H" + frame)
                     self.stdout.flush()
@@ -4980,7 +5217,7 @@ class Monitor:
         if self.server_status_active and selected_cpu:
             if not hasattr(self, "status_sampler"):
                 self.status_sampler = StatusSampler(
-                    client_factory=self.client_factory,
+                    connection_manager=self.connection_manager,
                     client_kwargs=self.monitor_client_kwargs,
                     auth_required=self.auth_config.requires_credentials(),
                 )
@@ -5040,10 +5277,10 @@ class Monitor:
 
     def _discover_processes(self):
         if self.process_scope == "all":
-            specs = load_mrun_process_specs(self.data_dir)
             return annotate_mrun_processes(
-                discover_mongo_processes(self.process_iter), specs)
-        return discover_mrun_processes(self.data_dir, self.process_iter)
+                discover_mongo_processes(self.process_iter), self.process_specs)
+        return discover_mrun_processes(
+            self.data_dir, self.process_iter, self.process_specs)
 
     def _no_processes_message(self):
         if self.process_scope == "all":
@@ -5099,6 +5336,9 @@ class Monitor:
                     return "redraw"
                 time.sleep(KEY_POLL_INTERVAL)
                 continue
+            if key in ("1", "2", "3", "4", "5"):
+                self._toggle_visible_pane(int(key) - 1)
+                return "redraw"
             if key == "r":
                 self._clear_pretty_log_line(restore_zoom=False)
                 self._clear_current_op_pretty()
@@ -5318,13 +5558,35 @@ class Monitor:
 
     def _focus_next_pane(self, delta):
         previous_pane = self.focused_pane
-        self.focused_pane = next_pane(self.focused_pane, delta)
+        self.focused_pane = next_pane(
+            self.focused_pane, delta, self.visible_panes)
         if previous_pane == "logs" and self.focused_pane != "logs":
             self._clear_pretty_log_line(restore_zoom=False)
         if self.zoom_pane is not None:
             self.zoom_pane = self.focused_pane
         self.zoom_logs = self.zoom_pane == "logs"
         self.status_message = "focus %s pane" % self.focused_pane
+
+    def _toggle_visible_pane(self, pane_index):
+        if pane_index < 0 or pane_index >= len(PANE_ORDER):
+            return
+        pane = PANE_ORDER[pane_index]
+        if pane in self.visible_panes:
+            if len(self.visible_panes) == 1:
+                self.status_message = "at least one pane must remain visible"
+                return
+            self.visible_panes.remove(pane)
+            if self.focused_pane == pane:
+                self.focused_pane = normalize_pane(
+                    self.focused_pane, self.visible_panes)
+            if self.zoom_pane == pane:
+                self.zoom_pane = None
+            self.status_message = "%s pane hidden" % pane
+        else:
+            self.visible_panes.append(pane)
+            self.visible_panes = list(normalize_visible_panes(self.visible_panes))
+            self.status_message = "%s pane visible" % pane
+        self.zoom_logs = self.zoom_pane == "logs"
 
     def _toggle_focused_zoom(self):
         if self.focused_pane == "logs":

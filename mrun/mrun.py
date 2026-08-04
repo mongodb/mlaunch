@@ -220,92 +220,30 @@ class MRunTool(BaseCmdLineTool):
         self.argparser.add_argument('--no-progressbar', action='store_true',
                                     default=False,
                                     help='disables progress bar')
-        self.argparser.add_argument('--monitor', action='store_true',
-                                    default=False,
-                                    help=('opens a live terminal monitor for '
-                                          'mongorun-managed mongod and mongos '
-                                          'processes: CPU, memory, network, '
-                                          'disk activity, and selectable log '
-                                          'tail with fatal/error/warning/info/'
-                                          'debug severity colors. Metric rows '
-                                          'include a Role column, and o toggles '
-                                          'a right-side currentOp activity '
-                                          'view with O for raw/format mode. '
-                                          'Use --all '
-                                          'with --monitor to '
-                                          'include all local MongoDB processes. '
-                                          'Controls: q or Ctrl+C quit, '
-                                          'r reselects logs in log view or '
-                                          'currentOp sources in currentOp view, '
-                                          'a toggles process scope between '
-                                          'mrun-managed and all processes, '
-                                          'Tab switch panes, '
-                                          'z zoom logs or focused pane, '
-                                          'CPU pane j/k or arrows select '
-                                          'processes, C toggles raw/normalized '
-                                          'CPU, t toggles thread view, '
-                                          'logs pane o toggles currentOp '
-                                          'activity, '
-                                          'O toggles currentOp raw/format, '
-                                          'n selects currentOp namespace, '
-                                          'L sets currentOp top-N limit, '
-                                          'currentOp p pretty JSON, '
-                                          'currentOp y yank selected op, '
-                                          'logs pane j/k or arrows move, '
-                                          'g latest log line, '
-                                          'p prettify highlighted log line '
-                                          'as syntax-colored JSON, '
-                                          'y yank highlighted log line, '
-                                          '/ filter logs, c clear filter/ns, '
-                                          'space pause/resume log or '
-                                          'currentOp streaming, '
-                                          'E toggles expanded server status, '
-                                          'M launches mongosh admin shell, '
-                                          's cycle refresh 1s/5s/10s.'))
-        self.argparser.add_argument('--all', action='store_true',
-                                    default=False,
-                                    help=('with --monitor, includes all local '
-                                          'mongod and mongos processes instead '
-                                          'of only mongorun-managed processes'))
-        self.argparser.add_argument('--dir', action='store', default='./data',
-                                    help=('base directory for --monitor '
-                                          '.mrun_startup lookup '
-                                          '(default=./data/)'))
-        self.argparser.add_argument('--monitor-username', action='store',
-                                    default=None,
-                                    help=('username override for --monitor '
-                                          'network sampling'))
-        self.argparser.add_argument('--monitor-password', action='store',
-                                    default=None,
-                                    help=('password override for --monitor '
-                                          'network sampling'))
-        self.argparser.add_argument('--monitor-auth-db', action='store',
-                                    default=None, metavar='DB',
-                                    help=('auth database override for '
-                                          '--monitor network sampling'))
 
         self.argparser.description = ('script to launch MongoDB stand-alone '
                                       'servers, replica sets and shards.')
 
         argument_tokens = arguments.strip().split() if arguments else []
-        monitor_requested = (
-            ('--monitor' in argument_tokens) or
-            (not argument_tokens and len(sys.argv) > 1 and
-             '--monitor' in sys.argv[1:])
-        )
-        if monitor_requested:
-            monitor_tokens = argument_tokens if arguments else sys.argv[1:]
-            self._validate_monitor_arguments(monitor_tokens)
+        command_tokens = argument_tokens if arguments else sys.argv[1:]
+        legacy_monitor_flag = '--' + 'monitor'
+        if legacy_monitor_flag in command_tokens:
+            self.argparser.error(
+                "monitor is a subcommand; use 'mrun monitor'")
+        command_names = {'init', 'start', 'stop', 'restart', 'list', 'kill',
+                         'monitor'}
+        explicit_command_requested = any(
+            token in command_names for token in command_tokens)
 
         # make sure init is default command even when specifying
         # arguments directly
-        if arguments and arguments.startswith('-') and not monitor_requested:
+        if arguments and arguments.startswith('-') and not explicit_command_requested:
             arguments = 'init ' + arguments
 
         # default sub-command is `init` if none provided
         elif (len(sys.argv) > 1 and sys.argv[1].startswith('-') and
                 sys.argv[1] not in ['-h', '--help', '--version'] and
-                not monitor_requested):
+                not explicit_command_requested):
             sys.argv = sys.argv[0:1] + ['init'] + sys.argv[1:]
 
         # create command sub-parsers
@@ -318,6 +256,39 @@ class MRunTool(BaseCmdLineTool):
              'through to mongod/mongos if those options are listed in the '
              '--help output for the current binary. For example: '
              '--storageEngine, --logappend, or --config.')
+
+        # monitor command
+        monitor_help = 'opens a live terminal monitor for MongoDB processes.'
+        monitor_desc = (
+            'Open a live terminal monitor for mongorun-managed mongod and '
+            'mongos processes: CPU, memory, network, disk activity, and '
+            'selectable log tail with severity colors and filtering. Use '
+            '--all to include all local MongoDB processes. Controls: q or '
+            'Ctrl+C quit, r reselects logs or currentOp sources, a toggles '
+            'process scope, Tab switches panes, z zooms, 1-5 toggles pane '
+            'visibility, C toggles raw/normalized CPU, t toggles thread view, '
+            'o toggles currentOp activity, O toggles currentOp raw/format, n '
+            'selects currentOp namespace, L sets currentOp top-N limit, E '
+            'toggles expanded server status, M launches mongosh, and s cycles '
+            'refresh 1s/5s/10s.')
+        monitor_parser = subparsers.add_parser(
+            'monitor', help=monitor_help, description=monitor_desc)
+        monitor_parser.add_argument(
+            '--all', action='store_true', default=False,
+            help=('includes all local mongod and mongos processes instead of '
+                  'only mongorun-managed processes'))
+        monitor_parser.add_argument(
+            '--dir', action='store', default='./data',
+            help=('base directory for .mrun_startup lookup (default=./data/)'))
+        monitor_parser.add_argument(
+            '--monitor-username', action='store', default=None,
+            help='username override for monitor network sampling')
+        monitor_parser.add_argument(
+            '--monitor-password', action='store', default=None,
+            help='password override for monitor network sampling')
+        monitor_parser.add_argument(
+            '--monitor-auth-db', action='store', default=None, metavar='DB',
+            help='auth database override for monitor network sampling')
 
         # init command
         helptext = ('initialize a new MongoDB environment and start '
@@ -677,12 +648,16 @@ class MRunTool(BaseCmdLineTool):
         kill_parser.add_argument('--verbose', action='store_true',
                                  default=False,
                                  help='outputs more verbose information.')
-        if not arguments and not monitor_requested:
+        if not arguments and 'monitor' not in command_tokens:
             #if not any(args in arguments for args in ['--help', '-h']):
             print("Detected mongod version: %s" % self.current_version)
 
         # argparser is set up, now call base class run()
         BaseCmdLineTool.run(self, arguments, get_unknowns=True)
+
+        if self.args.get('command') == 'monitor' and self.unknown_args:
+            self.argparser.error(
+                'unsupported monitor argument: %s' % self.unknown_args[0])
 
         # conditions on argument combinations
         if (self.args['command'] == 'init' and
@@ -697,48 +672,14 @@ class MRunTool(BaseCmdLineTool):
             self.dir = os.path.abspath(self.args['dir'])
             self.args['dir'] = self.dir
 
-        if self.args.get('monitor'):
-            return self.monitor()
-
         if (self.args['command'] is None):
             self.argparser.print_help()
             self.argparser.exit()
         else:
             # branch out in sub-commands
-            getattr(self, self.args['command'])()
+            return getattr(self, self.args['command'])()
 
-    # -- below are the main commands: init, start, stop, list, kill
-    def _validate_monitor_arguments(self, tokens):
-        """Reject unsupported monitor-mode arguments before subparser parsing."""
-        if any(token in ('-h', '--help', '--version') for token in tokens):
-            return
-
-        value_options = {
-            '--dir',
-            '--monitor-username',
-            '--monitor-password',
-            '--monitor-auth-db',
-        }
-        flag_options = {'--monitor', '--all', '--no-progressbar'}
-        index = 0
-        while index < len(tokens):
-            token = tokens[index]
-            if token in flag_options:
-                index += 1
-                continue
-            if token in value_options:
-                if index + 1 >= len(tokens):
-                    self.argparser.error(
-                        'argument %s: expected one argument' % token)
-                index += 2
-                continue
-            if any(token.startswith(option + '=') for option in value_options):
-                index += 1
-                continue
-
-            self.argparser.error(
-                'unsupported monitor argument: %s' % token)
-
+    # -- below are the main commands: init, start, stop, list, kill, monitor
     def monitor(self):
         """Monitor running local MongoDB server processes."""
         from mrun.monitor import Monitor

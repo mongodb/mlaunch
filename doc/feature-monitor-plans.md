@@ -25,22 +25,21 @@ Source: `doc/monitor-auth-flag-anomaly-report.md` / A3
 
 Goal:
 
-Make monitor mode route correctly regardless of where `--monitor` appears
-among top-level options.
+Make monitor mode route correctly as an explicit subcommand, including when
+top-level options appear before the subcommand.
 
 Required support:
 
 ```text
-mrun --monitor --all
-mrun --all --monitor
-mrun --dir data --monitor
-mrun --no-progressbar --monitor
+mrun monitor --all
+mrun monitor --dir data
+mrun --no-progressbar monitor
 ```
 
 Expected implementation:
 
-- Update `MRunTool.run()` so any argv containing `--monitor` bypasses the
-  default `init` rewrite.
+- Update `MRunTool.run()` so explicit subcommands bypass the default `init`
+  rewrite.
 - Preserve existing default-init behavior for non-monitor commands.
 - Add regression tests for the supported flag orders.
 
@@ -99,7 +98,7 @@ Expected implementation:
 - Suggested message:
 
 ```text
-mrun --monitor could not list local processes: permission denied
+mrun monitor could not list local processes: permission denied
 ```
 
 Trace:

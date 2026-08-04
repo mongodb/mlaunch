@@ -6,6 +6,7 @@ import time
 import psutil
 import pytest
 
+import mrun.monitor as monitor_module
 from mrun.monitor import (
     _footer_controls,
     ANSI_BOLD,
@@ -32,6 +33,7 @@ from mrun.monitor import (
     choose_logpaths,
     choose_mongosh_target,
     colorize_pretty_json_line,
+    ConnectionManager,
     CurrentOpEntry,
     current_op_command_candidates,
     current_op_documents,
@@ -214,6 +216,63 @@ def test_process_to_info_supports_equals_style_port():
     assert info.logpath == "/tmp/mongos.log"
 
 
+def test_process_to_info_reads_config_file_options(tmp_path):
+    config_file = tmp_path / "mongod.conf"
+    config_file.write_text("""
+net:
+  port: 27027
+storage:
+  dbPath: /tmp/config-db
+systemLog:
+  path: /tmp/config.log
+""")
+    process = FakeProcess(
+        44,
+        "mongod",
+        ["mongod", "--config", str(config_file)],
+    )
+
+    info = process_to_info(process)
+
+    assert info.port == 27027
+    assert info.dbpath == "/tmp/config-db"
+    assert info.logpath == "/tmp/config.log"
+    assert info.explicit_port is True
+
+
+def test_process_to_info_cli_flags_override_config_file(tmp_path):
+    config_file = tmp_path / "mongod.conf"
+    config_file.write_text("""
+net:
+  port: 27027
+storage:
+  dbPath: /tmp/config-db
+systemLog:
+  path: /tmp/config.log
+""")
+    process = FakeProcess(
+        45,
+        "mongod",
+        [
+            "mongod",
+            "-f",
+            str(config_file),
+            "--port",
+            "27028",
+            "--dbpath",
+            "/tmp/cli-db",
+            "--logpath",
+            "/tmp/cli.log",
+        ],
+    )
+
+    info = process_to_info(process)
+
+    assert info.port == 27028
+    assert info.dbpath == "/tmp/cli-db"
+    assert info.logpath == "/tmp/cli.log"
+
+
 def test_discover_mongo_processes_filters_and_sorts():
     processes = [
         FakeProcess(3, "python", ["python"]),
@@ -255,6 +314,40 @@ def test_load_mrun_process_specs_reads_startup_file(tmp_path):
     assert specs[27018].port == 27018
     assert specs[27018].dbpath == "/tmp/db"
     assert specs[27018].logpath == "/tmp/mongod.log"
+
+
+def test_load_mrun_process_specs_marks_sharded_groups(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "parsed_args": {
+            "sharded": ["2"],
+            "mongos": 1,
+            "port": 27017,
+        },
+        "startup_info": {
+            "27017": "mongos --port 27017 --logpath /tmp/mongos.log",
+            "27018": (
+                "mongod --port 27018 --dbpath /tmp/shard01/db "
+                "--logpath /tmp/shard01.log --replSet shard01 --shardsvr"),
+            "27021": (
+                "mongod --port 27021 --dbpath /tmp/shard02/db "
+                "--logpath /tmp/shard02.log --replSet shard02 --shardsvr"),
+            "27027": (
+                "mongod --port 27027 --dbpath /tmp/config/db "
+                "--logpath /tmp/config.log --replSet configRepl --configsvr"),
+        },
+    }))
+
+    specs = load_mrun_process_specs(str(tmp_path))
+
+    assert specs[27017].group == "mongos"
+    assert specs[27017].group_order == 0
+    assert specs[27027].group == "config server"
+    assert specs[27027].group_order == 1
+    assert specs[27018].group == "shard01"
+    assert specs[27021].group == "shard02"
+    assert specs[27018].group_order < specs[27021].group_order
 
 
 def test_load_monitor_auth_config_reads_startup_credentials(tmp_path):
@@ -410,6 +503,37 @@ def test_monitor_network_sampler_combines_tls_and_auth_kwargs(tmp_path):
     }
 
 
+def test_monitor_reuses_loaded_startup_config(monkeypatch, tmp_path):
+    calls = []
+    startup_config = {
+        "protocol_version": 2,
+        "parsed_args": {
+            "replicaset": True,
+            "name": "rs0",
+            "tlsMode": "requireTLS",
+        },
+        "startup_info": {
+            "27018": (
+                "mongod --port 27018 --dbpath /tmp/db "
+                "--logpath /tmp/mongod.log --replSet rs0")
+        },
+    }
+
+    def load_startup_config(data_dir):
+        calls.append(data_dir)
+        return startup_config
+
+    monkeypatch.setattr(
+        monitor_module, "load_mrun_startup_config", load_startup_config)
+
+    monitor = Monitor(stdout=io.StringIO(), data_dir=str(tmp_path))
+
+    assert calls == [str(tmp_path)]
+    assert monitor.process_specs[27018].replset == "rs0"
+    assert monitor.replset_name == "rs0"
+    assert monitor.monitor_tls_kwargs == {"tls": True}
+
+
 def test_filter_mrun_processes_keeps_only_startup_ports(tmp_path):
     startup_file = tmp_path / ".mrun_startup"
     startup_file.write_text(json.dumps({
@@ -494,6 +618,55 @@ def test_filter_mrun_processes_keeps_managed_mongos(tmp_path):
     ]
 
 
+def test_filter_mrun_processes_orders_sharded_deployment(tmp_path):
+    startup_file = tmp_path / ".mrun_startup"
+    startup_file.write_text(json.dumps({
+        "protocol_version": 2,
+        "parsed_args": {
+            "sharded": ["2"],
+            "mongos": 1,
+            "port": 27017,
+        },
+        "startup_info": {
+            "27017": "mongos --port 27017 --logpath /tmp/mongos.log",
+            "27018": (
+                "mongod --port 27018 --dbpath /tmp/shard01/db "
+                "--logpath /tmp/shard01.log --replSet shard01 --shardsvr"),
+            "27021": (
+                "mongod --port 27021 --dbpath /tmp/shard02/db "
+                "--logpath /tmp/shard02.log --replSet shard02 --shardsvr"),
+            "27027": (
+                "mongod --port 27027 --dbpath /tmp/config/db "
+                "--logpath /tmp/config.log --replSet configRepl --configsvr"),
+        },
+    }))
+    discovered = [
+        MongoProcessInfo(
+            27, "mongod", 27027, "/tmp/config.log", "/tmp/config/db",
+            ["mongod", "--port", "27027", "--logpath", "/tmp/config.log",
+             "--dbpath", "/tmp/config/db", "--replSet", "configRepl",
+             "--configsvr"]),
+        MongoProcessInfo(
+            21, "mongod", 27021, "/tmp/shard02.log", "/tmp/shard02/db",
+            ["mongod", "--port", "27021", "--logpath", "/tmp/shard02.log",
+             "--dbpath", "/tmp/shard02/db", "--replSet", "shard02"]),
+        MongoProcessInfo(
+            17, "mongos", 27017, "/tmp/mongos.log", "",
+            ["mongos", "--port", "27017", "--logpath", "/tmp/mongos.log"]),
+        MongoProcessInfo(
+            18, "mongod", 27018, "/tmp/shard01.log", "/tmp/shard01/db",
+            ["mongod", "--port", "27018", "--logpath", "/tmp/shard01.log",
+             "--dbpath", "/tmp/shard01/db", "--replSet", "shard01"]),
+    ]
+
+    filtered = filter_mrun_processes(
+        discovered, load_mrun_process_specs(str(tmp_path)))
+
+    assert [process.port for process in filtered] == [27017, 27027, 27018, 27021]
+    assert [process.group for process in filtered] == [
+        "mongos", "config server", "shard01", "shard02"]
+
+
 def test_annotate_mrun_processes_marks_external_processes(tmp_path):
     startup_file = tmp_path / ".mrun_startup"
     startup_file.write_text(json.dumps({
@@ -532,7 +705,7 @@ def test_annotate_mrun_processes_marks_external_processes(tmp_path):
     ]
 
 
-def test_mrun_monitor_flag_does_not_route_to_init(monkeypatch):
+def test_mrun_monitor_subcommand_does_not_route_to_init(monkeypatch):
     called = {}
 
     def fake_monitor(self):
@@ -542,12 +715,11 @@ def test_mrun_monitor_flag_does_not_route_to_init(monkeypatch):
     monkeypatch.setattr(MRunTool, "monitor", fake_monitor)
 
     tool = MRunTool(test=True)
-    result = tool.run("--monitor")
+    result = tool.run("monitor")
 
     assert result == 0
     assert called["monitor"] is True
-    assert tool.args["command"] is None
-    assert tool.args["monitor"] is True
+    assert tool.args["command"] == "monitor"
 
 
 def test_mrun_monitor_all_flag_is_parsed(monkeypatch):
@@ -562,7 +734,7 @@ def test_mrun_monitor_all_flag_is_parsed(monkeypatch):
     monkeypatch.setattr(MRunTool, "monitor", fake_monitor)
 
     tool = MRunTool(test=True)
-    result = tool.run("--monitor --all --dir /tmp/mrun-data")
+    result = tool.run("monitor --all --dir /tmp/mrun-data")
 
     assert result == 0
     assert called == {
@@ -572,7 +744,7 @@ def test_mrun_monitor_all_flag_is_parsed(monkeypatch):
     }
 
 
-def test_mrun_monitor_flag_order_from_sys_argv(monkeypatch, capsys):
+def test_mrun_monitor_subcommand_from_sys_argv(monkeypatch, capsys):
     calls = []
 
     def fake_monitor(self):
@@ -583,9 +755,9 @@ def test_mrun_monitor_flag_order_from_sys_argv(monkeypatch, capsys):
     monkeypatch.setattr(MRunTool, "monitor", fake_monitor)
 
     cases = [
-        ["mrun", "--all", "--monitor"],
-        ["mrun", "--dir", "/tmp/mrun-data", "--monitor"],
-        ["mrun", "--no-progressbar", "--monitor"],
+        ["mrun", "monitor", "--all"],
+        ["mrun", "monitor", "--dir", "/tmp/mrun-data"],
+        ["mrun", "--no-progressbar", "monitor"],
     ]
     for argv in cases:
         monkeypatch.setattr("sys.argv", argv)
@@ -604,7 +776,7 @@ def test_mrun_monitor_rejects_init_only_auth_flags(capsys):
     tool = MRunTool(test=True)
 
     with pytest.raises(SystemExit):
-        tool.run("--monitor --auth-db admin")
+        tool.run("monitor --auth-db admin")
 
     assert "unsupported monitor argument: --auth-db" in capsys.readouterr().err
 
@@ -622,7 +794,7 @@ def test_mrun_monitor_accepts_monitor_credential_flags(monkeypatch):
 
     tool = MRunTool(test=True)
     result = tool.run(
-        "--monitor --monitor-username monitoruser "
+        "monitor --monitor-username monitoruser "
         "--monitor-password monitorpass --monitor-auth-db admin")
 
     assert result == 0
@@ -633,7 +805,8 @@ def test_mrun_monitor_accepts_monitor_credential_flags(monkeypatch):
     }
 
 
-def test_mrun_monitor_flag_from_sys_argv_does_not_print_version(monkeypatch, capsys):
+def test_mrun_monitor_subcommand_from_sys_argv_does_not_print_version(
+        monkeypatch, capsys):
     called = {}
 
     def fake_monitor(self):
@@ -641,7 +814,7 @@ def test_mrun_monitor_flag_from_sys_argv_does_not_print_version(monkeypatch, cap
         return 0
 
     monkeypatch.setattr(MRunTool, "monitor", fake_monitor)
-    monkeypatch.setattr("sys.argv", ["mrun", "--monitor"])
+    monkeypatch.setattr("sys.argv", ["mrun", "monitor"])
 
     tool = MRunTool(test=True)
     result = tool.run()
@@ -653,7 +826,7 @@ def test_mrun_monitor_flag_from_sys_argv_does_not_print_version(monkeypatch, cap
 
 
 def test_mrun_help_explains_monitor(monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["mrun", "--help"])
+    monkeypatch.setattr("sys.argv", ["mrun", "monitor", "--help"])
 
     tool = MRunTool(test=True)
     try:
@@ -663,35 +836,26 @@ def test_mrun_help_explains_monitor(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     flat_output = " ".join(output.split())
-    assert "--monitor" in output
+    assert "monitor" in output
     assert "--all" in output
     assert "--monitor-username" in output
     assert "--monitor-password" in output
     assert "--monitor-auth-db" in output
-    assert "CPU, memory, network, disk activity, and selectable log tail" in flat_output
-    assert "Metric rows include a Role column" in flat_output
-    assert "fatal/error/warning/info/debug severity colors" in flat_output
+    assert "CPU, memory, network, disk activity" in flat_output
     assert "q or Ctrl+C quit" in flat_output
-    assert "r reselects logs in log view or currentOp sources" in flat_output
-    assert "a toggles process scope between mrun-managed and all processes" in flat_output
-    assert "Tab switch panes" in flat_output
-    assert "z zoom logs or focused pane" in flat_output
+    assert "r reselects logs or currentOp sources" in flat_output
+    assert "a toggles process scope" in flat_output
+    assert "Tab switches panes" in flat_output
+    assert "z zooms" in flat_output
+    assert "1-5 toggles pane visibility" in flat_output
     assert "C toggles raw/normalized CPU" in flat_output
     assert "t toggles thread view" in flat_output
-    assert "logs pane o toggles currentOp activity" in flat_output
+    assert "o toggles currentOp activity" in flat_output
     assert "O toggles currentOp raw/format" in flat_output
     assert "n selects currentOp namespace" in flat_output
     assert "L sets currentOp top-N limit" in flat_output
-    assert "currentOp p pretty JSON" in flat_output
-    assert "currentOp y yank selected op" in flat_output
-    assert "g latest log line" in flat_output
-    assert "p prettify highlighted log line as syntax-" in flat_output
-    assert "colored JSON" in flat_output
-    assert "y yank highlighted log line" in flat_output
-    assert "/ filter logs, c clear filter/ns" in flat_output
-    assert "space pause/resume log or currentOp streaming" in flat_output
-    assert "s cycle refresh 1s/5s/10s" in flat_output
-    assert "M launches mongosh admin shell" in flat_output
+    assert "s cycles refresh 1s/5s/10s" in flat_output
+    assert "M launches mongosh" in flat_output
 
 
 def test_monitor_reports_when_no_mongo_processes():
@@ -1071,11 +1235,14 @@ def test_mongosh_tls_args_maps_bool_and_value_flags():
 class FakeClient:
     def __init__(self, response):
         self.response = response
+        self.responses = list(response) if isinstance(response, list) else None
         self.admin = self
         self.closed = False
 
     def command(self, command_name):
         assert command_name == "serverStatus"
+        if self.responses is not None:
+            return self.responses.pop(0)
         return self.response
 
     def close(self):
@@ -1088,10 +1255,11 @@ def test_network_sampler_computes_rates_from_server_status_deltas():
         {"network": {"bytesIn": 300, "bytesOut": 500, "numRequests": 16}},
     ]
     times = [10.0, 12.0]
+    client = FakeClient(responses)
 
     def client_factory(host, **kwargs):
         assert host == "localhost:27017"
-        return FakeClient(responses.pop(0))
+        return client
 
     def clock():
         return times.pop(0)
@@ -1106,6 +1274,36 @@ def test_network_sampler_computes_rates_from_server_status_deltas():
     assert second.bytes_in_per_sec == 100
     assert second.bytes_out_per_sec == 150
     assert second.requests_per_sec == 3
+
+
+def test_connection_manager_reuses_clients_and_closes_all():
+    clients = []
+
+    def client_factory(host, **kwargs):
+        client = FakeClient({"network": {}})
+        clients.append(client)
+        return client
+
+    manager = ConnectionManager(client_factory)
+    first = manager.get_client(
+        "localhost:27017", directConnection=True,
+        serverSelectionTimeoutMS=200)
+    second = manager.get_client(
+        "localhost:27017", serverSelectionTimeoutMS=200,
+        directConnection=True)
+    third = manager.get_client(
+        "localhost:27018", directConnection=True,
+        serverSelectionTimeoutMS=200)
+
+    assert first is second
+    assert first is not third
+    assert len(clients) == 2
+
+    manager.close_all()
+
+    assert first.closed is True
+    assert third.closed is True
+    assert manager.clients == {}
 
 
 def test_network_sampler_passes_auth_kwargs_to_client_factory():
@@ -1817,6 +2015,61 @@ def test_render_dashboard_contains_left_metrics_and_activity_pane():
     assert "27017" in rendered
 
 
+def test_render_dashboard_hides_inactive_panes():
+    process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
+    rendered = render_dashboard(
+        [process],
+        {10: ProcessMetrics(12.5, 1024 * 1024, "running")},
+        {},
+        ["27017 | log line"],
+        selected_ports=[27017],
+        terminal_size=os.terminal_size((100, 24)),
+        visible_panes=("cpu", "logs"),
+    )
+
+    assert "CPU Usage" in rendered
+    assert "Log Tail: 27017" in rendered
+    assert "Memory Usage" not in rendered
+    assert "Network Usage" not in rendered
+    assert "Disk Usage" not in rendered
+
+
+def test_render_dashboard_shows_sharded_section_headers():
+    processes = [
+        MongoProcessInfo(
+            10, "mongos", 27017, "/tmp/mongos.log", "", [],
+            managed=True, group="mongos", group_order=0),
+        MongoProcessInfo(
+            11, "mongod", 27027, "/tmp/config.log", "/tmp/config/db", [],
+            managed=True, group="config server", group_order=1),
+        MongoProcessInfo(
+            12, "mongod", 27018, "/tmp/shard01.log", "/tmp/shard01/db", [],
+            managed=True, group="shard01", group_order=2),
+    ]
+
+    rendered = render_dashboard(
+        processes,
+        {
+            10: ProcessMetrics(1.0, 1024, "running"),
+            11: ProcessMetrics(2.0, 2048, "running"),
+            12: ProcessMetrics(3.0, 4096, "running"),
+        },
+        {},
+        [],
+        terminal_size=os.terminal_size((140, 28)),
+        visible_panes=("cpu", "network"),
+    )
+
+    plain = strip_ansi(rendered)
+    assert "GROUP" not in plain
+    assert "mongos" in plain
+    assert "config server" in plain
+    assert "shard01" in plain
+    assert plain.index("mongos") < plain.index("27017")
+    assert plain.index("config server") < plain.index("27027")
+    assert plain.index("shard01") < plain.index("27018")
+
+
 def test_render_dashboard_fits_terminal_without_footer_wrap():
     process = MongoProcessInfo(10, "mongod", 27017, "/tmp/mongod.log", "", [])
     terminal_size = os.terminal_size((80, 18))
@@ -1930,6 +2183,53 @@ def test_metric_formatters_include_role_column():
     assert "Primary" in strip_ansi(network[1])
     assert "ROLE" in strip_ansi(disk[0])
     assert "Primary" in strip_ansi(disk[1])
+
+
+def test_metric_formatters_use_sharded_section_headers():
+    processes = [
+        MongoProcessInfo(
+            10, "mongos", 27017, "/tmp/mongos.log", "", [],
+            managed=True, group="mongos", group_order=0),
+        MongoProcessInfo(
+            11, "mongod", 27027, "/tmp/config.log", "/tmp/config/db", [],
+            managed=True, group="config server", group_order=1),
+        MongoProcessInfo(
+            12, "mongod", 27018, "/tmp/shard01.log", "/tmp/shard01/db", [],
+            managed=True, group="shard01", group_order=2),
+    ]
+    process_metrics = {
+        10: ProcessMetrics(1.0, 1024, "running"),
+        11: ProcessMetrics(2.0, 2048, "running"),
+        12: ProcessMetrics(3.0, 4096, "running"),
+    }
+    network_metrics = {
+        27017: NetworkMetrics(True, 1, 2, 3),
+        27027: NetworkMetrics(True, 4, 5, 6),
+        27018: NetworkMetrics(True, 7, 8, 9),
+    }
+    disk_metrics = {
+        27017: DiskMetrics(True, 1024, 512),
+        27027: DiskMetrics(True, 2048, 1024),
+        27018: DiskMetrics(True, 4096, 2048),
+    }
+
+    tables = (
+        format_cpu_lines(processes, process_metrics),
+        format_memory_lines(processes, process_metrics),
+        format_network_lines(processes, network_metrics),
+        format_disk_lines(processes, disk_metrics),
+    )
+
+    for lines in tables:
+        plain_lines = [strip_ansi(line) for line in lines]
+        plain = "\n".join(plain_lines)
+        assert "GROUP" not in plain_lines[0]
+        assert any(line.strip() == "mongos" for line in plain_lines)
+        assert any(line.strip() == "config server" for line in plain_lines)
+        assert any(line.strip() == "shard01" for line in plain_lines)
+        assert plain.index("mongos") < plain.index("27017")
+        assert plain.index("config server") < plain.index("27027")
+        assert plain.index("shard01") < plain.index("27018")
 
 
 def test_metric_formatters_pad_left_like_cpu_rows():
@@ -3235,6 +3535,8 @@ def test_pane_focus_helpers_cycle_forward_and_backward():
     assert next_pane("cpu", 1) == "memory"
     assert next_pane("cpu", -1) == "logs"
     assert next_pane("unknown", 1) == "cpu"
+    assert next_pane("cpu", 1, ("cpu", "disk")) == "disk"
+    assert next_pane("disk", 1, ("cpu", "disk")) == "cpu"
 
 
 def test_process_cursor_helpers_select_processes():
@@ -3280,6 +3582,39 @@ def test_monitor_shift_tab_cycles_focus_backward():
     assert action == "redraw"
     assert monitor.focused_pane == "disk"
     assert monitor.status_message == "focus disk pane"
+
+
+def test_monitor_number_keys_toggle_visible_panes():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.focused_pane = "memory"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("2"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert "memory" not in monitor.visible_panes
+    assert monitor.focused_pane == "logs"
+    assert monitor.status_message == "memory pane hidden"
+
+    action = monitor._wait_for_action(
+        FakeTerminal("2"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.visible_panes == [
+        "cpu", "memory", "network", "disk", "logs"]
+    assert monitor.status_message == "memory pane visible"
+
+
+def test_monitor_keeps_at_least_one_visible_pane():
+    monitor = Monitor(stdout=io.StringIO())
+    monitor.visible_panes = ["cpu"]
+
+    action = monitor._wait_for_action(
+        FakeTerminal("1"), time.time(), [], [])
+
+    assert action == "redraw"
+    assert monitor.visible_panes == ["cpu"]
+    assert monitor.status_message == "at least one pane must remain visible"
 
 
 def test_monitor_c_toggles_cpu_normalized_display_when_cpu_focused():
@@ -3990,9 +4325,10 @@ def test_status_sampler_handles_missing_version_specific_sections():
         },
     ]
     times = [10.0, 12.0]
+    client = FakeClient(responses)
 
     def client_factory(host, **kwargs):
-        return FakeClient(responses.pop(0))
+        return client
 
     sampler = StatusSampler(
         client_factory=client_factory,
@@ -4031,9 +4367,10 @@ def test_status_sampler_clamps_counter_resets():
         },
     ]
     times = [1.0, 2.0]
+    client = FakeClient(responses)
 
     def client_factory(host, **kwargs):
-        return FakeClient(responses.pop(0))
+        return client
 
     sampler = StatusSampler(
         client_factory=client_factory,
@@ -4182,7 +4519,7 @@ def test_monitor_review_doc_explains_invocation_path():
     with open("doc/monitor.md", "r") as fp:
         contents = fp.read()
 
-    assert "mrun --monitor" in contents
+    assert "mrun monitor" in contents
     assert "MRunTool.run()" in contents
     assert "Monitor.run()" in contents
     assert "flowchart TD" in contents

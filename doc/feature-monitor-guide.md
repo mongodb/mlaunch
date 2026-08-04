@@ -2,7 +2,7 @@
 
 This document describes the monitor feature work introduced on the
 `feature-monitor` branch. It is intended for reviewers, maintainers, and users
-who want to understand how `mrun --monitor` fits into the existing mongorun
+who want to understand how `mrun monitor` fits into the existing mongorun
 architecture.
 
 ## Feature summary
@@ -11,7 +11,7 @@ The branch adds an interactive terminal monitor for MongoDB processes launched
 by mongorun. The monitor is started with:
 
 ```bash
-mrun --monitor
+mrun monitor
 ```
 
 By default, the monitor only displays MongoDB server processes that belong to
@@ -23,7 +23,7 @@ unrelated local `mongod` and `mongos` processes out of the view.
 To include every local MongoDB server process:
 
 ```bash
-mrun --monitor --all
+mrun monitor --all
 ```
 
 The monitor shows:
@@ -33,6 +33,8 @@ The monitor shows:
   `psutil` CPU, which can exceed 100% on multi-core hosts.
 - Replica-set role for each MongoDB process in CPU, memory, network, and disk
   metric panes.
+- Sharded deployments grouped with `mongos`, `config server`, and shard section
+  headers in CPU, memory, network, and disk metric panes.
 - Memory usage by MongoDB process.
 - MongoDB network counter rates from `serverStatus().network`.
 - Disk consumption for each process dbpath and log file.
@@ -88,7 +90,7 @@ mongorun.
 feature-monitor branch
 |
 +-- mrun/mrun.py
-|   +-- exposes monitor CLI flags and routes --monitor before normal command dispatch
+|   +-- exposes monitor subcommand flags and routes monitor before normal dispatch
 |   +-- updates monitor help text for logs-pane currentOp controls
 |
 +-- mrun/monitor.py
@@ -118,7 +120,7 @@ feature-monitor branch
 
 Before this branch, `MRunTool.run()` handled the normal command family:
 `init`, `start`, `stop`, `restart`, `list`, and `kill`. This branch adds
-`--monitor` as a top-level path that bypasses the default `init` routing.
+`monitor` as a subcommand that bypasses the default `init` routing.
 
 ```text
 existing flow
@@ -139,7 +141,7 @@ feature-monitor flow
 
 user command
     |
-    |  mrun --monitor [--all] [--dir DIR]
+    |  mrun monitor [--all] [--dir DIR]
     v
 MRunTool.run()
     |
@@ -157,7 +159,7 @@ MRunTool.run()
 The integration is intentionally narrow:
 
 - The existing subcommands continue to use their current code paths.
-- `--monitor` is treated as a separate top-level mode.
+- `monitor` is treated as a separate subcommand.
 - `--dir` is reused by monitor mode to find `.mrun_startup`.
 - `--all` only affects monitor process discovery.
 - `--monitor-username`, `--monitor-password`, and `--monitor-auth-db` only
@@ -176,9 +178,9 @@ sequenceDiagram
     participant PS as psutil
     participant FS as .mrun_startup
 
-    User->>CLI: mrun --monitor
+    User->>CLI: mrun monitor
     CLI->>Tool: MRunTool.run()
-    Tool->>Tool: argparse parses --monitor
+    Tool->>Tool: argparse parses monitor subcommand
     Tool->>Tool: skip default init routing
     Tool->>Monitor: Monitor(data_dir="./data", include_all=false).run()
     Monitor->>FS: load ./data/.mrun_startup
@@ -198,7 +200,7 @@ sequenceDiagram
     participant Monitor as Monitor
     participant PS as psutil
 
-    User->>Tool: mrun --monitor --all
+    User->>Tool: mrun monitor --all
     Tool->>Monitor: Monitor(include_all=true).run()
     Monitor->>PS: discover all local mongod/mongos
     Monitor-->>User: prompt for logs from all discovered processes
@@ -347,6 +349,22 @@ switches to top active `currentOp` rows when `o` is pressed.
 | 27017 Primary 540.2MB 12.1MB ok    ||                                       |
 +------------------------------------++---------------------------------------+
 q | Tab | z zoom | r | E | mrun | a all | s1s | logs j/k | ...
+```
+
+For sharded deployments, the metric panes keep the same columns but insert
+section headers derived from `.mrun_startup`, matching the order used by
+`mrun list`: `mongos`, `config server`, then each shard name.
+
+```text
++ CPU Usage -------------------------++ Log Tail: 27017, 27018 --------------+
+| PORT PID ROLE PROCESS CPU% STATUS  || 27017 | {"s":"I", ...}               |
+| mongos                             || 27018 | {"s":"W", ...}               |
+| 27017 30545 Router mongos 2 running||                                       |
+| config server                      ||                                       |
+| 27027 30520 Primary mongod 4 runn  ||                                       |
+| shard01                            ||                                       |
+| 27018 30466 Primary mongod 8 runn  ||                                       |
++------------------------------------++---------------------------------------+
 ```
 
 ### Highlighting and color coding
@@ -660,7 +678,7 @@ The monitor has two process scopes.
 
 ### mrun-managed scope
 
-This is the default for `mrun --monitor`.
+This is the default for `mrun monitor`.
 
 ```text
 data directory
@@ -679,6 +697,11 @@ metadata matches the startup metadata. Port alone is not enough: a matching
 mrun process must also agree on process type and dbpath or logpath, and
 replica-set `mongod` nodes must agree on `--replSet`.
 
+When `.mrun_startup` describes a sharded deployment, monitor discovery also
+assigns process groups. The dashboard uses those groups to render sharded
+section headers in the metric panes while non-sharded deployments keep the
+compact default tables.
+
 ```mermaid
 flowchart LR
     A[datadir/.mrun_startup] --> B[load_mrun_process_specs]
@@ -691,7 +714,7 @@ flowchart LR
 
 ### All-process scope
 
-This mode is started with `mrun --monitor --all` or by pressing `a` inside the
+This mode is started with `mrun monitor --all` or by pressing `a` inside the
 monitor. It skips `.mrun_startup` filtering and shows every local `mongod` or
 `mongos` visible to `psutil`.
 
@@ -1558,14 +1581,14 @@ Default mrun-managed mode:
 
 ```text
 No running mongorun-managed MongoDB processes found.
-Start nodes with mrun first, or run: mrun --monitor --all
+Start nodes with mrun first, or run: mrun monitor --all
 ```
 
 All-process mode:
 
 ```text
 No running mongod or mongos processes found.
-Start MongoDB nodes first, then run: mrun --monitor
+Start MongoDB nodes first, then run: mrun monitor
 ```
 
 Missing logs:
@@ -1609,7 +1632,7 @@ mongosh not found in PATH
 Restricted process-list environment:
 
 ```text
-mrun --monitor could not list local processes: permission denied
+mrun monitor could not list local processes: permission denied
 ```
 
 Missing or unreadable disk paths are reported as unavailable in the disk panel,
@@ -1620,7 +1643,7 @@ without terminating the monitor.
 This branch grew from a basic monitor into the final implementation in these
 reviewable increments:
 
-- Added the top-level `mrun --monitor` path and kept it separate from the
+- Added the `mrun monitor` subcommand and kept it separate from the
   normal `init`, `start`, `stop`, `restart`, `list`, and `kill` command flow.
 - Added mrun-managed process discovery from `.mrun_startup`, plus all-process
   scope for manually launched local `mongod` and `mongos` processes.
@@ -1678,8 +1701,8 @@ reviewable increments:
 
 The focused monitor test module covers:
 
-- CLI routing for `--monitor`.
-- `--monitor --all` parsing.
+- CLI routing for `monitor`.
+- `monitor --all` parsing.
 - monitor flag order with `--all`, `--dir`, and `--no-progressbar`.
 - monitor-specific rejection of init-only auth flags.
 - monitor credential override flags.
@@ -1796,10 +1819,10 @@ git diff --check
 Use this list for manual review:
 
 ```text
-[ ] mrun --monitor defaults to mrun-managed processes.
-[ ] mrun --monitor --all shows all local mongod/mongos processes.
-[ ] mrun --all --monitor routes to monitor mode.
-[ ] mrun --dir data --monitor routes to monitor mode.
+[ ] mrun monitor defaults to mrun-managed processes.
+[ ] mrun monitor --all shows all local mongod/mongos processes.
+[ ] mrun monitor --all routes to monitor mode.
+[ ] mrun monitor --dir data routes to monitor mode.
 [ ] init-only auth flags are rejected clearly in monitor mode.
 [ ] auth-enabled deployments show network rates when credentials are available.
 [ ] auth-enabled deployments without credentials show auth required.
