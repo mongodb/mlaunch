@@ -20,11 +20,8 @@ Usage
 
 .. code-block:: bash
 
-   mrun [-h] [--version] [--no-progressbar] [--monitor] [--all]
-        [--dir DIR] [--monitor-username USER]
-        [--monitor-password PASSWORD] [--monitor-auth-db DB]
    mrun [-h] [--version] [--no-progressbar]
-           {init,start,stop,restart,list,kill} ...
+           {init,start,stop,restart,list,kill,monitor} ...
 
 
 General Parameters
@@ -44,7 +41,7 @@ Version
 
 Monitor
 -------
-``--monitor``
+``monitor``
    opens a live terminal monitor for running **mrun** managed ``mongod`` and
    ``mongos`` processes from the selected data directory. The monitor shows
    CPU usage, memory usage, network activity, disk consumption, and a
@@ -59,18 +56,20 @@ Monitor
    stable column alignment. The CPU pane defaults to normalized process CPU,
    where 100% means all logical CPUs on the host. Press ``C`` while the CPU
    pane is focused to toggle back to raw ``psutil`` process CPU, which can
-   exceed 100% on multi-core hosts. If no
+   exceed 100% on multi-core hosts. For sharded deployments, metric rows are
+   ordered as ``mongos``, config servers, and shard groups, with a ``GROUP``
+   column identifying each deployment component. If no
    **mrun**
    managed MongoDB server processes are running, **mrun** will print a message
    and exit.
 
 ``--all``
-   used with ``--monitor`` to include all local ``mongod`` and ``mongos``
+   used with ``monitor`` to include all local ``mongod`` and ``mongos``
    processes instead of only the processes listed in ``.mrun_startup``.
 
 ``--monitor-username USER``, ``--monitor-password PASSWORD``,
 ``--monitor-auth-db DB``
-   optional credential overrides used only by ``--monitor`` samplers and the
+   optional credential overrides used only by monitor samplers and the
    ``mongosh`` handoff. By default, monitor mode loads credentials from
    ``.mrun_startup`` when an authenticated **mrun** deployment created an
    initial user.
@@ -89,6 +88,8 @@ Monitor
    -  ``Tab`` and ``Shift+Tab`` move focus across CPU, memory, network, disk,
       and logs panes.
    -  ``z`` toggles a full-screen view for the focused pane.
+   -  ``1``-``5`` toggles visibility for CPU, memory, network, disk, and logs
+      panes.
    -  In the CPU pane, ``j``/``k`` or up/down arrows select a MongoDB process.
    -  In the CPU pane, ``C`` toggles the CPU column between normalized and raw
       process CPU.

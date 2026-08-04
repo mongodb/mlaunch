@@ -1,6 +1,6 @@
 # mrun monitor implementation
 
-This document explains how `mrun --monitor` reaches `mrun/monitor.py` and how
+This document explains how `mrun monitor` reaches `mrun/monitor.py` and how
 the monitor code is organized for review.
 
 ## Invocation path
@@ -8,7 +8,7 @@ the monitor code is organized for review.
 ```text
 user terminal
     |
-    |  mrun --monitor
+    |  mrun monitor
     v
 project script entry point
     |
@@ -16,8 +16,8 @@ project script entry point
     v
 MRunTool.run()
     |
-    |  argparse parses --monitor as a top-level flag
-    |  default init routing is skipped for --monitor
+    |  argparse parses monitor as a subcommand
+    |  default init routing is skipped for explicit subcommands
     v
 MRunTool.monitor()
     |
@@ -48,7 +48,10 @@ mrun/monitor.py
 |   +-- load_mrun_process_specs()
 |   +-- process_to_info()
 |   +-- parses --port, --logpath, --dbpath from psutil cmdline()
+|   +-- parses -f/--config for port, logpath, and dbpath fallback
 |   +-- default scope is ports loaded from datadir/.mrun_startup
+|   +-- sharded deployments are ordered as mongos, config server, then shards
+|   +-- metric panes render sharded section headers instead of a GROUP column
 |
 +-- process metrics
 |   +-- ProcessSampler
@@ -121,6 +124,7 @@ mrun/monitor.py
     +-- a toggles mrun-managed/all process scope and shows scope:mrun/scope:all
     +-- Tab and Shift+Tab cycle focused panes
     +-- z zooms the focused pane
+    +-- 1-5 toggles CPU, memory, network, disk, and logs pane visibility
     +-- CPU focus: j/k or arrows select a MongoDB process
     +-- CPU focus: C toggles normalized and raw process CPU
     +-- CPU focus: t toggles process-list and selected-process thread views
@@ -148,8 +152,8 @@ mrun/monitor.py
 
 ```mermaid
 flowchart TD
-    A[User runs mrun --monitor] --> B[MRunTool.run parses top-level flag]
-    B --> C{--monitor?}
+    A[User runs mrun monitor] --> B[MRunTool.run parses subcommand]
+    B --> C{command monitor?}
     C -- yes --> D[MRunTool.monitor]
     C -- no --> E[Normal command dispatch]
     D --> F[Monitor.run]
@@ -421,7 +425,7 @@ stateDiagram-v2
 
 The default scope is mrun-managed processes. `Monitor.run()` loads
 `datadir/.mrun_startup`, reads the stored startup commands, and keeps only
-running `mongod` or `mongos` processes with matching ports. `mrun --monitor
+running `mongod` or `mongos` processes with matching ports. `mrun monitor
 --all` starts in all-process mode. Pressing `a` toggles between mrun-managed
 and all detected local MongoDB processes, then prompts for log selection again.
 The footer makes the state explicit with `scope:mrun` or `scope:all` plus an
@@ -453,8 +457,8 @@ booleans/null, and punctuation. The monitor chooses a dark or light palette from
 `COLORFGBG` when available. A user can force a palette with:
 
 ```bash
-MRUN_MONITOR_THEME=dark mrun --monitor
-MRUN_MONITOR_THEME=light mrun --monitor
+MRUN_MONITOR_THEME=dark mrun monitor
+MRUN_MONITOR_THEME=light mrun monitor
 ```
 
 In the logs pane, the spacebar pauses or resumes log streaming. Pausing does
@@ -485,7 +489,7 @@ prints:
 
 ```text
 No running mongorun-managed MongoDB processes found.
-Start nodes with mrun first, or run: mrun --monitor --all
+Start nodes with mrun first, or run: mrun monitor --all
 ```
 
 In all-process mode, if no local `mongod` or `mongos` processes are discovered,
@@ -493,7 +497,7 @@ the monitor prints:
 
 ```text
 No running mongod or mongos processes found.
-Start MongoDB nodes first, then run: mrun --monitor
+Start MongoDB nodes first, then run: mrun monitor
 ```
 
 If a process exists but MongoDB does not answer `serverStatus`, the network
@@ -519,23 +523,3 @@ If `mongosh` is not installed or not on `PATH`, the handoff reports:
 ```text
 mongosh not found in PATH
 ```
-
-## Fault-injection test helper
-
-The branch also provides a local PyMongo workload helper for monitor testing:
-
-```bash
-uv run python mrun/fault_inject_collection_scans.py --dry-run
-uv run python mrun/fault_inject_collection_scans.py --profile --duration 60
-```
-
-It targets `mongodb://localhost:27017/?replicaSet=rs0` by default, seeds the
-dedicated `mrun_fault_injection.collection_scans` collection, and repeatedly
-runs unindexed `find()` operations with the comment prefix
-`mrun-monitor-fault-scan`. With `--profile`, it temporarily sets the test
-database profiler to level 2 with `slowms=0`, then restores the previous
-profiler setting before exiting.
-
-Use it in a second terminal while `mrun --monitor` tails the local replica set
-logs. The expected monitor signals are higher CPU/network rates on the target
-port and live log rows containing `mrun-monitor-fault-scan`.
