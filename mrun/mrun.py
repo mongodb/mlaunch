@@ -224,14 +224,26 @@ class MRunTool(BaseCmdLineTool):
         self.argparser.description = ('script to launch MongoDB stand-alone '
                                       'servers, replica sets and shards.')
 
+        argument_tokens = arguments.strip().split() if arguments else []
+        command_tokens = argument_tokens if arguments else sys.argv[1:]
+        legacy_monitor_flag = '--' + 'monitor'
+        if legacy_monitor_flag in command_tokens:
+            self.argparser.error(
+                "monitor is a subcommand; use 'mrun monitor'")
+        command_names = {'init', 'start', 'stop', 'restart', 'list', 'kill',
+                         'monitor'}
+        explicit_command_requested = any(
+            token in command_names for token in command_tokens)
+
         # make sure init is default command even when specifying
         # arguments directly
-        if arguments and arguments.startswith('-'):
+        if arguments and arguments.startswith('-') and not explicit_command_requested:
             arguments = 'init ' + arguments
 
         # default sub-command is `init` if none provided
         elif (len(sys.argv) > 1 and sys.argv[1].startswith('-') and
-                sys.argv[1] not in ['-h', '--help', '--version']):
+                sys.argv[1] not in ['-h', '--help', '--version'] and
+                not explicit_command_requested):
             sys.argv = sys.argv[0:1] + ['init'] + sys.argv[1:]
 
         # create command sub-parsers
@@ -244,6 +256,39 @@ class MRunTool(BaseCmdLineTool):
              'through to mongod/mongos if those options are listed in the '
              '--help output for the current binary. For example: '
              '--storageEngine, --logappend, or --config.')
+
+        # monitor command
+        monitor_help = 'opens a live terminal monitor for MongoDB processes.'
+        monitor_desc = (
+            'Open a live terminal monitor for mongorun-managed mongod and '
+            'mongos processes: CPU, memory, network, disk activity, and '
+            'selectable log tail with severity colors and filtering. Use '
+            '--all to include all local MongoDB processes. Controls: q or '
+            'Ctrl+C quit, r reselects logs or currentOp sources, a toggles '
+            'process scope, Tab switches panes, z zooms, 1-5 toggles pane '
+            'visibility, C toggles raw/normalized CPU, t toggles thread view, '
+            'o toggles currentOp activity, O toggles currentOp raw/format, n '
+            'selects currentOp namespace, L sets currentOp top-N limit, E '
+            'toggles expanded server status, M launches mongosh, and s cycles '
+            'refresh 1s/5s/10s.')
+        monitor_parser = subparsers.add_parser(
+            'monitor', help=monitor_help, description=monitor_desc)
+        monitor_parser.add_argument(
+            '--all', action='store_true', default=False,
+            help=('includes all local mongod and mongos processes instead of '
+                  'only mongorun-managed processes'))
+        monitor_parser.add_argument(
+            '--dir', action='store', default='./data',
+            help=('base directory for .mrun_startup lookup (default=./data/)'))
+        monitor_parser.add_argument(
+            '--monitor-username', action='store', default=None,
+            help='username override for monitor network sampling')
+        monitor_parser.add_argument(
+            '--monitor-password', action='store', default=None,
+            help='password override for monitor network sampling')
+        monitor_parser.add_argument(
+            '--monitor-auth-db', action='store', default=None, metavar='DB',
+            help='auth database override for monitor network sampling')
 
         # init command
         helptext = ('initialize a new MongoDB environment and start '
@@ -603,12 +648,16 @@ class MRunTool(BaseCmdLineTool):
         kill_parser.add_argument('--verbose', action='store_true',
                                  default=False,
                                  help='outputs more verbose information.')
-        if not arguments:
+        if not arguments and 'monitor' not in command_tokens:
             #if not any(args in arguments for args in ['--help', '-h']):
             print("Detected mongod version: %s" % self.current_version)
 
         # argparser is set up, now call base class run()
         BaseCmdLineTool.run(self, arguments, get_unknowns=True)
+
+        if self.args.get('command') == 'monitor' and self.unknown_args:
+            self.argparser.error(
+                'unsupported monitor argument: %s' % self.unknown_args[0])
 
         # conditions on argument combinations
         if (self.args['command'] == 'init' and
@@ -628,9 +677,22 @@ class MRunTool(BaseCmdLineTool):
             self.argparser.exit()
         else:
             # branch out in sub-commands
-            getattr(self, self.args['command'])()
+            return getattr(self, self.args['command'])()
 
-    # -- below are the main commands: init, start, stop, list, kill
+    # -- below are the main commands: init, start, stop, list, kill, monitor
+    def monitor(self):
+        """Monitor running local MongoDB server processes."""
+        from mrun.monitor import Monitor
+
+        return Monitor(
+            client_factory=self.client,
+            data_dir=self.args.get('dir', './data'),
+            include_all=self.args.get('all', False),
+            monitor_username=self.args.get('monitor_username'),
+            monitor_password=self.args.get('monitor_password'),
+            monitor_auth_db=self.args.get('monitor_auth_db'),
+        ).run()
+
     def init(self):
         """
         Sub-command init.

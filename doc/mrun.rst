@@ -21,7 +21,7 @@ Usage
 .. code-block:: bash
 
    mrun [-h] [--version] [--no-progressbar]
-           {init,start,stop,restart,list,kill} ...
+           {init,start,stop,restart,list,kill,monitor} ...
 
 
 General Parameters
@@ -38,6 +38,130 @@ Version
 -------
 ``--version``
    shows the version number and exits.
+
+Monitor
+-------
+``monitor``
+   opens a live terminal monitor for running **mrun** managed ``mongod`` and
+   ``mongos`` processes from the selected data directory. The monitor shows
+   CPU usage, memory usage, network activity, disk consumption, and a
+   selectable live log tail with severity colors and local filtering. The left
+   side stacks CPU, memory, network, and disk metrics; the right side shows the
+   log tail or a configurable top-N active ``currentOp`` activity view. CPU,
+   memory, network, disk, and currentOp rows include a ``ROLE`` column for
+   primary/secondary state. Role values use muted, non-bold semantic colors
+   that do not compete with pane headers. Pane borders stay neutral, while pane
+   titles and table headers are bold and color-coded by pane. CPU, memory,
+   network, disk, and currentOp rows share an ANSI-aware table formatter for
+   stable column alignment. The CPU pane defaults to normalized process CPU,
+   where 100% means all logical CPUs on the host. Press ``C`` while the CPU
+   pane is focused to toggle back to raw ``psutil`` process CPU, which can
+   exceed 100% on multi-core hosts. For sharded deployments, metric rows are
+   ordered as ``mongos``, config servers, and shard groups, with a ``GROUP``
+   column identifying each deployment component. If no
+   **mrun**
+   managed MongoDB server processes are running, **mrun** will print a message
+   and exit.
+
+``--all``
+   used with ``monitor`` to include all local ``mongod`` and ``mongos``
+   processes instead of only the processes listed in ``.mrun_startup``.
+
+``--monitor-username USER``, ``--monitor-password PASSWORD``,
+``--monitor-auth-db DB``
+   optional credential overrides used only by monitor samplers and the
+   ``mongosh`` handoff. By default, monitor mode loads credentials from
+   ``.mrun_startup`` when an authenticated **mrun** deployment created an
+   initial user.
+
+   Monitor controls:
+
+   -  ``q`` or ``Ctrl+C`` quits.
+   -  In log view, ``r`` reselects log files. The selector accepts list
+      indexes or displayed ports and re-prompts when a token does not match a
+      visible entry.
+   -  In currentOp view, ``r`` opens the currentOp source selector.
+   -  ``a`` toggles the process scope between **mrun** managed processes and
+      all detected local MongoDB processes, then prompts for log selection
+      again. The footer reports the active scope as ``scope:mrun`` or
+      ``scope:all``.
+   -  ``Tab`` and ``Shift+Tab`` move focus across CPU, memory, network, disk,
+      and logs panes.
+   -  ``z`` toggles a full-screen view for the focused pane.
+   -  ``1``-``5`` toggles visibility for CPU, memory, network, disk, and logs
+      panes.
+   -  In the CPU pane, ``j``/``k`` or up/down arrows select a MongoDB process.
+   -  In the CPU pane, ``C`` toggles the CPU column between normalized and raw
+      process CPU.
+   -  In the CPU pane, ``t`` toggles between the default process CPU list and
+      a thread view for the selected process. Thread view is never shown by
+      default.
+   -  In the logs pane, ``o`` toggles the right activity pane between the log
+      tail and the active ``currentOp`` entries across visible MongoDB
+      processes. The default limit is 10 entries.
+   -  ``O`` toggles formatted and raw ``currentOp`` documents while the
+      currentOp activity view is active. Raw mode displays BSON-safe text
+      derived from ``db.currentOp()`` output.
+   -  ``L`` opens a currentOp top-N prompt while currentOp is active. Values
+      lower than 1 are rejected, and large values are capped at 500 entries.
+   -  ``r`` opens a currentOp source selector while currentOp is active. The
+      selector accepts process indexes, ports, ``primary``, ``secondary``,
+      ``all``, or Enter for all visible processes. Selecting ``primary`` makes
+      currentOp sampling run only against the primary node.
+   -  ``n`` opens a currentOp namespace selector while currentOp is active.
+      The selector lists active namespaces and also accepts a typed namespace.
+   -  ``c`` clears the currentOp namespace filter while currentOp is active,
+      or clears the log filter while the logs pane is active.
+   -  ``p`` prettifies the highlighted currentOp document as syntax-colored
+      JSON while currentOp is active. Press ``p`` again to return to the
+      currentOp list.
+   -  ``y`` yanks the highlighted currentOp while currentOp is active. The
+      copied text follows the active currentOp mode: formatted row, raw JSON,
+      or Pretty JSON.
+   -  In the logs pane, ``j``/``k`` or up/down arrows move the highlighted log
+      cursor. The text stays still while the cursor moves inside the visible
+      window and scrolls only when the cursor reaches the visible edge.
+   -  ``g`` jumps to the newest log line and resumes live-follow.
+   -  ``/`` opens a log filter prompt. Press Enter to apply the typed filter,
+      or Esc to cancel.
+   -  ``c`` clears the active log filter from the logs pane.
+   -  Filters support free text, fuzzy matching, ``slowop``, and structured
+      fields such as ``cmd:find``, ``component:COMMAND``, ``severity:E``,
+      ``port:27017``, and ``msg:"Slow query"``.
+   -  ``p`` prettifies the highlighted line as syntax-colored JSON, pauses
+      live-follow, and expands the log view. Press ``p`` again to return to
+      the raw log line.
+   -  ``y`` yanks the highlighted log line to the terminal clipboard when
+      supported.
+   -  Space pauses or resumes log streaming in the log tail. While paused, the
+      current log buffer stays frozen; resuming catches up from the same file
+      offset. While currentOp is active, Space pauses or resumes currentOp
+      sampling and keeps the last sampled currentOp rows visible.
+   -  ``s`` cycles the refresh interval through 1, 5, and 10 seconds.
+   -  ``M`` launches an interactive ``mongosh`` administration shell, when the
+      executable is available. The monitor offers primary, selected-node,
+      seed-list, first-visible-node, and custom URI targets, reuses stored
+      auth/TLS metadata, and passes ``--password`` without the password value
+      so ``mongosh`` prompts securely.
+   -  Log lines are color coded by severity: fatal uses red inverse, errors
+      use red, warnings use yellow, info uses muted teal, and debug uses dim
+      gray. Selection uses inverse video so it remains visible without hiding
+      the severity color. After yanking, that line is highlighted green.
+   -  Moving away from the newest log line pauses live-follow. Moving back to
+      the newest line resumes live-follow.
+   -  Footer key names are highlighted separately from their action labels so
+      pane-specific actions are easier to distinguish while the dashboard is
+      running.
+
+   Pretty JSON colors are selected from the terminal background when
+   ``COLORFGBG`` is available. Use ``MRUN_MONITOR_THEME=dark`` or
+   ``MRUN_MONITOR_THEME=light`` to override automatic theme detection.
+
+   When authentication metadata exists but monitor credentials are unavailable,
+   role and currentOp views show ``Password Required``. Stored credentials from
+   ``.mrun_startup`` or explicit monitor credential overrides are used when
+   available. The ``M`` shell handoff also refuses to launch for auth-enabled
+   deployments when credentials are required but unavailable.
 
 Verbosity
 ---------
